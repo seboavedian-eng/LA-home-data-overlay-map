@@ -44,14 +44,18 @@ const DataStore = (() => {
       const keyParam = CONFIG.CENSUS_API_KEY ? `&key=${CONFIG.CENSUS_API_KEY}` : "";
       const base = `https://api.census.gov/data/${CONFIG.ACS_YEAR}/${CONFIG.ACS_DATASET}`;
 
+      // api.census.gov does not send Access-Control-Allow-Origin, so a
+      // direct browser fetch is expected to fail here with a generic
+      // "Failed to fetch" - fetchJSONWithCorsFallback retries through a
+      // public CORS proxy when that happens (see CONFIG.CORS_PROXIES).
       let rows;
       try {
         const url = `${base}?get=${get}&for=zip%20code%20tabulation%20area:*&in=state:06${keyParam}`;
-        rows = await Utils.fetchJSON(url);
+        rows = await Utils.fetchJSONWithCorsFallback(url, undefined, "census");
       } catch (err) {
         Utils.logStatus("census", "warn", `State-filtered ACS query failed (${err.message}); retrying nationwide.`);
         const url = `${base}?get=${get}&for=zip%20code%20tabulation%20area:*${keyParam}`;
-        rows = await Utils.fetchJSON(url);
+        rows = await Utils.fetchJSONWithCorsFallback(url, undefined, "census");
       }
 
       const header = rows[0];
@@ -118,6 +122,18 @@ const DataStore = (() => {
           Utils.logStatus("fire", "warn", `Sub-layer "${layer.name}" failed: ${err.message}`);
         }
       }
+      // Diagnostic: if the live field name for hazard class doesn't match
+      // any of our guesses, every polygon silently falls back to gray -
+      // this makes that visible in the status log instead of just looking
+      // "off" with no clue why.
+      const unclassified = features.filter((f) => !f.properties.HAZ_CLASS).length;
+      if (features.length > 0 && unclassified > 0) {
+        Utils.logStatus(
+          "fire",
+          unclassified === features.length ? "warn" : "info",
+          `${unclassified}/${features.length} fire hazard polygons had no recognized hazard-class field (fields seen: ${Object.keys(features[0].properties).join(", ")}).`
+        );
+      }
       return { type: "FeatureCollection", features };
     });
   }
@@ -144,29 +160,20 @@ const DataStore = (() => {
     });
   }
 
-  // CA school district areas (elementary/high/unified boundaries).
+  // CA school district areas (elementary/high/unified boundaries), CDE's
+  // 2024-25 composite layer - same ArcGIS Online org as the schools layer.
   function getDistrictsGeoJSON() {
     return once("districts", async () => {
-      const root = await Utils.fetchJSON(`${CONFIG.DISTRICTS_SERVER}?f=json`);
-      const layers = root.layers || [{ id: 0, name: "School Districts" }];
-      const features = [];
-      for (const layer of layers) {
-        try {
-          const url = Utils.arcgisQueryUrl(CONFIG.DISTRICTS_SERVER, layer.id, {
-            bbox: CONFIG.LA_COUNTY_BBOX,
-            outFields: "*",
-          });
-          const gj = await Utils.fetchEsriAsGeoJSON(url);
-          gj.features.forEach((f) => {
-            f.properties._name = Utils.pickField(f.properties, ["DistrictName", "NAME", "DNAME"]);
-            f.properties._type = layer.name;
-            features.push(f);
-          });
-        } catch (err) {
-          Utils.logStatus("districts", "warn", `Sub-layer "${layer.name}" failed: ${err.message}`);
-        }
-      }
-      return { type: "FeatureCollection", features };
+      const url = Utils.arcgisQueryUrl(CONFIG.DISTRICTS_SERVER, undefined, {
+        bbox: CONFIG.LA_COUNTY_BBOX,
+        outFields: "*",
+      });
+      const gj = await Utils.fetchEsriAsGeoJSON(url);
+      gj.features.forEach((f) => {
+        f.properties._name = Utils.pickField(f.properties, ["DistrictName", "NAME", "DNAME", "District"]);
+        f.properties._type = Utils.pickField(f.properties, ["DistrictType", "Type", "SOC"]) || "School District";
+      });
+      return gj;
     });
   }
 

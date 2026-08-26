@@ -33,7 +33,7 @@ Pages, etc.) - there's nothing to build.
 | Income Levels | US Census ACS 5-year estimates, tables B19013/B19301/B17001, `api.census.gov` | Median household income, per-capita income, poverty rate. |
 | Fire Hazard Zones | CAL FIRE Fire Hazard Severity Zones, State + Local Responsibility Area (`services.gis.ca.gov`) | Moderate / High / Very High. |
 | Schools | CA Dept. of Education, official School Sites 2024-25 layer (`services3.arcgis.com`) | Point locations, level, district, address. |
-| School District Boundaries | CA Dept. of Education school district areas, via CA state GIS (`services.gis.ca.gov`) | Elementary/high/unified district service areas - see caveat below. |
+| School District Boundaries | CA Dept. of Education, official District Areas 2024-25 layer (`services3.arcgis.com`) | Elementary/high/unified district service areas - see caveat below. |
 | Address search | US Census Bureau Geocoder (`geocoding.geo.census.gov`) | Free, no key, US addresses. Drives the summary table via spatial joins against every layer above. |
 
 All ACS figures are 2022 5-year estimates (`js/config.js` -> `ACS_YEAR`),
@@ -63,14 +63,33 @@ release comes out.
 - **ArcGIS queries request `f=json`, not `f=geojson`, and convert client-side.**
   The `f=geojson` convenience format is opt-in per ArcGIS Server instance,
   and a few of the government services here (Census TIGERweb, LA County
-  DPW, the CA school-district layer) never had it turned on - requesting it
-  anyway returns an error, which is what made the Zip/City/Demographics/
-  Income/District layers fail outright in the first hand-off. Native Esri
-  JSON (`f=json`) is supported everywhere, so `js/utils.js` now converts it
-  to GeoJSON itself, including correctly nesting holes inside multi-ring
-  polygons - the older server-side geojson converters some of these
-  services do have are known to mishandle that case, which is what caused
-  the disconnected/stray-line look on the Fire Hazard layer.
+  DPW) never had it turned on - requesting it anyway returns an error,
+  which is what made the Zip/City/Demographics/Income layers fail outright
+  in the first hand-off. Native Esri JSON (`f=json`) is supported
+  everywhere, so `js/utils.js` now converts it to GeoJSON itself, including
+  correctly nesting holes inside multi-ring polygons - the older
+  server-side geojson converters some of these services do have are known
+  to mishandle that case, which was contributing to the messy look on the
+  Fire Hazard layer (the other contributor was drawing a border on every
+  one of the thousands of adjacent hazard polygons - that layer is now
+  rendered borderless, fill only).
+- **`api.census.gov` doesn't send CORS headers**, so a direct browser
+  `fetch()` to it fails outright ("Failed to fetch") even though the same
+  URL works fine from curl/Postman/a server. `Utils.fetchJSONWithCorsFallback()`
+  catches that and retries through a public CORS proxy
+  (`CONFIG.CORS_PROXIES` in `js/config.js`) that fetches the URL
+  server-side and re-serves it with permissive headers. This is the one
+  piece of the app with a third-party runtime dependency beyond the
+  primary data sources - fine for public aggregate statistics, but worth
+  knowing about. If it ever becomes unreliable, the real fix is running
+  this one call through your own tiny proxy instead.
+- **School district boundaries moved to CDE's own ArcGIS Online org**
+  (`services3.arcgis.com/.../DistrictAreas2425`, same org as the schools
+  layer) after the state's `services.gis.ca.gov/.../CA_School_Districts`
+  MapServer came back `500 Service ... not found` in real-browser testing
+  - it's evidently been retired or restructured since it was indexed by
+  search engines. The CDE org's `SchoolSites2425` was already confirmed
+  working, so its `DistrictAreas2425` sibling was the safer bet.
 - **This was built and tested from a network-sandboxed environment.** The
   coding sandbox this was built in only allows outbound access to a small
   allowlist (package registries, Anthropic's own APIs) - every GIS/Census
@@ -90,15 +109,23 @@ the Census bulk-query join, the point-in-polygon spatial joins, the
 choropleths, the popups, and the address-search summary table - it was run
 through a headless-browser (Playwright) test that intercepts each external
 request and returns a fixture response shaped exactly like the real API
-(same JSON structure, same field names, real LA County coordinates). That
-test (19 checks) covers:
+(native Esri JSON with correctly-wound rings, real LA County coordinates).
+That test (22 checks) covers:
 
 - All 7 layers toggle on/off and load without a logged error.
 - The Demographics popup for a ZIP shows the right population and a
   correctly-sorted, correctly-percented ethnicity breakdown.
 - The Income popup shows the right median household income.
+- A fire-hazard polygon built with a real hole in it is converted so that a
+  point inside the hole is correctly excluded and a point elsewhere in the
+  same polygon is correctly included - this is the specific multi-ring bug
+  class that caused the Fire Hazard layer's stray-line rendering.
+- The Census ACS call is deliberately made to fail exactly like its
+  real-world CORS block does, and the test confirms the CORS-proxy fallback
+  actually engages and Demographics/Income still load.
 - Searching an address returns the right ZIP, city, population, income,
-  fire hazard zone, and a schools list correctly sorted nearest-first.
+  fire hazard zone, and a schools list correctly sorted nearest-first, each
+  with a distinct per-school GreatSchools search link (not one shared URL).
 - No uncaught JS errors anywhere in the flow.
 
 The test lives in `tests/` (`fixtures.js` + `mock-e2e.js`) and isn't part of

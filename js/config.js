@@ -65,13 +65,24 @@ const CONFIG = {
   FIRE_SERVER: "https://services.gis.ca.gov/arcgis/rest/services/Environment/Fire_Severity_Zones/MapServer",
 
   // --- Schools -------------------------------------------------------
-  // CA Dept. of Education, official 2024-25 public school sites.
+  // CA Dept. of Education, official 2024-25 public school sites and school
+  // district areas - both hosted in the same CDE ArcGIS Online org, which
+  // (unlike the state's own services.gis.ca.gov instance) is confirmed
+  // reachable with CORS from a browser.
   SCHOOLS_SERVER: "https://services3.arcgis.com/fdvHcZVgB2QSRNkL/arcgis/rest/services/SchoolSites2425/FeatureServer/0",
-  // CA state - school district areas (elementary/high/unified combined).
-  DISTRICTS_SERVER: "https://services.gis.ca.gov/arcgis/rest/services/Boundaries/CA_School_Districts/MapServer",
+  DISTRICTS_SERVER: "https://services3.arcgis.com/fdvHcZVgB2QSRNkL/arcgis/rest/services/DistrictAreas2425/FeatureServer/0",
 
   // --- Geocoding -------------------------------------------------------
   // US Census Bureau geocoder - free, no key, US addresses only.
   GEOCODER_URL: "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress",
   GEOCODER_BENCHMARK: "Public_AR_Current",
+
+  // Public CORS proxies, tried in order, used ONLY as a fallback when a
+  // direct browser fetch to a government API is rejected for lacking
+  // CORS headers (api.census.gov is the known case - see README). Not
+  // used for any ArcGIS REST call, which all support CORS directly.
+  CORS_PROXIES: [
+    (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  ],
 };

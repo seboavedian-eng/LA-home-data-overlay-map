@@ -41,6 +41,35 @@ const Utils = (() => {
     }
   }
 
+  // Some government JSON APIs (api.census.gov is the known offender - see
+  // README) never send Access-Control-Allow-Origin, so a direct browser
+  // fetch fails with a generic "Failed to fetch" before any HTTP status is
+  // even visible. When that happens, retry through public CORS proxies
+  // (CONFIG.CORS_PROXIES) that fetch the URL server-side and re-serve it
+  // with permissive CORS headers. Only used as a fallback, and only for
+  // plain JSON APIs - every ArcGIS REST endpoint in this app supports CORS
+  // directly and never needs this path.
+  async function fetchJSONWithCorsFallback(url, opts, layerKeyForLog = "fetch") {
+    try {
+      return await fetchJSON(url, opts);
+    } catch (directErr) {
+      const proxies = (typeof CONFIG !== "undefined" && CONFIG.CORS_PROXIES) || [];
+      for (let i = 0; i < proxies.length; i++) {
+        try {
+          logStatus(
+            layerKeyForLog,
+            "warn",
+            `Direct request blocked (${directErr.message}); retrying via CORS proxy ${i + 1}/${proxies.length}.`
+          );
+          return await fetchJSON(proxies[i](url), opts);
+        } catch (proxyErr) {
+          if (i === proxies.length - 1) throw proxyErr;
+        }
+      }
+      throw directErr;
+    }
+  }
+
   // Look up an ArcGIS MapServer's child layer id by matching part of its
   // name (case-insensitive). Falls back to a provided default id if
   // discovery fails, so a wrong hard-coded guess never fully blocks a layer.
@@ -255,6 +284,7 @@ const Utils = (() => {
 
   return {
     fetchJSON,
+    fetchJSONWithCorsFallback,
     fetchEsriAsGeoJSON,
     esriFeatureSetToGeoJSON,
     discoverLayerId,

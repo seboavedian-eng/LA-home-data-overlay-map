@@ -19,7 +19,12 @@ async function main() {
 
   const consoleErrors = [];
   page.on("console", (msg) => {
-    if (msg.type() === "error") consoleErrors.push(msg.text());
+    // The api.census.gov request is deliberately aborted above to simulate
+    // its real-world CORS failure - Chrome logs a generic
+    // "Failed to load resource" for that regardless of whether the app
+    // recovers from it (which the status-log checks above verify), so
+    // it's expected noise here, not a real bug.
+    if (msg.type() === "error" && !msg.text().includes("Failed to load resource")) consoleErrors.push(msg.text());
   });
   page.on("pageerror", (err) => consoleErrors.push("pageerror: " + err.message));
   page.on("requestfailed", (req) => console.log("REQUEST FAILED:", req.url(), req.failure() && req.failure().errorText));
@@ -50,7 +55,13 @@ async function main() {
     return route.fulfill(json({ layers: [{ id: 2, name: "2020 Census ZIP Code Tabulation Areas", geometryType: "esriGeometryPolygon" }] }));
   });
 
-  await page.route("**://api.census.gov/**", (route) => {
+  // Simulate the real-world failure: api.census.gov does not send CORS
+  // headers, so a direct browser fetch fails at the network level before
+  // any response body is seen. route.abort() reproduces exactly that
+  // ("Failed to fetch"), which is what should trigger the CORS-proxy
+  // fallback in Utils.fetchJSONWithCorsFallback.
+  await page.route("**://api.census.gov/**", (route) => route.abort("failed"));
+  await page.route("**://api.allorigins.win/**", (route) => {
     return route.fulfill(json(F.CENSUS_ROWS));
   });
 
@@ -78,10 +89,8 @@ async function main() {
     );
   });
 
-  await page.route("**://services.gis.ca.gov/**CA_School_Districts**", (route) => {
-    const url = route.request().url();
-    if (url.includes("/0/query")) return route.fulfill(json(F.DISTRICT_LAUSD_ESRI));
-    return route.fulfill(json({ layers: [{ id: 0, name: "Unified School Districts", geometryType: "esriGeometryPolygon" }] }));
+  await page.route("**://services3.arcgis.com/**DistrictAreas2425**", (route) => {
+    return route.fulfill(json(F.DISTRICT_LAUSD_ESRI));
   });
 
   await page.route("**://services3.arcgis.com/**SchoolSites2425**", (route) => {
@@ -130,8 +139,17 @@ async function main() {
     const ok = statusText.includes(`${label} loaded`);
     step(`${label} loaded without error`, ok, ok ? "" : statusText.slice(-400));
   }
-  const errorLines = statusText.split("\n").filter((l) => l.toLowerCase().includes("error") || l.toLowerCase().includes("fail"));
-  step("no error lines in status log after toggling all layers", errorLines.length === 0, errorLines.join(" | "));
+  // Check by DOM class (li.error), not by text-matching for "fail" - the
+  // CORS-proxy recovery message below legitimately contains the word
+  // "Failed" as part of describing what it recovered *from*.
+  const errorLineCount = await page.locator("#status-log li.error").count();
+  const errorLineText = errorLineCount ? await page.locator("#status-log li.error").allTextContents() : [];
+  step("no error-level lines in status log after toggling all layers", errorLineCount === 0, errorLineText.join(" | "));
+  step(
+    "census CORS-proxy fallback actually engaged (not just coincidentally working)",
+    statusText.includes("retrying via CORS proxy"),
+    statusText.slice(-600)
+  );
 
   // Click a zip polygon feature to confirm popup content (demographics).
   // Programmatically open popup via Leaflet layer to avoid pixel-coordinate flakiness.
@@ -224,6 +242,14 @@ async function main() {
   );
 
   step("no console/page errors thrown", consoleErrors.length === 0, consoleErrors.join(" | "));
+
+  // Isolate fire-hazard for a clean visual check of the borderless-polygon fix.
+  for (const key of ["city-borders", "demographics", "income", "schools", "school-districts"]) {
+    await page.uncheck(`#layer-${key}`);
+  }
+  await page.mouse.click(700, 400); // close any open popup
+  await page.waitForTimeout(300);
+  await page.locator("#map").screenshot({ path: path.join(__dirname, "screenshot-fire-only.png") });
 
   await page.screenshot({ path: path.join(__dirname, "screenshot-full.png"), fullPage: false });
   await page.evaluate(() => document.getElementById("sidebar").scrollTo(0, document.getElementById("sidebar").scrollHeight));

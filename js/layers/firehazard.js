@@ -32,9 +32,12 @@
     loader: async (map) => {
       const gj = await DataStore.getFireHazardGeoJSON();
       return L.geoJSON(gj, {
+        // No stroke: this dataset is thousands of small adjacent polygons,
+        // and drawing a border on every one is what made same-colored
+        // neighboring zones look like a messy grid instead of one smooth
+        // hazard-severity choropleth.
         style: (feature) => ({
-          color: "#7a1f0d",
-          weight: 0.5,
+          stroke: false,
           fillColor: colorFor(feature.properties.HAZ_CLASS),
           fillOpacity: 0.55,
         }),
