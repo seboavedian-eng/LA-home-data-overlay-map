@@ -11,8 +11,13 @@ running.
 
 ## Running it
 
-Because the app makes cross-origin `fetch()` calls, open it through a local
-web server rather than double-clicking the file:
+1. **Recommended, one time:** `bash scripts/fetch-census-data.sh` - pulls the
+   Census demographics/income data this app needs and saves it locally, so
+   Demographics/Income load from a local file instead of depending on a
+   flaky public CORS proxy at runtime (see "Known limitations"). Needs your
+   own internet access; a few seconds.
+2. Because the app makes cross-origin `fetch()` calls, open it through a
+   local web server rather than double-clicking the file:
 
 ```
 cd LA-home-data-overlay-map
@@ -21,7 +26,8 @@ python3 -m http.server 8000
 ```
 
 Any static file server works (`npx serve`, VS Code Live Server, GitHub
-Pages, etc.) - there's nothing to build.
+Pages, etc.) - there's nothing to build. Step 1 is optional - skip it and
+the app still tries live, just less reliably (see below).
 
 ## What each layer is, and where the data comes from
 
@@ -75,21 +81,41 @@ release comes out.
   rendered borderless, fill only).
 - **`api.census.gov` doesn't send CORS headers**, so a direct browser
   `fetch()` to it fails outright ("Failed to fetch") even though the same
-  URL works fine from curl/Postman/a server. `Utils.fetchJSONWithCorsFallback()`
-  catches that and retries through a public CORS proxy
-  (`CONFIG.CORS_PROXIES` in `js/config.js`) that fetches the URL
-  server-side and re-serves it with permissive headers. This is the one
-  piece of the app with a third-party runtime dependency beyond the
-  primary data sources - fine for public aggregate statistics, but worth
-  knowing about. If it ever becomes unreliable, the real fix is running
-  this one call through your own tiny proxy instead.
-- **School district boundaries moved to CDE's own ArcGIS Online org**
-  (`services3.arcgis.com/.../DistrictAreas2425`, same org as the schools
-  layer) after the state's `services.gis.ca.gov/.../CA_School_Districts`
-  MapServer came back `500 Service ... not found` in real-browser testing
-  - it's evidently been retired or restructured since it was indexed by
-  search engines. The CDE org's `SchoolSites2425` was already confirmed
-  working, so its `DistrictAreas2425` sibling was the safer bet.
+  URL works fine from curl/Postman/a server - no amount of client-side code
+  can fix that, it's a gap in that specific API. The original fix attempt
+  was a public CORS proxy fallback; in real-browser testing, *both*
+  configured proxies turned out to be unreliable too (one blocked outright,
+  the other returning `403`) - proxies like these are commonly blocked by
+  ad blockers, privacy extensions, or the proxy's own rate limiting, so
+  this isn't specific to one setup. The real fix is
+  `scripts/fetch-census-data.sh` (see "Running it"): a one-time local
+  snapshot that Demographics/Income load from directly, same-origin, no
+  CORS involved at all. The proxy fallback in `Utils.fetchJSONWithCorsFallback()`
+  still exists as a last resort if you skip that script, but don't rely on it.
+- **School district boundaries: exact live service name unconfirmed.** The
+  state's own `services.gis.ca.gov/.../CA_School_Districts` MapServer came
+  back `500 Service ... not found` in real-browser testing - it's evidently
+  been retired or restructured since it was indexed by search engines. My
+  next guess, CDE's own ArcGIS Online org's `DistrictAreas2425` (same org as
+  the already-confirmed-working `SchoolSites2425` schools layer), turned out
+  not to exist either (`400 Invalid URL`). `getDistrictsGeoJSON()` in
+  `js/datastore.js` now tries a short list of plausible names in order
+  (`DistrictAreas2425Locale`, `DistrictAreas2425`, `DistrictAreas2324`,
+  `DistrictAreas2122` - see `CONFIG.DISTRICTS_SERVER_CANDIDATES`) and uses
+  whichever one actually responds. If none do, the status log will say so
+  by name.
+- **Fire Hazard Zones: still being tracked down.** The data source is
+  confirmed correct - it's the same official CAL FIRE Fire Hazard Severity
+  Zone dataset (`services.gis.ca.gov/.../Fire_Severity_Zones`) that CAL
+  FIRE's own public viewer app uses. Two contributing rendering bugs are
+  fixed (server-side geojson conversion mangling multi-ring/hole polygons;
+  a border drawn on every one of the thousands of adjacent polygons), and a
+  diagnostic now logs whether the live hazard-class field name is actually
+  being matched (`js/datastore.js` -> `getFireHazardGeoJSON`). If it still
+  looks off after those fixes, the status log line for "fire" plus a
+  screenshot is what's needed to pin down what's left - I can't view this
+  layer myself from where this was built (see the network-sandbox note
+  below).
 - **This was built and tested from a network-sandboxed environment.** The
   coding sandbox this was built in only allows outbound access to a small
   allowlist (package registries, Anthropic's own APIs) - every GIS/Census
@@ -110,12 +136,18 @@ choropleths, the popups, and the address-search summary table - it was run
 through a headless-browser (Playwright) test that intercepts each external
 request and returns a fixture response shaped exactly like the real API
 (native Esri JSON with correctly-wound rings, real LA County coordinates).
-That test (22 checks) covers:
+That test (24 checks) covers:
 
 - All 7 layers toggle on/off and load without a logged error.
 - The Demographics popup for a ZIP shows the right population and a
   correctly-sorted, correctly-percented ethnicity breakdown.
 - The Income popup shows the right median household income.
+- The districts fetch's first candidate URL is made to fail exactly like
+  the real dead URL did, and the test confirms it falls through to the next
+  candidate rather than just failing outright.
+- A local Census snapshot file is dropped in, api.census.gov is blocked
+  entirely, and the test confirms Demographics loads from the local file
+  with zero network call to Census or any proxy.
 - A fire-hazard polygon built with a real hole in it is converted so that a
   point inside the hole is correctly excluded and a point elsewhere in the
   same polygon is correctly included - this is the specific multi-ring bug
@@ -158,8 +190,10 @@ js/layers/*.js         One file per toggleable layer
 js/geocode.js          Census geocoder wrapper
 js/summary.js          Address-search spatial joins + summary table rendering
 js/main.js             Bootstraps everything
+js/data/                Local ACS snapshot lives here once you run the fetch script (see below)
 vendor/leaflet/         Leaflet 1.9.4, vendored (no CDN dependency)
 vendor/turf/            turf.js 6.5.0, vendored (no CDN dependency)
+scripts/fetch-census-data.sh   One-time local Census data snapshot (see "Running it")
 ```
 
 ## Optional: raise the Census API rate limit

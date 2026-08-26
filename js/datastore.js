@@ -44,18 +44,32 @@ const DataStore = (() => {
       const keyParam = CONFIG.CENSUS_API_KEY ? `&key=${CONFIG.CENSUS_API_KEY}` : "";
       const base = `https://api.census.gov/data/${CONFIG.ACS_YEAR}/${CONFIG.ACS_DATASET}`;
 
-      // api.census.gov does not send Access-Control-Allow-Origin, so a
-      // direct browser fetch is expected to fail here with a generic
-      // "Failed to fetch" - fetchJSONWithCorsFallback retries through a
-      // public CORS proxy when that happens (see CONFIG.CORS_PROXIES).
+      // Prefer a local pre-fetched snapshot (see
+      // scripts/fetch-census-data.sh): it's same-origin, so it always
+      // works with zero live dependency. api.census.gov itself never sends
+      // Access-Control-Allow-Origin, so a direct browser fetch to it is
+      // expected to fail - and public CORS proxies have proven unreliable
+      // in practice (rate-limited, 403s, or blocked by the visitor's own
+      // network/extensions), so that path is now a last resort, not the
+      // primary plan.
       let rows;
       try {
-        const url = `${base}?get=${get}&for=zip%20code%20tabulation%20area:*&in=state:06${keyParam}`;
-        rows = await Utils.fetchJSONWithCorsFallback(url, undefined, "census");
-      } catch (err) {
-        Utils.logStatus("census", "warn", `State-filtered ACS query failed (${err.message}); retrying nationwide.`);
-        const url = `${base}?get=${get}&for=zip%20code%20tabulation%20area:*${keyParam}`;
-        rows = await Utils.fetchJSONWithCorsFallback(url, undefined, "census");
+        rows = await Utils.fetchJSON(CONFIG.CENSUS_LOCAL_SNAPSHOT);
+        Utils.logStatus("census", "ok", `Loaded ACS data from local snapshot (${CONFIG.CENSUS_LOCAL_SNAPSHOT}).`);
+      } catch (localErr) {
+        Utils.logStatus(
+          "census",
+          "info",
+          `No local ACS snapshot at ${CONFIG.CENSUS_LOCAL_SNAPSHOT} (run scripts/fetch-census-data.sh once to add it); trying a live request instead.`
+        );
+        try {
+          const url = `${base}?get=${get}&for=zip%20code%20tabulation%20area:*&in=state:06${keyParam}`;
+          rows = await Utils.fetchJSONWithCorsFallback(url, undefined, "census");
+        } catch (err) {
+          Utils.logStatus("census", "warn", `State-filtered ACS query failed (${err.message}); retrying nationwide.`);
+          const url = `${base}?get=${get}&for=zip%20code%20tabulation%20area:*${keyParam}`;
+          rows = await Utils.fetchJSONWithCorsFallback(url, undefined, "census");
+        }
       }
 
       const header = rows[0];
@@ -161,19 +175,31 @@ const DataStore = (() => {
   }
 
   // CA school district areas (elementary/high/unified boundaries), CDE's
-  // 2024-25 composite layer - same ArcGIS Online org as the schools layer.
+  // composite layer - same ArcGIS Online org as the schools layer. The
+  // exact current service name couldn't be verified live, so try each
+  // candidate in CONFIG.DISTRICTS_SERVER_CANDIDATES until one responds.
   function getDistrictsGeoJSON() {
     return once("districts", async () => {
-      const url = Utils.arcgisQueryUrl(CONFIG.DISTRICTS_SERVER, undefined, {
-        bbox: CONFIG.LA_COUNTY_BBOX,
-        outFields: "*",
-      });
-      const gj = await Utils.fetchEsriAsGeoJSON(url);
-      gj.features.forEach((f) => {
-        f.properties._name = Utils.pickField(f.properties, ["DistrictName", "NAME", "DNAME", "District"]);
-        f.properties._type = Utils.pickField(f.properties, ["DistrictType", "Type", "SOC"]) || "School District";
-      });
-      return gj;
+      let lastErr;
+      for (const server of CONFIG.DISTRICTS_SERVER_CANDIDATES) {
+        try {
+          const url = Utils.arcgisQueryUrl(server, undefined, {
+            bbox: CONFIG.LA_COUNTY_BBOX,
+            outFields: "*",
+          });
+          const gj = await Utils.fetchEsriAsGeoJSON(url);
+          Utils.logStatus("districts", "ok", `Using district layer: ${server}`);
+          gj.features.forEach((f) => {
+            f.properties._name = Utils.pickField(f.properties, ["DistrictName", "NAME", "DNAME", "District"]);
+            f.properties._type = Utils.pickField(f.properties, ["DistrictType", "Type", "SOC"]) || "School District";
+          });
+          return gj;
+        } catch (err) {
+          Utils.logStatus("districts", "info", `${server} didn't work (${err.message}); trying next candidate.`);
+          lastErr = err;
+        }
+      }
+      throw lastErr || new Error("No district layer candidate responded");
     });
   }
 

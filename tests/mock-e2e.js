@@ -1,6 +1,7 @@
 const { chromium } = require("playwright");
 const { spawn } = require("child_process");
 const path = require("path");
+const fs = require("fs");
 const F = require("./fixtures");
 
 const REPO = path.join(__dirname, "..");
@@ -89,7 +90,17 @@ async function main() {
     );
   });
 
-  await page.route("**://services3.arcgis.com/**DistrictAreas2425**", (route) => {
+  // Exercise the actual multi-candidate fallback in getDistrictsGeoJSON:
+  // the first candidate (DistrictAreas2425Locale) 400s just like the real
+  // service did in real-browser testing, forcing a fall-through to the
+  // next candidate (plain DistrictAreas2425), which succeeds.
+  await page.route("**://services3.arcgis.com/**DistrictAreas2425Locale**", (route) => {
+    // ArcGIS REST returns errors as HTTP 200 with an "error" object in the
+    // body (matching the real "Invalid URL" response seen in testing), not
+    // an actual non-2xx status - fetchJSON's data.error check catches this.
+    return route.fulfill(json({ error: { code: 400, message: "Invalid URL", details: ["Invalid URL"] } }));
+  });
+  await page.route("**://services3.arcgis.com/**DistrictAreas2425/**", (route) => {
     return route.fulfill(json(F.DISTRICT_LAUSD_ESRI));
   });
 
@@ -149,6 +160,11 @@ async function main() {
     "census CORS-proxy fallback actually engaged (not just coincidentally working)",
     statusText.includes("retrying via CORS proxy"),
     statusText.slice(-600)
+  );
+  step(
+    "districts multi-candidate fallback actually engaged (first candidate failed, second used)",
+    statusText.includes("didn't work") && statusText.includes("trying next candidate") && statusText.includes("Using district layer:"),
+    statusText
   );
 
   // Click a zip polygon feature to confirm popup content (demographics).
@@ -255,6 +271,45 @@ async function main() {
   await page.evaluate(() => document.getElementById("sidebar").scrollTo(0, document.getElementById("sidebar").scrollHeight));
   await page.locator("#sidebar").screenshot({ path: path.join(__dirname, "screenshot-sidebar-bottom.png") });
   await page.evaluate(() => document.getElementById("address-input").blur());
+
+  // --- Local Census snapshot: the new primary path (scripts/fetch-census-data.sh) ---
+  // Writes a real fixture file into js/data/ (exactly what the script
+  // produces), loads a fresh page, and confirms Demographics reads it
+  // same-origin instead of going anywhere near api.census.gov or a proxy.
+  // Always removes the file afterward, even on failure.
+  const snapshotPath = path.join(REPO, "js", "data", "acs-zcta.json");
+  const snapshotDir = path.dirname(snapshotPath);
+  const dirExisted = fs.existsSync(snapshotDir);
+  try {
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    fs.writeFileSync(snapshotPath, JSON.stringify(F.CENSUS_ROWS));
+
+    const page2 = await browser.newPage({ viewport: { width: 1400, height: 950 } });
+    await page2.route("**://api.census.gov/**", (route) => route.abort("failed")); // must never be hit
+    await page2.route("**://*.basemaps.cartocdn.com/**", (route) => route.fulfill({ contentType: "image/png", body: BLANK_PNG }));
+    await page2.route("**://tigerweb.geo.census.gov/**", (route) => {
+      const url = route.request().url();
+      if (url.includes("/query")) return route.fulfill(json(F.ZCTA_ESRI));
+      return route.fulfill(json({ layers: [{ id: 2, name: "2020 Census ZIP Code Tabulation Areas", geometryType: "esriGeometryPolygon" }] }));
+    });
+    await page2.goto(`http://localhost:${PORT}/index.html`, { waitUntil: "load" });
+    await page2.waitForSelector("#layer-toggle-list li");
+    await page2.click("#layer-demographics");
+    await page2.waitForFunction(
+      () => document.getElementById("status-log").textContent.includes("Demographics loaded"),
+      { timeout: 10000 }
+    );
+    const snapshotStatusText = await page2.locator("#status-log").innerText();
+    step(
+      "local Census snapshot (scripts/fetch-census-data.sh output) is used when present, no network call",
+      snapshotStatusText.includes("Loaded ACS data from local snapshot") && !snapshotStatusText.includes("CORS proxy"),
+      snapshotStatusText
+    );
+    await page2.close();
+  } finally {
+    fs.rmSync(snapshotPath, { force: true });
+    if (!dirExisted) fs.rmSync(snapshotDir, { recursive: true, force: true });
+  }
 
   const failed = results.steps.filter((s) => !s.ok);
   console.log(`\n${results.steps.length - failed.length}/${results.steps.length} checks passed.`);

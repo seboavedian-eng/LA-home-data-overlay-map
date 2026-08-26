@@ -37,6 +37,13 @@ const CONFIG = {
   CITY_LAYER_NAME_HINT: "City",
 
   // --- Census ACS 5-year estimates (demographics + income) -------------
+  // api.census.gov does not send CORS headers, so it can never be fetched
+  // directly from a browser (see README). Run scripts/fetch-census-data.sh
+  // once (needs your own internet access, not this page's) to save a local
+  // snapshot here - the app prefers it over any live network call. If it's
+  // missing, the app falls back to a live fetch through a CORS proxy,
+  // which is best-effort and not something to depend on long-term.
+  CENSUS_LOCAL_SNAPSHOT: "js/data/acs-zcta.json",
   ACS_YEAR: 2022,
   ACS_DATASET: "acs/acs5",
   // B03002 = Hispanic/Latino Origin by Race (lets us report both race and
@@ -70,7 +77,17 @@ const CONFIG = {
   // (unlike the state's own services.gis.ca.gov instance) is confirmed
   // reachable with CORS from a browser.
   SCHOOLS_SERVER: "https://services3.arcgis.com/fdvHcZVgB2QSRNkL/arcgis/rest/services/SchoolSites2425/FeatureServer/0",
-  DISTRICTS_SERVER: "https://services3.arcgis.com/fdvHcZVgB2QSRNkL/arcgis/rest/services/DistrictAreas2425/FeatureServer/0",
+  // The exact current service name for this org's district layer couldn't
+  // be confirmed live (services.gis.ca.gov's own copy turned out to be
+  // dead, and "DistrictAreas2425" 400'd - "Invalid URL" - in real-browser
+  // testing). Try a few plausible/likely names in order and use whichever
+  // one actually responds, newest year first.
+  DISTRICTS_SERVER_CANDIDATES: [
+    "https://services3.arcgis.com/fdvHcZVgB2QSRNkL/arcgis/rest/services/DistrictAreas2425Locale/FeatureServer/0",
+    "https://services3.arcgis.com/fdvHcZVgB2QSRNkL/arcgis/rest/services/DistrictAreas2425/FeatureServer/0",
+    "https://services3.arcgis.com/fdvHcZVgB2QSRNkL/arcgis/rest/services/DistrictAreas2324/FeatureServer/0",
+    "https://services3.arcgis.com/fdvHcZVgB2QSRNkL/arcgis/rest/services/DistrictAreas2122/FeatureServer/0",
+  ],
 
   // --- Geocoding -------------------------------------------------------
   // US Census Bureau geocoder - free, no key, US addresses only.
