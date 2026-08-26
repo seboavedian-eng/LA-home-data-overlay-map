@@ -28,8 +28,8 @@
         <tr><td class="k">Address</td><td class="v">${addr || "n/a"}</td></tr>
         <tr><td class="k">Status</td><td class="v">${status}</td></tr>
       </table>
-      <p style="font-size:0.72rem;margin:6px 0 0;">GreatSchools.com has no free API. For official state ratings, search
-        <a href="https://www.caschooldashboard.org/" target="_blank" rel="noopener">CA School Dashboard</a> for "${name}".</p>
+      <p style="font-size:0.72rem;margin:6px 0 0;">GreatSchools.com has no free API, so this searches Google instead:
+        <a href="${Utils.greatSchoolsSearchUrl(name)}" target="_blank" rel="noopener">Check GreatSchools rating &#8599;</a></p>
       <p style="font-size:0.7rem;color:#5b6470;margin:4px 0 0;">Source: CA Dept of Education, School Sites 2024-25</p>
     </div>`;
   }

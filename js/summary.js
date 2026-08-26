@@ -57,12 +57,12 @@ const Summary = (() => {
 
     const schoolsHtml = schools.length
       ? schools
-          .map(
-            (s) =>
-              `<div class="school-item"><strong>${s.f.properties._name || "School"}</strong><br>
+          .map((s) => {
+            const name = s.f.properties._name || "School";
+            return `<div class="school-item"><strong>${name}</strong><br>
               ${(s.f.properties._district || "")} &middot; ${s.dist.toFixed(2)} mi<br>
-              <a href="https://www.caschooldashboard.org/" target="_blank" rel="noopener">Check state rating &#8599;</a></div>`
-          )
+              <a href="${Utils.greatSchoolsSearchUrl(name)}" target="_blank" rel="noopener">Check GreatSchools rating &#8599;</a></div>`;
+          })
           .join("")
       : "No schools found nearby";
 

@@ -21,7 +21,7 @@ const DataStore = (() => {
         bbox: CONFIG.LA_COUNTY_BBOX,
         outFields: "*",
       });
-      const gj = await Utils.fetchJSON(url);
+      const gj = await Utils.fetchEsriAsGeoJSON(url);
       gj.features.forEach((f) => {
         f.properties.ZCTA5 = Utils.pickField(f.properties, ["ZCTA5CE20", "ZCTA5CE10", "ZCTA5CE", "GEOID20", "GEOID"]);
         if (f.properties.ZCTA5 && f.properties.ZCTA5.length > 5) {
@@ -78,7 +78,7 @@ const DataStore = (() => {
         bbox: CONFIG.LA_COUNTY_BBOX,
         outFields: "*",
       });
-      const gj = await Utils.fetchJSON(url);
+      const gj = await Utils.fetchEsriAsGeoJSON(url);
       gj.features.forEach((f) => {
         f.properties.CITY_NAME = Utils.pickField(f.properties, ["CITY_NAME", "CITY", "NAME", "LABEL", "CITYLABEL"]);
       });
@@ -90,7 +90,13 @@ const DataStore = (() => {
   function getFireHazardGeoJSON() {
     return once("fire", async () => {
       const root = await Utils.fetchJSON(`${CONFIG.FIRE_SERVER}?f=json`);
-      const layers = (root.layers || []).filter((l) => /hazard|fhsz|sra|lra/i.test(l.name));
+      // Only keep sublayers that are actually polygons: this service also
+      // exposes label/boundary-line sublayers whose names match "hazard"
+      // too, and pulling those in alongside the fill polygons is what
+      // produced the stray unfilled lines on the map.
+      const layers = (root.layers || []).filter(
+        (l) => /hazard|fhsz|sra|lra/i.test(l.name) && (!l.geometryType || l.geometryType === "esriGeometryPolygon")
+      );
       const targets = layers.length ? layers : [{ id: 0, name: "Fire Hazard Severity Zones" }];
 
       const features = [];
@@ -100,7 +106,7 @@ const DataStore = (() => {
             bbox: CONFIG.LA_COUNTY_BBOX,
             outFields: "*",
           });
-          const gj = await Utils.fetchJSON(url);
+          const gj = await Utils.fetchEsriAsGeoJSON(url);
           gj.features.forEach((f) => {
             f.properties.HAZ_CLASS = Utils.pickField(f.properties, [
               "HAZ_CLASS", "FHSZ", "SRA_HAZ_CODE", "FHSZ_DESC", "HAZARD", "HAZARD_CLASS", "HAZ_CODE",
@@ -123,7 +129,7 @@ const DataStore = (() => {
         bbox: CONFIG.LA_COUNTY_BBOX,
         outFields: "*",
       });
-      const gj = await Utils.fetchJSON(url);
+      const gj = await Utils.fetchEsriAsGeoJSON(url);
       gj.features.forEach((f) => {
         f.properties._name = Utils.pickField(f.properties, ["SchoolName", "School", "NAME", "SCHOOLNAME"]);
         f.properties._district = Utils.pickField(f.properties, ["DistrictName", "District", "DNAME"]);
@@ -150,7 +156,7 @@ const DataStore = (() => {
             bbox: CONFIG.LA_COUNTY_BBOX,
             outFields: "*",
           });
-          const gj = await Utils.fetchJSON(url);
+          const gj = await Utils.fetchEsriAsGeoJSON(url);
           gj.features.forEach((f) => {
             f.properties._name = Utils.pickField(f.properties, ["DistrictName", "NAME", "DNAME"]);
             f.properties._type = layer.name;

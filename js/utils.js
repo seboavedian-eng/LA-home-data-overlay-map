@@ -73,9 +73,18 @@ const Utils = (() => {
   }
 
   // Build an ArcGIS REST query URL against a bounding-box envelope.
+  //
+  // Deliberately requests f=json (native Esri JSON), NOT f=geojson: the
+  // geojson output format is an opt-in per-service setting that a lot of
+  // older government ArcGIS Server instances (Census TIGERweb, county DPW
+  // servers, etc.) never turned on, and even where it is on, older
+  // versions have known bugs converting multi-ring/donut-hole polygons
+  // (self-intersecting rings that render as stray lines). f=json is
+  // universally supported, so we convert it to GeoJSON ourselves - see
+  // esriFeatureSetToGeoJSON()/fetchEsriAsGeoJSON() below.
   function arcgisQueryUrl(serverUrl, layerId, { bbox, where, outFields = "*", extraParams = {} }) {
     const params = new URLSearchParams({
-      f: "geojson",
+      f: "json",
       outFields,
       returnGeometry: "true",
       outSR: "4326",
@@ -90,6 +99,119 @@ const Utils = (() => {
     params.set("where", where || "1=1");
     const base = layerId === undefined || layerId === null ? serverUrl : `${serverUrl}/${layerId}`;
     return `${base}/query?${params.toString()}`;
+  }
+
+  // --- Esri JSON -> GeoJSON conversion --------------------------------
+  // Minimal, dependency-free port of the standard algorithm (as used by
+  // Esri's own arcgis-to-geojson-utils): group rings into outer
+  // rings + holes by winding direction, then match each hole to the
+  // outer ring that contains it. This is what a well-formed converter
+  // needs to do to avoid the twisted/self-intersecting polygons that a
+  // naive "just relabel the fields" conversion produces.
+
+  function ringIsClockwise(ring) {
+    let total = 0;
+    for (let i = 0; i < ring.length - 1; i++) {
+      const [x1, y1] = ring[i];
+      const [x2, y2] = ring[i + 1];
+      total += (x2 - x1) * (y2 + y1);
+    }
+    return total >= 0;
+  }
+
+  function closeRing(ring) {
+    const first = ring[0];
+    const last = ring[ring.length - 1];
+    if (!first || !last) return ring;
+    return first[0] === last[0] && first[1] === last[1] ? ring : [...ring, first];
+  }
+
+  function pointInRing(point, ring) {
+    const [x, y] = point;
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i];
+      const [xj, yj] = ring[j];
+      const intersects = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  }
+
+  function ringsToGeoJSONGeometry(rawRings) {
+    const outerRings = [];
+    const holes = [];
+    rawRings.forEach((r) => {
+      const ring = closeRing(r);
+      if (ring.length < 4) return;
+      if (ringIsClockwise(ring)) {
+        outerRings.push({ ring, holes: [] });
+      } else {
+        holes.push(ring);
+      }
+    });
+    // Malformed/unusual winding (seen on some legacy servers) - treat every
+    // ring as its own outer boundary rather than dropping the geometry.
+    if (outerRings.length === 0) {
+      rawRings.forEach((r) => outerRings.push({ ring: closeRing(r), holes: [] }));
+    } else {
+      holes.forEach((hole) => {
+        for (let i = outerRings.length - 1; i >= 0; i--) {
+          if (pointInRing(hole[0], outerRings[i].ring)) {
+            outerRings[i].holes.push(hole);
+            return;
+          }
+        }
+        // Didn't fit inside any known outer ring - keep it as its own
+        // polygon rather than silently dropping data.
+        outerRings.push({ ring: hole, holes: [] });
+      });
+    }
+    const polygons = outerRings.map((o) => [o.ring, ...o.holes]);
+    return polygons.length === 1
+      ? { type: "Polygon", coordinates: polygons[0] }
+      : { type: "MultiPolygon", coordinates: polygons };
+  }
+
+  function esriGeometryToGeoJSON(geom, geometryType) {
+    if (!geom) return null;
+    const type = geometryType || (geom.rings ? "esriGeometryPolygon" : geom.paths ? "esriGeometryPolyline" : geom.x !== undefined ? "esriGeometryPoint" : geom.points ? "esriGeometryMultipoint" : null);
+    switch (type) {
+      case "esriGeometryPoint":
+        return geom.x === undefined || geom.x === null ? null : { type: "Point", coordinates: [geom.x, geom.y] };
+      case "esriGeometryMultipoint":
+        return { type: "MultiPoint", coordinates: geom.points };
+      case "esriGeometryPolyline":
+        return (geom.paths || []).length === 1
+          ? { type: "LineString", coordinates: geom.paths[0] }
+          : { type: "MultiLineString", coordinates: geom.paths };
+      case "esriGeometryPolygon":
+        return ringsToGeoJSONGeometry(geom.rings || []);
+      default:
+        return null;
+    }
+  }
+
+  function esriFeatureSetToGeoJSON(featureSet) {
+    const geometryType = featureSet.geometryType;
+    const features = (featureSet.features || [])
+      .map((f) => {
+        const geometry = esriGeometryToGeoJSON(f.geometry, geometryType);
+        if (!geometry) return null;
+        return { type: "Feature", properties: { ...f.attributes }, geometry };
+      })
+      .filter(Boolean);
+    return { type: "FeatureCollection", features };
+  }
+
+  // Fetch an ArcGIS REST query URL (built with f=json) and convert the
+  // response to a GeoJSON FeatureCollection.
+  async function fetchEsriAsGeoJSON(url, opts) {
+    const data = await fetchJSON(url, opts);
+    if (!Array.isArray(data.features)) {
+      throw new Error("Unexpected ArcGIS response: no features array");
+    }
+    return esriFeatureSetToGeoJSON(data);
   }
 
   // Case/substring-tolerant field reader: government schemas vary in exact
@@ -126,8 +248,15 @@ const Utils = (() => {
     return `${((p / w) * 100).toFixed(1)}%`;
   }
 
+  function greatSchoolsSearchUrl(schoolName) {
+    const q = `${schoolName} greatschools rating`;
+    return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+  }
+
   return {
     fetchJSON,
+    fetchEsriAsGeoJSON,
+    esriFeatureSetToGeoJSON,
     discoverLayerId,
     arcgisQueryUrl,
     bboxToEnvelopeParam,
@@ -135,6 +264,7 @@ const Utils = (() => {
     fmtNumber,
     fmtCurrency,
     fmtPercent,
+    greatSchoolsSearchUrl,
     logStatus,
     onStatusChange,
     get statusLog() {

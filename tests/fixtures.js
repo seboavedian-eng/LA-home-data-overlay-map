@@ -1,97 +1,82 @@
 // Fixture API responses shaped like the real endpoints in js/config.js,
 // used only for local Playwright testing (route interception) - never
 // shipped in the app itself.
+//
+// IMPORTANT: these are native Esri JSON (what f=json returns), matching
+// what js/utils.js's esriFeatureSetToGeoJSON() now consumes - the app no
+// longer requests f=geojson (see README "Known limitations" for why).
 
-function ring(coords) {
-  return [[...coords, coords[0]]];
+function closeRing(coords) {
+  return [...coords, coords[0]];
 }
 
-const ZCTA_90012 = {
-  type: "Feature",
-  properties: { ZCTA5CE20: "90012" },
-  geometry: {
-    type: "Polygon",
-    coordinates: ring([
-      [-118.30, 34.00],
-      [-118.30, 34.10],
-      [-118.15, 34.10],
-      [-118.15, 34.00],
-    ]),
-  },
-};
-const ZCTA_90210 = {
-  type: "Feature",
-  properties: { ZCTA5CE20: "90210" },
-  geometry: {
-    type: "Polygon",
-    coordinates: ring([
-      [-118.45, 34.05],
-      [-118.45, 34.12],
-      [-118.38, 34.12],
-      [-118.38, 34.05],
-    ]),
-  },
-};
+// Esri convention: exterior rings wind clockwise, holes counter-clockwise.
+const RING_90012 = closeRing([
+  [-118.30, 34.00], [-118.30, 34.10], [-118.15, 34.10], [-118.15, 34.00],
+]); // clockwise
+const RING_90210 = closeRing([
+  [-118.45, 34.05], [-118.45, 34.12], [-118.38, 34.12], [-118.38, 34.05],
+]); // clockwise
 
-const CITY_LA = {
-  type: "Feature",
-  properties: { CITY_NAME: "Los Angeles" },
-  geometry: {
-    type: "Polygon",
-    coordinates: ring([
-      [-118.50, 33.90],
-      [-118.50, 34.30],
-      [-118.00, 34.30],
-      [-118.00, 33.90],
-    ]),
-  },
-};
+const RING_LA_CITY = closeRing([
+  [-118.50, 33.90], [-118.50, 34.30], [-118.00, 34.30], [-118.00, 33.90],
+]); // clockwise
 
-const FIRE_SRA_MODERATE = {
-  type: "Feature",
-  properties: { HAZ_CLASS: "Moderate" },
-  geometry: {
-    type: "Polygon",
-    coordinates: ring([
-      [-118.35, 33.95],
-      [-118.35, 34.15],
-      [-118.10, 34.15],
-      [-118.10, 33.95],
-    ]),
-  },
-};
-const FIRE_LRA_HIGH = {
-  type: "Feature",
-  properties: { HAZ_CLASS: "High" },
-  geometry: {
-    type: "Polygon",
-    coordinates: ring([
-      [-118.60, 34.20],
-      [-118.60, 34.25],
-      [-118.55, 34.25],
-      [-118.55, 34.20],
-    ]),
-  },
-};
+// Fire SRA "Moderate" zone: a clockwise exterior ring PLUS a counter-clockwise
+// hole ring, positioned away from the test address point (-118.2437, 34.0537)
+// so the address is still correctly "inside the hazard zone, outside the
+// hole". This is exactly the multi-ring shape that used to render as
+// disconnected/stray lines before the ring-nesting fix.
+const RING_FIRE_SRA_OUTER = closeRing([
+  [-118.35, 33.95], [-118.35, 34.15], [-118.10, 34.15], [-118.10, 33.95],
+]); // clockwise
+const RING_FIRE_SRA_HOLE = closeRing([
+  [-118.30, 34.11], [-118.28, 34.11], [-118.28, 34.13], [-118.30, 34.13],
+]); // counter-clockwise hole, far from the test point (this point order
+   // is CCW by the same shoelace convention as the app's ringIsClockwise -
+   // do not add .reverse() here, that flips it to a second exterior ring)
 
-const DISTRICT_LAUSD = {
-  type: "Feature",
-  properties: { DistrictName: "Los Angeles Unified" },
-  geometry: {
-    type: "Polygon",
-    coordinates: ring([
-      [-118.50, 33.90],
-      [-118.50, 34.30],
-      [-118.00, 34.30],
-      [-118.00, 33.90],
-    ]),
-  },
-};
+const RING_FIRE_LRA = closeRing([
+  [-118.60, 34.20], [-118.60, 34.25], [-118.55, 34.25], [-118.55, 34.20],
+]); // clockwise, doesn't contain the test point
 
-function schoolPoint(name, level, district, lon, lat) {
-  return {
-    type: "Feature",
-    properties: {
+const RING_DISTRICT_LAUSD = RING_LA_CITY;
+
+function esriPolygonFeature(attributes, rings) {
+  return { attributes, geometry: { rings } };
+}
+
+function esriPointFeature(attributes, x, y) {
+  return { attributes, geometry: { x, y } };
+}
+
+function esriFC(geometryType, features) {
+  return { geometryType, fields: [], features };
+}
+
+const CITY_LA_ESRI = esriFC("esriGeometryPolygon", [
+  esriPolygonFeature({ CITY_NAME: "Los Angeles" }, [RING_LA_CITY]),
+]);
+
+const ZCTA_ESRI = esriFC("esriGeometryPolygon", [
+  esriPolygonFeature({ ZCTA5CE20: "90012" }, [RING_90012]),
+  esriPolygonFeature({ ZCTA5CE20: "90210" }, [RING_90210]),
+]);
+
+const FIRE_SRA_ESRI = esriFC("esriGeometryPolygon", [
+  esriPolygonFeature({ HAZ_CLASS: "Moderate" }, [RING_FIRE_SRA_OUTER, RING_FIRE_SRA_HOLE]),
+]);
+const FIRE_LRA_ESRI = esriFC("esriGeometryPolygon", [
+  esriPolygonFeature({ HAZ_CLASS: "High" }, [RING_FIRE_LRA]),
+]);
+
+const DISTRICT_LAUSD_ESRI = esriFC("esriGeometryPolygon", [
+  esriPolygonFeature({ DistrictName: "Los Angeles Unified" }, [RING_DISTRICT_LAUSD]),
+]);
+
+function schoolFeature(name, level, district, lon, lat) {
+  return esriPointFeature(
+    {
       SchoolName: name,
       DistrictName: district,
       EILCode: level,
@@ -101,18 +86,19 @@ function schoolPoint(name, level, district, lon, lat) {
       StatusType: "Active",
       CDSCode: "19647330000000",
     },
-    geometry: { type: "Point", coordinates: [lon, lat] },
-  };
+    lon,
+    lat
+  );
 }
 
-const SCHOOLS = [
-  schoolPoint("Central Elementary", "Elementary", "Los Angeles Unified", -118.2440, 34.0540),
-  schoolPoint("Downtown Middle", "Middle", "Los Angeles Unified", -118.2460, 34.0560),
-  schoolPoint("Metro High", "High", "Los Angeles Unified", -118.2500, 34.0600),
-  schoolPoint("Eastside Elementary", "Elementary", "Los Angeles Unified", -118.2200, 34.0400),
-  schoolPoint("Northside High", "High", "Los Angeles Unified", -118.1800, 34.1200),
-  schoolPoint("Far Away School", "Elementary", "Some Other District", -118.90, 34.70),
-];
+const SCHOOLS_ESRI = esriFC("esriGeometryPoint", [
+  schoolFeature("Central Elementary", "Elementary", "Los Angeles Unified", -118.2440, 34.0540),
+  schoolFeature("Downtown Middle", "Middle", "Los Angeles Unified", -118.2460, 34.0560),
+  schoolFeature("Metro High", "High", "Los Angeles Unified", -118.2500, 34.0600),
+  schoolFeature("Eastside Elementary", "Elementary", "Los Angeles Unified", -118.2200, 34.0400),
+  schoolFeature("Northside High", "High", "Los Angeles Unified", -118.1800, 34.1200),
+  schoolFeature("Far Away School", "Elementary", "Some Other District", -118.90, 34.70),
+]);
 
 const CENSUS_HEADER = [
   "NAME",
@@ -140,7 +126,6 @@ const GEOCODER_RESPONSE = {
 };
 
 module.exports = {
-  ZCTA_90012, ZCTA_90210, CITY_LA, FIRE_SRA_MODERATE, FIRE_LRA_HIGH,
-  DISTRICT_LAUSD, SCHOOLS, CENSUS_ROWS, GEOCODER_RESPONSE,
-  fc: (features) => ({ type: "FeatureCollection", features }),
+  ZCTA_ESRI, CITY_LA_ESRI, FIRE_SRA_ESRI, FIRE_LRA_ESRI, DISTRICT_LAUSD_ESRI,
+  SCHOOLS_ESRI, CENSUS_ROWS, GEOCODER_RESPONSE,
 };

@@ -36,15 +36,18 @@ async function main() {
   );
 
   // --- Route interception: mock every external GIS/Census/geocoder call ---
+  // Discovery calls (?f=json, no /query) return an Esri MapServer layer
+  // list; /query calls return native Esri JSON (geometryType + features
+  // with attributes/geometry.rings) - the app converts that client-side
+  // now, it no longer asks the server for f=geojson. Also added a decoy
+  // non-polygon sublayer on the fire service to exercise the new
+  // geometryType filter.
   await page.route("**://tigerweb.geo.census.gov/**", (route) => {
     const url = route.request().url();
-    if (url.includes("f=json") && !url.includes("/query")) {
-      return route.fulfill(json({ layers: [{ id: 2, name: "2020 Census ZIP Code Tabulation Areas" }] }));
+    if (url.includes("/query")) {
+      return route.fulfill(json(F.ZCTA_ESRI));
     }
-    if (url.includes("/2/query")) {
-      return route.fulfill(json(F.fc([F.ZCTA_90012, F.ZCTA_90210])));
-    }
-    return route.fulfill(json({ error: "unhandled tigerweb route: " + url }));
+    return route.fulfill(json({ layers: [{ id: 2, name: "2020 Census ZIP Code Tabulation Areas", geometryType: "esriGeometryPolygon" }] }));
   });
 
   await page.route("**://api.census.gov/**", (route) => {
@@ -53,36 +56,36 @@ async function main() {
 
   await page.route("**://dpw.gis.lacounty.gov/**", (route) => {
     const url = route.request().url();
-    if (url.includes("f=json") && !url.includes("/query")) {
-      return route.fulfill(json({ layers: [{ id: 0, name: "City Boundary Lines" }] }));
-    }
     if (url.includes("/0/query")) {
-      return route.fulfill(json(F.fc([F.CITY_LA])));
+      return route.fulfill(json(F.CITY_LA_ESRI));
     }
-    return route.fulfill(json({ error: "unhandled city route: " + url }));
+    return route.fulfill(json({ layers: [{ id: 0, name: "City Boundary Lines", geometryType: "esriGeometryPolygon" }] }));
   });
 
   await page.route("**://services.gis.ca.gov/**Fire_Severity_Zones**", (route) => {
     const url = route.request().url();
-    if (url.includes("f=json") && !url.includes("/query")) {
-      return route.fulfill(json({ layers: [{ id: 0, name: "FHSZ SRA" }, { id: 1, name: "FHSZ LRA" }] }));
-    }
-    if (url.includes("/0/query")) return route.fulfill(json(F.fc([F.FIRE_SRA_MODERATE])));
-    if (url.includes("/1/query")) return route.fulfill(json(F.fc([F.FIRE_LRA_HIGH])));
-    return route.fulfill(json({ error: "unhandled fire route: " + url }));
+    if (url.includes("/0/query")) return route.fulfill(json(F.FIRE_SRA_ESRI));
+    if (url.includes("/1/query")) return route.fulfill(json(F.FIRE_LRA_ESRI));
+    if (url.includes("/2/query")) return route.fulfill(json({ error: "line layer should have been filtered out" }));
+    return route.fulfill(
+      json({
+        layers: [
+          { id: 0, name: "FHSZ SRA", geometryType: "esriGeometryPolygon" },
+          { id: 1, name: "FHSZ LRA", geometryType: "esriGeometryPolygon" },
+          { id: 2, name: "Hazard Zone Boundaries (lines)", geometryType: "esriGeometryPolyline" },
+        ],
+      })
+    );
   });
 
   await page.route("**://services.gis.ca.gov/**CA_School_Districts**", (route) => {
     const url = route.request().url();
-    if (url.includes("f=json") && !url.includes("/query")) {
-      return route.fulfill(json({ layers: [{ id: 0, name: "Unified School Districts" }] }));
-    }
-    if (url.includes("/0/query")) return route.fulfill(json(F.fc([F.DISTRICT_LAUSD])));
-    return route.fulfill(json({ error: "unhandled district route: " + url }));
+    if (url.includes("/0/query")) return route.fulfill(json(F.DISTRICT_LAUSD_ESRI));
+    return route.fulfill(json({ layers: [{ id: 0, name: "Unified School Districts", geometryType: "esriGeometryPolygon" }] }));
   });
 
   await page.route("**://services3.arcgis.com/**SchoolSites2425**", (route) => {
-    return route.fulfill(json(F.fc(F.SCHOOLS)));
+    return route.fulfill(json(F.SCHOOLS_ESRI));
   });
 
   await page.route("**://geocoding.geo.census.gov/**", (route) => {
@@ -166,6 +169,29 @@ async function main() {
     incomePopupHTML ? incomePopupHTML.replace(/\s+/g, " ").slice(0, 300) : "no popup html"
   );
 
+  // Verify the fire-hazard polygon's hole was correctly cut out (this is
+  // the exact multi-ring bug class the f=json + client-side conversion
+  // fix addresses) - a point inside the hole should NOT be flagged as
+  // being in the hazard zone, while a point elsewhere in the same
+  // polygon should.
+  const holeTest = await page.evaluate(() => {
+    const entry = App.getLayer("fire-hazard");
+    let containsHolePoint = false;
+    let containsOutsidePoint = false;
+    entry.leafletLayer.eachLayer((l) => {
+      const holePt = turf.point([-118.29, 34.12]); // inside the fixture's hole
+      const outsidePt = turf.point([-118.20, 34.00]); // inside the ring, outside the hole
+      if (turf.booleanPointInPolygon(holePt, l.feature)) containsHolePoint = true;
+      if (turf.booleanPointInPolygon(outsidePt, l.feature)) containsOutsidePoint = true;
+    });
+    return { containsHolePoint, containsOutsidePoint };
+  });
+  step(
+    "fire hazard polygon hole is correctly cut out",
+    holeTest.containsOutsidePoint === true && holeTest.containsHolePoint === false,
+    JSON.stringify(holeTest)
+  );
+
   // --- Address search flow ---
   await page.fill("#address-input", "200 N Spring St, Los Angeles, CA 90012");
   await page.click("#search-form button");
@@ -184,6 +210,18 @@ async function main() {
     const idxFar = summaryText.indexOf("Far Away School");
     return idxCentral !== -1 && (idxNorthside === -1 || idxCentral < idxNorthside) && idxFar === -1;
   })());
+
+  // GreatSchools links: must be per-school Google searches, not one shared URL.
+  const gsLinks = await page.locator("#summary-table-wrap a").allTextContents();
+  const gsHrefs = await page.locator("#summary-table-wrap a").evaluateAll((els) => els.map((e) => e.href));
+  const distinctHrefs = new Set(gsHrefs);
+  step(
+    "GreatSchools links are per-school Google searches, not one shared URL",
+    gsHrefs.length >= 2 &&
+      distinctHrefs.size === gsHrefs.length &&
+      gsHrefs.every((h) => h.startsWith("https://www.google.com/search?q=") && h.toLowerCase().includes("greatschools")),
+    JSON.stringify(gsHrefs)
+  );
 
   step("no console/page errors thrown", consoleErrors.length === 0, consoleErrors.join(" | "));
 

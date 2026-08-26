@@ -44,11 +44,9 @@ release comes out.
 
 - **No GreatSchools ratings.** GreatSchools.com does not offer a free
   self-serve API - real access requires an approved partner agreement. Since
-  I can't fabricate a rating, the Schools layer instead links each school
-  out to the official [CA School Dashboard](https://www.caschooldashboard.org/),
-  which is free, public, and arguably more rigorous (state-vetted
-  accountability indicators rather than a third-party score). If you do get
-  GreatSchools API access, it's a single new layer module to add.
+  I can't fabricate a rating, every school links out to a Google search for
+  "`<school name> greatschools rating`" instead. If you do get GreatSchools
+  API access, it's a single new layer module to add.
 - **School "zones" = district boundaries, not attendance boundaries.**
   California doesn't publish a single statewide API for parcel-level school
   attendance boundaries (the exact streets zoned to one specific
@@ -62,6 +60,17 @@ release comes out.
   by substring against a list of likely candidates rather than one hard-coded
   exact name, so a minor schema drift degrades gracefully (a blank field)
   instead of breaking the layer.
+- **ArcGIS queries request `f=json`, not `f=geojson`, and convert client-side.**
+  The `f=geojson` convenience format is opt-in per ArcGIS Server instance,
+  and a few of the government services here (Census TIGERweb, LA County
+  DPW, the CA school-district layer) never had it turned on - requesting it
+  anyway returns an error, which is what made the Zip/City/Demographics/
+  Income/District layers fail outright in the first hand-off. Native Esri
+  JSON (`f=json`) is supported everywhere, so `js/utils.js` now converts it
+  to GeoJSON itself, including correctly nesting holes inside multi-ring
+  polygons - the older server-side geojson converters some of these
+  services do have are known to mishandle that case, which is what caused
+  the disconnected/stray-line look on the Fire Hazard layer.
 - **This was built and tested from a network-sandboxed environment.** The
   coding sandbox this was built in only allows outbound access to a small
   allowlist (package registries, Anthropic's own APIs) - every GIS/Census
