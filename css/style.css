@@ -1,0 +1,152 @@
+:root {
+  --ink: #1b1f23;
+  --muted: #5b6470;
+  --border: #dde1e6;
+  --bg: #ffffff;
+  --panel-bg: #f7f8fa;
+  --accent: #b3401f;
+  --ok: #1a7a3c;
+  --warn: #9a6a00;
+  --err: #b3261e;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+#app-header {
+  padding: 10px 16px 8px;
+  border-bottom: 1px solid var(--border);
+}
+#app-header h1 { font-size: 1.15rem; margin: 0 0 2px; }
+#app-header .subtitle { margin: 0; font-size: 0.8rem; color: var(--muted); }
+
+#app {
+  display: flex;
+  height: calc(100vh - 58px);
+}
+
+#sidebar {
+  width: 340px;
+  min-width: 340px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--panel-bg);
+  padding: 14px;
+}
+
+#sidebar h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 18px 0 8px;
+}
+#sidebar section:first-child h2 { margin-top: 0; }
+
+#search-form { display: flex; gap: 6px; }
+#address-input {
+  flex: 1;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+#search-form button {
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: white;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+#search-form button:hover { opacity: 0.9; }
+#search-form button:disabled { opacity: 0.5; cursor: default; }
+
+.hint { font-size: 0.78rem; color: var(--muted); margin-top: 6px; min-height: 1em; }
+.hint.error { color: var(--err); }
+.hint.ok { color: var(--ok); }
+
+#layer-toggle-list { list-style: none; margin: 0; padding: 0; }
+#layer-toggle-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.85rem;
+}
+#layer-toggle-list li:last-child { border-bottom: none; }
+#layer-toggle-list input[type="checkbox"] { margin-top: 2px; }
+#layer-toggle-list .layer-label { display: flex; flex-direction: column; cursor: pointer; }
+#layer-toggle-list .layer-desc { font-size: 0.72rem; color: var(--muted); }
+#layer-toggle-list .layer-note { font-size: 0.7rem; color: var(--warn); }
+
+#legend { margin-top: 10px; font-size: 0.75rem; }
+#legend .legend-block { margin-bottom: 10px; }
+#legend .legend-title { font-weight: 600; margin-bottom: 4px; }
+#legend .legend-row { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+#legend .swatch { width: 14px; height: 14px; border-radius: 3px; flex: none; border: 1px solid rgba(0,0,0,0.15); }
+
+#status-toggle {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  font-size: 0.78rem;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 0;
+}
+#status-log { list-style: none; margin: 4px 0 0; padding: 0; font-size: 0.72rem; max-height: 180px; overflow-y: auto; }
+#status-log.hidden { display: none; }
+#status-log li { padding: 2px 0; border-bottom: 1px solid var(--border); }
+#status-log li.ok { color: var(--ok); }
+#status-log li.warn { color: var(--warn); }
+#status-log li.error { color: var(--err); }
+
+#map-wrap { flex: 1; position: relative; }
+#map { position: absolute; inset: 0; }
+
+.hidden { display: none !important; }
+
+/* --- Summary table (address search result) --- */
+#summary-table-wrap { margin-top: 10px; }
+.summary-card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  font-size: 0.8rem;
+}
+.summary-card h3 {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+}
+.summary-card table { width: 100%; border-collapse: collapse; }
+.summary-card td { padding: 2px 0; vertical-align: top; }
+.summary-card td.k { color: var(--muted); width: 55%; padding-right: 6px; }
+.summary-card td.v { text-align: right; font-weight: 600; }
+.summary-card .school-item { border-top: 1px dashed var(--border); padding-top: 4px; margin-top: 4px; }
+.summary-card a { color: var(--accent); }
+
+/* --- Leaflet popup content --- */
+.la-popup table { border-collapse: collapse; font-size: 0.78rem; }
+.la-popup td { padding: 1px 4px; }
+.la-popup td.k { color: var(--muted); }
+.la-popup td.v { text-align: right; font-weight: 600; }
+.la-popup h4 { margin: 0 0 4px; font-size: 0.85rem; }
+
+@media (max-width: 800px) {
+  #app { flex-direction: column; height: auto; }
+  #sidebar { width: 100%; min-width: 0; max-height: 45vh; }
+  #map-wrap { height: 55vh; }
+}

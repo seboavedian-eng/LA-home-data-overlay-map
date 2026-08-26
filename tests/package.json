@@ -1,0 +1,11 @@
+{
+  "name": "la-home-data-overlay-map-tests",
+  "private": true,
+  "description": "Mocked end-to-end test: intercepts every external GIS/Census/geocoder call with fixture responses shaped like the real APIs, then exercises the actual app logic (layer loading, joins, popups, address search) in a headless browser.",
+  "scripts": {
+    "test": "node mock-e2e.js"
+  },
+  "devDependencies": {
+    "playwright": "1.56.0"
+  }
+}

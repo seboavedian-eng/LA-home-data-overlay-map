@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LA County Home Data Overlay Map</title>
+
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header id="app-header">
+    <h1>LA County Home Data Overlay Map</h1>
+    <p class="subtitle">Zip demographics &middot; income &middot; boundaries &middot; schools &middot; fire hazard &mdash; all from public data sources</p>
+  </header>
+
+  <div id="app">
+    <aside id="sidebar">
+
+      <section id="search-section">
+        <h2>Look up an address</h2>
+        <form id="search-form" autocomplete="off">
+          <input id="address-input" type="text" placeholder="e.g. 200 N Spring St, Los Angeles, CA 90012" />
+          <button type="submit">Search</button>
+        </form>
+        <div id="search-status" class="hint"></div>
+        <div id="summary-table-wrap"></div>
+      </section>
+
+      <section id="layers-section">
+        <h2>Map layers</h2>
+        <ul id="layer-toggle-list"></ul>
+        <div id="legend"></div>
+      </section>
+
+      <section id="status-section">
+        <button id="status-toggle" type="button">Data source status &#9660;</button>
+        <ul id="status-log" class="hidden"></ul>
+      </section>
+
+    </aside>
+
+    <main id="map-wrap">
+      <div id="map"></div>
+    </main>
+  </div>
+
+  <div id="zip-popup-template" class="hidden"></div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="vendor/turf/turf.min.js"></script>
+
+<script src="js/config.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/map.js"></script>
+<script src="js/datastore.js"></script>
+<script src="js/layers/zip.js"></script>
+<script src="js/layers/cities.js"></script>
+<script src="js/layers/demographics.js"></script>
+<script src="js/layers/income.js"></script>
+<script src="js/layers/firehazard.js"></script>
+<script src="js/layers/schools.js"></script>
+<script src="js/layers/districts.js"></script>
+<script src="js/geocode.js"></script>
+<script src="js/summary.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

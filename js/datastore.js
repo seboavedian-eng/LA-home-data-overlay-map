@@ -1,0 +1,175 @@
+// ---------------------------------------------------------------------------
+// Shared, cached fetches. Several layers (and the address-search summary)
+// need the same underlying data - e.g. both the "Zip Code Borders" layer and
+// the "Demographics" and "Income" layers all need ZCTA polygons - so each
+// data set is fetched at most once per page load and reused everywhere.
+// ---------------------------------------------------------------------------
+
+const DataStore = (() => {
+  const cache = {};
+
+  function once(key, fn) {
+    if (!cache[key]) cache[key] = fn();
+    return cache[key];
+  }
+
+  // 2020 Census ZIP Code Tabulation Areas covering LA County.
+  function getZctaGeoJSON() {
+    return once("zcta", async () => {
+      const layerId = await Utils.discoverLayerId(CONFIG.ZCTA_SERVER, CONFIG.ZCTA_LAYER_NAME_HINT, CONFIG.ZCTA_LAYER_ID);
+      const url = Utils.arcgisQueryUrl(CONFIG.ZCTA_SERVER, layerId, {
+        bbox: CONFIG.LA_COUNTY_BBOX,
+        outFields: "*",
+      });
+      const gj = await Utils.fetchJSON(url);
+      gj.features.forEach((f) => {
+        f.properties.ZCTA5 = Utils.pickField(f.properties, ["ZCTA5CE20", "ZCTA5CE10", "ZCTA5CE", "GEOID20", "GEOID"]);
+        if (f.properties.ZCTA5 && f.properties.ZCTA5.length > 5) {
+          f.properties.ZCTA5 = f.properties.ZCTA5.slice(-5);
+        }
+      });
+      return gj;
+    });
+  }
+
+  // Bulk ACS 5-year race/ethnicity + income variables for every CA ZCTA,
+  // fetched once and then matched by code to whichever ZCTAs are on screen.
+  function getCensusZctaData() {
+    return once("census", async () => {
+      const vars = [
+        ...Object.values(CONFIG.RACE_VARIABLES),
+        ...Object.values(CONFIG.INCOME_VARIABLES),
+      ];
+      const get = ["NAME", ...vars].join(",");
+      const keyParam = CONFIG.CENSUS_API_KEY ? `&key=${CONFIG.CENSUS_API_KEY}` : "";
+      const base = `https://api.census.gov/data/${CONFIG.ACS_YEAR}/${CONFIG.ACS_DATASET}`;
+
+      let rows;
+      try {
+        const url = `${base}?get=${get}&for=zip%20code%20tabulation%20area:*&in=state:06${keyParam}`;
+        rows = await Utils.fetchJSON(url);
+      } catch (err) {
+        Utils.logStatus("census", "warn", `State-filtered ACS query failed (${err.message}); retrying nationwide.`);
+        const url = `${base}?get=${get}&for=zip%20code%20tabulation%20area:*${keyParam}`;
+        rows = await Utils.fetchJSON(url);
+      }
+
+      const header = rows[0];
+      const zctaIdx = header.indexOf("zip code tabulation area");
+      const map = {};
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        const zcta = row[zctaIdx];
+        const rec = {};
+        header.forEach((h, idx) => {
+          if (vars.includes(h)) rec[h] = row[idx] === null ? null : Number(row[idx]);
+        });
+        map[zcta] = rec;
+      }
+      return map;
+    });
+  }
+
+  // LA County legal city boundaries.
+  function getCityGeoJSON() {
+    return once("cities", async () => {
+      const layerId = await Utils.discoverLayerId(CONFIG.CITY_SERVER, CONFIG.CITY_LAYER_NAME_HINT, 0);
+      const url = Utils.arcgisQueryUrl(CONFIG.CITY_SERVER, layerId, {
+        bbox: CONFIG.LA_COUNTY_BBOX,
+        outFields: "*",
+      });
+      const gj = await Utils.fetchJSON(url);
+      gj.features.forEach((f) => {
+        f.properties.CITY_NAME = Utils.pickField(f.properties, ["CITY_NAME", "CITY", "NAME", "LABEL", "CITYLABEL"]);
+      });
+      return gj;
+    });
+  }
+
+  // CAL FIRE Fire Hazard Severity Zones - both SRA and LRA layers merged.
+  function getFireHazardGeoJSON() {
+    return once("fire", async () => {
+      const root = await Utils.fetchJSON(`${CONFIG.FIRE_SERVER}?f=json`);
+      const layers = (root.layers || []).filter((l) => /hazard|fhsz|sra|lra/i.test(l.name));
+      const targets = layers.length ? layers : [{ id: 0, name: "Fire Hazard Severity Zones" }];
+
+      const features = [];
+      for (const layer of targets) {
+        try {
+          const url = Utils.arcgisQueryUrl(CONFIG.FIRE_SERVER, layer.id, {
+            bbox: CONFIG.LA_COUNTY_BBOX,
+            outFields: "*",
+          });
+          const gj = await Utils.fetchJSON(url);
+          gj.features.forEach((f) => {
+            f.properties.HAZ_CLASS = Utils.pickField(f.properties, [
+              "HAZ_CLASS", "FHSZ", "SRA_HAZ_CODE", "FHSZ_DESC", "HAZARD", "HAZARD_CLASS", "HAZ_CODE",
+            ]);
+            f.properties.SOURCE_LAYER = layer.name;
+            features.push(f);
+          });
+        } catch (err) {
+          Utils.logStatus("fire", "warn", `Sub-layer "${layer.name}" failed: ${err.message}`);
+        }
+      }
+      return { type: "FeatureCollection", features };
+    });
+  }
+
+  // CA Dept of Education public school sites (2024-25), filtered to LA County bbox.
+  function getSchoolsGeoJSON() {
+    return once("schools", async () => {
+      const url = Utils.arcgisQueryUrl(CONFIG.SCHOOLS_SERVER, undefined, {
+        bbox: CONFIG.LA_COUNTY_BBOX,
+        outFields: "*",
+      });
+      const gj = await Utils.fetchJSON(url);
+      gj.features.forEach((f) => {
+        f.properties._name = Utils.pickField(f.properties, ["SchoolName", "School", "NAME", "SCHOOLNAME"]);
+        f.properties._district = Utils.pickField(f.properties, ["DistrictName", "District", "DNAME"]);
+        f.properties._level = Utils.pickField(f.properties, ["EILCode", "SOC", "Level", "SchoolType", "EILName"]);
+        f.properties._street = Utils.pickField(f.properties, ["Street", "StreetAbr", "Address"]);
+        f.properties._city = Utils.pickField(f.properties, ["City"]);
+        f.properties._zip = Utils.pickField(f.properties, ["Zip", "ZipCode"]);
+        f.properties._cds = Utils.pickField(f.properties, ["CDSCode", "CDS_CODE", "CDS"]);
+        f.properties._status = Utils.pickField(f.properties, ["StatusType", "Status"]);
+      });
+      return gj;
+    });
+  }
+
+  // CA school district areas (elementary/high/unified boundaries).
+  function getDistrictsGeoJSON() {
+    return once("districts", async () => {
+      const root = await Utils.fetchJSON(`${CONFIG.DISTRICTS_SERVER}?f=json`);
+      const layers = root.layers || [{ id: 0, name: "School Districts" }];
+      const features = [];
+      for (const layer of layers) {
+        try {
+          const url = Utils.arcgisQueryUrl(CONFIG.DISTRICTS_SERVER, layer.id, {
+            bbox: CONFIG.LA_COUNTY_BBOX,
+            outFields: "*",
+          });
+          const gj = await Utils.fetchJSON(url);
+          gj.features.forEach((f) => {
+            f.properties._name = Utils.pickField(f.properties, ["DistrictName", "NAME", "DNAME"]);
+            f.properties._type = layer.name;
+            features.push(f);
+          });
+        } catch (err) {
+          Utils.logStatus("districts", "warn", `Sub-layer "${layer.name}" failed: ${err.message}`);
+        }
+      }
+      return { type: "FeatureCollection", features };
+    });
+  }
+
+  return {
+    getZctaGeoJSON,
+    getCensusZctaData,
+    getCityGeoJSON,
+    getFireHazardGeoJSON,
+    getSchoolsGeoJSON,
+    getDistrictsGeoJSON,
+  };
+})();
