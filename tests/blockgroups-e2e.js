@@ -342,6 +342,48 @@ async function main() {
         missingFileText.includes("fetch-blockgroup-data.py"),
       missingFileText.replace(/\s+/g, " ").slice(0, 220)
     );
+    step(
+      "missing-file message warns that the web server occupies its own terminal",
+      /second terminal/i.test(missingFileText),
+      missingFileText.replace(/\s+/g, " ").slice(0, 260)
+    );
+
+    // Same page on a Windows user agent must print Windows commands - telling
+    // a Windows user to run `python3 scripts/...` sends them after a command
+    // that doesn't exist there.
+    const winContext = await browser.newContext({
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    });
+    const winPage = await winContext.newPage();
+    await winPage.route("**/js/data/bg-la-county.json", (route) =>
+      route.fulfill({ status: 404, contentType: "text/plain", body: "File not found" })
+    );
+    await winPage.route("**://tile.openstreetmap.org/**", (route) =>
+      route.fulfill({ contentType: "image/png", body: BLANK_PNG })
+    );
+    await winPage.route("**://tigerweb.geo.census.gov/**", (route) => {
+      const u = route.request().url();
+      if (u.includes("/10/query")) return route.fulfill(json(esriFC([BG_A])));
+      return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
+    });
+    await winPage.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    await winPage.check("#toggle-bg");
+    await winPage.waitForFunction(
+      () => document.getElementById("status-log").textContent.includes("Block group data"),
+      { timeout: 10000 }
+    );
+    await winPage.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => l.fire("click"));
+    });
+    await winPage.waitForTimeout(300);
+    const winText = await winPage.locator("#detail-panel").innerText();
+    step(
+      "Windows browsers are told `python scripts\\...`, not `python3 scripts/...`",
+      winText.includes("python scripts\\fetch-blockgroup-data.py") && !winText.includes("python3"),
+      winText.replace(/\s+/g, " ").slice(0, 240)
+    );
+    await winContext.close();
 
     const pageBad = await browser.newPage();
     await pageBad.route("**/js/data/bg-la-county.json", (route) =>

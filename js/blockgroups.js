@@ -92,6 +92,21 @@ const BlockGroupApp = (() => {
   // Distinguishes "the file isn't there" from "the file is there but
   // unreadable" - they need completely different fixes, and reporting both
   // as "no data file yet" sends you looking in the wrong place.
+  // Windows uses `python` and backslashes; macOS/Linux use `python3` and
+  // forward slashes. Printing the wrong one sends people chasing a command
+  // that doesn't exist on their machine.
+  function fetchCommand() {
+    const isWindows = /Windows|Win32|Win64/i.test(navigator.userAgent || "");
+    return isWindows
+      ? "python scripts\\fetch-blockgroup-data.py"
+      : "python3 scripts/fetch-blockgroup-data.py";
+  }
+
+  function serverCommand() {
+    const isWindows = /Windows|Win32|Win64/i.test(navigator.userAgent || "");
+    return isWindows ? "python -m http.server 8000" : "python3 -m http.server 8000";
+  }
+
   function describeDataFailure(err) {
     const url = new URL(BG_CONFIG.BLOCK_GROUP_DATA, window.location.href).href;
 
@@ -105,7 +120,7 @@ const BlockGroupApp = (() => {
         detail:
           `This page was opened directly from disk (<code>file://</code>), and browsers block pages from ` +
           `reading local files that way - so the data file can't load no matter what. Serve the folder over ` +
-          `HTTP instead: run <code>python -m http.server 8000</code> in the project folder, then open ` +
+          `HTTP instead: run <code>${serverCommand()}</code> in the project folder, then open ` +
           `<code>http://localhost:8000/blockgroups.html</code>.`,
       };
     }
@@ -113,7 +128,10 @@ const BlockGroupApp = (() => {
     if (/HTTP 40[34]/.test(err.message)) {
       return {
         short: "not found",
-        detail: `No file at ${url} (server said ${err.message}). Run <code>python3 scripts/fetch-blockgroup-data.py</code> from the project folder, then reload.`,
+        detail:
+          `No file at ${url} (server said ${err.message}). Run ` +
+          `<code>${fetchCommand()}</code> from the project folder, then reload. ` +
+          `Note the web server occupies its terminal, so run that in a second terminal window.`,
       };
     }
     if (/JSON|Unexpected token/i.test(err.message)) {
@@ -473,7 +491,7 @@ const BlockGroupApp = (() => {
       banner.innerHTML =
         `<strong>Opened as a file, not a web page.</strong> Boundaries will work, but block group ` +
         `demographics cannot load — browsers block local file reads over <code>file://</code>. ` +
-        `Run <code>python -m http.server 8000</code> in this folder and open ` +
+        `Run <code>${serverCommand()}</code> in this folder and open ` +
         `<code>http://localhost:8000/blockgroups.html</code> instead.`;
       document.getElementById("sidebar").prepend(banner);
       Utils.logStatus("setup", "warn", "Page opened over file:// - local data cannot load. Serve over HTTP instead.");
