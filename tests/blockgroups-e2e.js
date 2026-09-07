@@ -309,6 +309,70 @@ async function main() {
     step("toggling a layer off removes it", zipOff);
 
     step("no console/page errors thrown", consoleErrors.length === 0, consoleErrors.join(" | "));
+
+    // --- Missing / corrupt data file diagnostics ---
+    // These are what a user actually hits before running the fetch script,
+    // so the message has to name the real cause and the exact URL.
+    const page404 = await browser.newPage();
+    await page404.route("**/js/data/bg-la-county.json", (route) =>
+      route.fulfill({ status: 404, contentType: "text/plain", body: "File not found" })
+    );
+    await page404.route("**://tile.openstreetmap.org/**", (route) =>
+      route.fulfill({ contentType: "image/png", body: BLANK_PNG })
+    );
+    await page404.route("**://tigerweb.geo.census.gov/**", (route) => {
+      const url = route.request().url();
+      if (url.includes("/10/query")) return route.fulfill(json(esriFC([BG_A])));
+      return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
+    });
+    await page404.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    await page404.check("#toggle-bg");
+    await page404.waitForFunction(
+      () => document.getElementById("status-log").textContent.includes("Block group data"),
+      { timeout: 10000 }
+    );
+    await page404.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => l.fire("click"));
+    });
+    await page404.waitForTimeout(300);
+    const missingFileText = await page404.locator("#detail-panel").innerText();
+    step(
+      "missing data file reports 'not found' with the full URL, not a generic message",
+      missingFileText.includes("bg-la-county.json") && /not found|No file at/i.test(missingFileText) &&
+        missingFileText.includes("fetch-blockgroup-data.py"),
+      missingFileText.replace(/\s+/g, " ").slice(0, 220)
+    );
+
+    const pageBad = await browser.newPage();
+    await pageBad.route("**/js/data/bg-la-county.json", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: "{ this is not valid json" })
+    );
+    await pageBad.route("**://tile.openstreetmap.org/**", (route) =>
+      route.fulfill({ contentType: "image/png", body: BLANK_PNG })
+    );
+    await pageBad.route("**://tigerweb.geo.census.gov/**", (route) => {
+      const url = route.request().url();
+      if (url.includes("/10/query")) return route.fulfill(json(esriFC([BG_A])));
+      return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
+    });
+    await pageBad.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    await pageBad.check("#toggle-bg");
+    await pageBad.waitForFunction(
+      () => document.getElementById("status-log").textContent.includes("Block group data"),
+      { timeout: 10000 }
+    );
+    await pageBad.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => l.fire("click"));
+    });
+    await pageBad.waitForTimeout(300);
+    const badFileText = await pageBad.locator("#detail-panel").innerText();
+    step(
+      "corrupt data file is reported as unreadable, not as missing",
+      /isn't valid JSON|unreadable/i.test(badFileText) && !/No file at/i.test(badFileText),
+      badFileText.replace(/\s+/g, " ").slice(0, 220)
+    );
+    await page404.close();
+    await pageBad.close();
   } finally {
     fs.rmSync(dataPath, { force: true });
   }

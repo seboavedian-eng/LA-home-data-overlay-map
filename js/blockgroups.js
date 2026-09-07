@@ -89,18 +89,49 @@ const BlockGroupApp = (() => {
 
   // --- data ---------------------------------------------------------------
 
+  // Distinguishes "the file isn't there" from "the file is there but
+  // unreadable" - they need completely different fixes, and reporting both
+  // as "no data file yet" sends you looking in the wrong place.
+  function describeDataFailure(err) {
+    const url = new URL(BG_CONFIG.BLOCK_GROUP_DATA, window.location.href).href;
+    if (/HTTP 40[34]/.test(err.message)) {
+      return {
+        short: "not found",
+        detail: `No file at ${url} (server said ${err.message}). Run <code>python3 scripts/fetch-blockgroup-data.py</code> from the project folder, then reload.`,
+      };
+    }
+    if (/JSON|Unexpected token/i.test(err.message)) {
+      return {
+        short: "unreadable",
+        detail: `The file at ${url} exists but isn't valid JSON (${err.message}). The fetch script probably failed partway - re-run it and check its output for errors.`,
+      };
+    }
+    return {
+      short: "failed to load",
+      detail: `Couldn't load ${url}: ${err.message}`,
+    };
+  }
+
   async function loadCensusData() {
     if (censusData || censusDataError) return censusData;
     try {
       censusData = await Utils.fetchJSON(BG_CONFIG.BLOCK_GROUP_DATA, { timeoutMs: 60000 });
       const count = Object.keys(censusData.blockGroups || {}).length;
-      Utils.logStatus("census", "ok", `Loaded block group data for ${count.toLocaleString()} block groups (ACS ${censusData.meta.year}).`);
+      Utils.logStatus(
+        "census",
+        "ok",
+        `Loaded block group data for ${count.toLocaleString()} block groups (ACS ${censusData.meta.year}).`
+      );
+      if (count === 0) {
+        Utils.logStatus("census", "warn", "The data file loaded but contains zero block groups - re-run the fetch script.");
+      }
     } catch (err) {
       censusDataError = err;
+      const { short, detail } = describeDataFailure(err);
       Utils.logStatus(
         "census",
         "warn",
-        `No block group data file at ${BG_CONFIG.BLOCK_GROUP_DATA} - run "python3 scripts/fetch-blockgroup-data.py" once to create it. Boundaries still work; popups will have no numbers.`
+        `Block group data ${short}. ${detail.replace(/<\/?code>/g, "")} Boundaries still work; popups will have no numbers.`
       );
     }
     return censusData;
@@ -210,7 +241,9 @@ const BlockGroupApp = (() => {
     if (!record) {
       const reason = censusData
         ? "This block group isn't in the local data file (it may fall outside LA County)."
-        : `No local data file yet - run <code>python3 scripts/fetch-blockgroup-data.py</code> once, then reload.`;
+        : censusDataError
+        ? describeDataFailure(censusDataError).detail
+        : "Block group data is still loading.";
       return `<div class="detail-card">
         <h3>${heading}</h3>
         <p class="geoid">GEOID ${geoid || "unknown"}</p>
