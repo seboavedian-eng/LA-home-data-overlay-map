@@ -59,13 +59,18 @@ check("no key parameter when none is supplied", "key=" not in bg_url, bg_url)
 b01001 = fetch_bg.b01001_variables()
 check(f"B01001 chunk size stays under the API's 50-variable cap ({fetch_bg.CHUNK_SIZE})", fetch_bg.CHUNK_SIZE < 50)
 check(
-    "B01001 age bands cover male and female for every bracket",
-    len(b01001) == 3 + 2 * sum(len(v) for v in fetch_bg.AGE_BANDS.values()),
-    f"{len(b01001)} variables",
+    "B01001 request covers male and female for every age bracket",
+    len(b01001) == 3 + 2 * len(fetch_bg.B01001_BRACKETS),
+    f"{len(b01001)} variables for {len(fetch_bg.B01001_BRACKETS)} brackets",
 )
 check(
-    "age bands do not overlap",
-    len(set(sum(fetch_bg.AGE_BANDS.values(), []))) == sum(len(v) for v in fetch_bg.AGE_BANDS.values()),
+    "all 23 B01001 age brackets are captured",
+    len(fetch_bg.B01001_BRACKETS) == 23 and set(fetch_bg.B01001_BRACKETS) == set(range(3, 26)),
+    sorted(fetch_bg.B01001_BRACKETS),
+)
+check(
+    "female variables are offset 24 from male, per B01001's layout",
+    all(f"B01001_{i + 24:03d}E" in b01001 for i in fetch_bg.B01001_BRACKETS),
 )
 
 # Census uses large negative sentinels for suppressed values.

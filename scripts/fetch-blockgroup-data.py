@@ -46,11 +46,17 @@ CHUNK_SIZE = 45    # Census API caps `get` at 50 variables; leave headroom.
 
 # --- Variable definitions ---------------------------------------------------
 
-# B01001 Sex by Age. Male 003-025, female 027-049, same age bands in order.
-AGE_BANDS = {
-    "under25": [3, 4, 5, 6, 7, 8, 9, 10],        # <5 through 22-24
-    "age25to54": [11, 12, 13, 14, 15, 16],        # 25-29 through 50-54
-    "age55plus": [17, 18, 19, 20, 21, 22, 23, 24, 25],  # 55-59 through 85+
+# B01001 Sex by Age. Male variables run 003-025, female 027-049, covering the
+# same 23 age brackets in the same order.
+#
+# Every bracket is stored individually rather than pre-summed into bands: the
+# bands you want to display WILL change, and keeping the raw brackets means
+# regrouping is a front-end edit instead of a full re-fetch.
+B01001_BRACKETS = {
+    3: "Under 5", 4: "5-9", 5: "10-14", 6: "15-17", 7: "18-19", 8: "20",
+    9: "21", 10: "22-24", 11: "25-29", 12: "30-34", 13: "35-39", 14: "40-44",
+    15: "45-49", 16: "50-54", 17: "55-59", 18: "60-61", 19: "62-64",
+    20: "65-66", 21: "67-69", 22: "70-74", 23: "75-79", 24: "80-84", 25: "85+",
 }
 B01001_TOTAL = "B01001_001E"
 B01001_MALE = "B01001_002E"
@@ -59,10 +65,9 @@ B01001_FEMALE = "B01001_026E"
 
 def b01001_variables():
     codes = {B01001_TOTAL, B01001_MALE, B01001_FEMALE}
-    for offsets in AGE_BANDS.values():
-        for i in offsets:
-            codes.add(f"B01001_{i:03d}E")        # male
-            codes.add(f"B01001_{i + 24:03d}E")   # female
+    for i in B01001_BRACKETS:
+        codes.add(f"B01001_{i:03d}E")        # male
+        codes.add(f"B01001_{i + 24:03d}E")   # female
     return sorted(codes)
 
 
@@ -365,9 +370,11 @@ def main():
         rec["totalPopulation"] = to_number(values.get(B01001_TOTAL))
         rec["male"] = to_number(values.get(B01001_MALE))
         rec["female"] = to_number(values.get(B01001_FEMALE))
-        for band, offsets in AGE_BANDS.items():
-            codes = [f"B01001_{i:03d}E" for i in offsets] + [f"B01001_{i + 24:03d}E" for i in offsets]
-            rec[band] = total(values, codes)
+        # Male + female per bracket, keyed by B01001's own bracket index.
+        rec["ageBrackets"] = {
+            str(i): total(values, [f"B01001_{i:03d}E", f"B01001_{i + 24:03d}E"])
+            for i in B01001_BRACKETS
+        }
 
         # Tract-level fallbacks are keyed by the 11-char tract geoid.
         tract_geoid = geoid[:11]
@@ -409,6 +416,10 @@ def main():
 
     payload = {
         "meta": {
+            # Bumped when the record shape changes, so the page can tell a
+            # stale data file from a missing one and say which it is.
+            "schemaVersion": 2,
+            "ageBracketLabels": {str(k): v for k, v in B01001_BRACKETS.items()},
             "year": args.year,
             "decennialYear": 2020,
             "state": STATE,

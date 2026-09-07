@@ -33,6 +33,11 @@ const BG_A = esriPolygon({ GEOID: "060372011001", NAME: "Block Group 1, Census T
 const BG_B = esriPolygon({ GEOID: "060372011002", NAME: "Block Group 2, Census Tract 2011" }, [
   [-118.24, 34.04], [-118.24, 34.06], [-118.22, 34.06], [-118.22, 34.04],
 ]);
+// Third block group exists so filters have something to discriminate:
+// BG_C fails both filters that BG_A passes.
+const BG_C = esriPolygon({ GEOID: "060372011003", NAME: "Block Group 3, Census Tract 2011" }, [
+  [-118.22, 34.04], [-118.22, 34.06], [-118.20, 34.06], [-118.20, 34.04],
+]);
 const TRACT = esriPolygon({ GEOID: "06037201100", NAME: "Census Tract 2011" }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.22, 34.06], [-118.22, 34.04],
 ]);
@@ -47,8 +52,26 @@ const ZCTA = esriPolygon({ ZCTA5CE20: "90012", NAME: "ZCTA5 90012" }, [
 //                                  denominator is the 25+ population)
 //   ACS ethnicity totals 1000, decennial totals 900 with a different mix, so
 //   switching source visibly changes both the percentages and the ordering.
+// Age brackets are keyed by B01001's own bracket index. These sum to 1000
+// and are laid out so each display band has a distinct, exact percentage:
+//   0-24  -> brackets 3-10   = 500 (50.0%)
+//   25-34 -> brackets 11,12  = 150 (15.0%)
+//   35-44 -> brackets 13,14  = 100 (10.0%)
+//   45-54 -> brackets 15,16  =  90  (9.0%)
+//   55-64 -> brackets 17-19  =  80  (8.0%)
+//   65+   -> brackets 20-25  =  80  (8.0%)
+const AGE_BRACKETS = {
+  "3": 100, "4": 100, "5": 100, "6": 60, "7": 50, "8": 40, "9": 30, "10": 20,
+  "11": 80, "12": 70,
+  "13": 55, "14": 45,
+  "15": 50, "16": 40,
+  "17": 30, "18": 25, "19": 25,
+  "20": 20, "21": 15, "22": 15, "23": 10, "24": 10, "25": 10,
+};
+
 const CENSUS_DATA = {
   meta: {
+    schemaVersion: 2,
     year: 2022,
     decennialYear: 2020,
     geoLevels: {
@@ -62,9 +85,7 @@ const CENSUS_DATA = {
   blockGroups: {
     "060372011001": {
       totalPopulation: 1000,
-      under25: 500,
-      age25to54: 300,
-      age55plus: 200,
+      ageBrackets: AGE_BRACKETS,
       female: 510,
       male: 490,
       ethnicityAcsTotal: 1000,
@@ -85,6 +106,33 @@ const CENSUS_DATA = {
       eduBachelorsPlus: 240,
       medianHouseholdIncome: 85000,
       perCapitaIncome: 41000,
+    },
+    // Fails both default filters: 10% bachelor's (not >50) and 5% Asian
+    // (not >30). Used to prove filtering discriminates rather than
+    // highlighting everything.
+    "060372011003": {
+      totalPopulation: 500,
+      ageBrackets: AGE_BRACKETS,
+      female: 250,
+      male: 250,
+      ethnicityAcsTotal: 500,
+      ethnicityAcs: {
+        "Hispanic or Latino": 400,
+        "White (non-Hispanic)": 50,
+        "Asian (non-Hispanic)": 25,
+        "Black (non-Hispanic)": 25,
+      },
+      ethnicityDecTotal: 500,
+      ethnicityDec: {
+        "Hispanic or Latino": 400,
+        "White (non-Hispanic)": 50,
+        "Asian (non-Hispanic)": 25,
+        "Black (non-Hispanic)": 25,
+      },
+      eduTotal25plus: 400,
+      eduBachelorsPlus: 40,
+      medianHouseholdIncome: 42000,
+      perCapitaIncome: 21000,
     },
   },
 };
@@ -128,7 +176,7 @@ async function main() {
     }
     if (url.includes("/10/query")) {
       tigerQueryCount.bg++;
-      return route.fulfill(json(esriFC([BG_A, BG_B])));
+      return route.fulfill(json(esriFC([BG_A, BG_B, BG_C])));
     }
     // Empty layers standing in for TIGERweb's tribal/label layers, which
     // query successfully but return nothing in most of LA County.
@@ -220,12 +268,18 @@ async function main() {
     );
     step("popup shows total population", popupText.includes("1,000"));
     step(
-      "popup shows age bands 0-24 / 25-54 / 55+ with correct percentages",
-      popupText.includes("0 to 24") && popupText.includes("50.0%") &&
-        popupText.includes("25 to 54") && popupText.includes("30.0%") &&
-        popupText.includes("55 and over") && popupText.includes("20.0%"),
-      popupText.replace(/\s+/g, " ").slice(0, 260)
+      "popup shows six age bands: 0-24 then 10-year steps to 65+",
+      ["0 to 24", "25 to 34", "35 to 44", "45 to 54", "55 to 64", "65 and over"].every((b) =>
+        popupText.includes(b)
+      ),
+      popupText.replace(/\s+/g, " ").slice(0, 300)
     );
+    step(
+      "age band percentages are computed from the raw brackets (50/15/10/9/8/8)",
+      ["50.0%", "15.0%", "10.0%", "9.0%", "8.0%"].every((p) => popupText.includes(p)),
+      popupText.replace(/\s+/g, " ").slice(0, 300)
+    );
+    step("'Population 25+' row is gone", !popupText.includes("Population 25+"));
     step(
       "popup shows sex split (51% female / 49% male)",
       popupText.includes("51.0%") && popupText.includes("49.0%"),
@@ -277,6 +331,78 @@ async function main() {
     await page.waitForTimeout(300);
     const backText = await page.locator("#detail-panel").innerText();
     step("switching back to B03002 restores ACS values", backText.includes("B03002") && backText.includes("45.0%"));
+
+    // --- ZIP code on the card (resolved spatially from the ZCTA layer) ---
+    await page.waitForFunction(
+      () => document.getElementById("detail-panel").innerText.includes("ZIP"),
+      { timeout: 10000 }
+    );
+    const zipText = await page.locator("#detail-panel").innerText();
+    step("card shows the ZIP code for the block group", /ZIP\s*90012/.test(zipText), zipText.slice(0, 120));
+
+    // --- Card must not vanish on pan (the auto-pan refetch bug) ---
+    await page.evaluate(() => {
+      const m = BlockGroupApp.state.layers.blockGroup._map;
+      m.panBy([40, 40]); // small pan, inside the padded loaded area
+    });
+    await page.waitForTimeout(1500);
+    const afterPanPopup = await page.locator(".leaflet-popup-content").count();
+    const afterPanPanel = await page.locator("#detail-panel").innerText();
+    step(
+      "card survives a small pan instead of disappearing",
+      afterPanPopup > 0 && afterPanPanel.includes("Tract 2011"),
+      `popups=${afterPanPopup}`
+    );
+
+    // --- Filters ---
+    // Filter 1 defaults to bachelor's > 50%: BG_A (30%) fails, BG_C (10%) fails.
+    // Set it to >20% so exactly one of the two data-bearing block groups matches.
+    await page.selectOption("#filter-metric-0", "bachelors");
+    await page.fill("#filter-value-0", "20");
+    await page.check("#filter-on-0");
+    await page.waitForTimeout(400);
+    const oneFilter = await page.locator("#filter-summary").innerText();
+    step(
+      "one filter highlights only matching block groups",
+      /1 of 3/.test(oneFilter) && /above 20/.test(oneFilter),
+      oneFilter
+    );
+
+    const matchStyles = await page.evaluate(() => {
+      const out = {};
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        out[l.feature.properties.GEOID] = l.options.fillColor;
+      });
+      return out;
+    });
+    step(
+      "matching block group is styled differently from non-matching",
+      matchStyles["060372011001"] !== matchStyles["060372011003"],
+      JSON.stringify(matchStyles)
+    );
+
+    // Layer a second filter on top: Asian > 15% (BG_A is 20%, BG_C is 5%).
+    await page.selectOption("#filter-metric-1", "eth:Asian (non-Hispanic)");
+    await page.fill("#filter-value-1", "15");
+    await page.check("#filter-on-1");
+    await page.waitForTimeout(400);
+    const twoFilters = await page.locator("#filter-summary").innerText();
+    step(
+      "two filters combine with AND",
+      /1 of 3/.test(twoFilters) && /AND/.test(twoFilters),
+      twoFilters
+    );
+
+    // Tighten filter 2 so nothing satisfies both - proves it's really ANDing.
+    await page.fill("#filter-value-1", "80");
+    await page.waitForTimeout(400);
+    const noMatch = await page.locator("#filter-summary").innerText();
+    step("AND is real: an unsatisfiable second filter drops the count to zero", /0 of 3/.test(noMatch), noMatch);
+
+    await page.click("#filter-clear");
+    await page.waitForTimeout(300);
+    const cleared = await page.locator("#filter-summary").innerText();
+    step("clearing filters restores the normal view", /Off/i.test(cleared), cleared);
 
     // Capture the interesting state (popup open with data) before the
     // teardown checks below zoom out and toggle layers off.

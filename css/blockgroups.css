@@ -80,6 +80,79 @@ html, body {
   word-break: break-all;
 }
 
+/* --- Address search --- */
+#search-wrap { position: relative; }
+#address-input {
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+#address-suggestions {
+  position: absolute;
+  z-index: 1000;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+  max-height: 220px;
+  overflow-y: auto;
+}
+#address-suggestions li {
+  padding: 7px 9px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+#address-suggestions li:last-child { border-bottom: none; }
+#address-suggestions li:hover,
+#address-suggestions li.active { background: #eef3f9; }
+
+/* --- Filters --- */
+.filter-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 5px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.filter-row select,
+.filter-row input[type="number"] {
+  font-size: 0.75rem;
+  padding: 4px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: white;
+  min-width: 0;
+}
+.filter-row input[type="number"] { width: 62px; }
+.filter-row .filter-enable { justify-self: start; }
+.filter-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 8px 0 3px;
+}
+#filter-clear {
+  margin-top: 6px;
+  font-size: 0.75rem;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: white;
+  cursor: pointer;
+}
+#filter-summary.active { color: var(--ok); font-weight: 600; }
+
 .hint { font-size: 0.76rem; color: var(--muted); margin-top: 8px; }
 .hint.warn { color: var(--warn); }
 .hint.error { color: var(--err); }

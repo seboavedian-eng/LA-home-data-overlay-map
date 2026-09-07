@@ -16,6 +16,23 @@
 
   <div id="app">
     <aside id="sidebar">
+      <section id="search-section">
+        <h2>Find an address</h2>
+        <div id="search-wrap">
+          <input id="address-input" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="e.g. 200 N Spring St, Los Angeles" />
+          <ul id="address-suggestions" class="hidden"></ul>
+        </div>
+        <div id="search-status" class="hint"></div>
+      </section>
+
+      <section id="filter-section">
+        <h2>Filters</h2>
+        <p class="hint" id="filter-summary">Off &mdash; all block groups shown normally.</p>
+        <div id="filter-rows"></div>
+        <button id="filter-clear" type="button">Clear filters</button>
+      </section>
+
       <section>
         <h2>Boundaries</h2>
         <ul id="layer-toggle-list">
