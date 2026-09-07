@@ -1,9 +1,16 @@
 # LA County Home Data Overlay Map
 
-A single-page, no-build-step map of LA County that overlays public GIS/Census
-data: ZIP code demographics, income levels, ZIP and city boundaries, public
-schools and district service areas, and CAL FIRE fire hazard severity zones.
-Search an address to get all of it pulled into one summary table.
+Two pages live here:
+
+- **`blockgroups.html` - Block Group Explorer.** Toggle ZIP / census tract /
+  block group boundaries independently; with block groups on, click one to
+  see its top 5 ancestries (ACS table B04006) with percentages, plus median
+  household and per-capita income. See "Block Group Explorer" below - it
+  needs a one-time data fetch before the popups have numbers.
+- **`index.html` - the full overlay map.** ZIP demographics, income levels,
+  ZIP and city boundaries, public schools and district service areas, and
+  CAL FIRE fire hazard severity zones, plus an address search that pulls all
+  of it into one summary table.
 
 Everything is plain HTML/CSS/JS (Leaflet + turf.js, vendored locally in
 `vendor/`) - no build tool, no server, no API keys required to get it
@@ -29,7 +36,49 @@ Any static file server works (`npx serve`, VS Code Live Server, GitHub
 Pages, etc.) - there's nothing to build. Step 1 is optional - skip it and
 the app still tries live, just less reliably (see below).
 
-## What each layer is, and where the data comes from
+## Block Group Explorer (`blockgroups.html`)
+
+A deliberately small page: a map, three boundary toggles, and a click popup.
+
+**One-time setup** (needed before block group popups show any numbers):
+
+```
+python3 scripts/fetch-blockgroup-data.py
+```
+
+That pulls block-group-level ACS data for LA County into
+`js/data/bg-la-county.json`. It has to run from your machine rather than
+from the page, because api.census.gov sends no CORS headers (see "Known
+limitations"). The boundary toggles work without it; only the popup numbers
+depend on it. Add `--year 2023` to change vintage, or `--key YOUR_KEY` for a
+Census API key.
+
+**What it shows on click:** the top 5 ancestries in that block group with
+percentages, median household income, per-capita income, total population,
+and the number of people reporting an ancestry.
+
+**A real caveat about those percentages.** Table B04006's universe is
+"people *reporting* an ancestry," not total population: people who report
+none are excluded, and anyone reporting two ancestries (say Irish and
+Italian) is counted in *both*. So percentages are computed against the
+ancestry-reporting count, are labeled as such in the UI, and can legitimately
+sum to more than 100%. Total population is displayed separately so you can
+see the gap.
+
+**Performance note:** LA County has ~2,500 tracts and ~6,500 block groups, so
+those two layers load only for the visible map area, and only above a minimum
+zoom (11 for tracts, 12 for block groups). Panning refetches on a short
+debounce. ZIP boundaries are only ~300 features county-wide, so they load in
+one go.
+
+**Geography availability, for reference:** ACS data is never published at the
+Census *block* level - it's a sample survey, and block-level detail would be
+neither statistically reliable nor disclosure-safe. Block group is the
+smallest ACS geography, and is 5-year-estimates only. (Ancestry also isn't a
+decennial Census question, so block-level ancestry doesn't exist from any
+source.)
+
+## What each layer is, and where the data comes from (`index.html`)
 
 | Layer | Source | Notes |
 |---|---|---|
@@ -180,6 +229,11 @@ field-name or layer-id tweak in `js/config.js` or `js/datastore.js`.
 ## Project layout
 
 ```
+blockgroups.html      Block Group Explorer page (see above)
+js/blockgroups.js      ...its map, toggles, viewport loading and popup
+css/blockgroups.css    ...its styles
+scripts/fetch-blockgroup-data.py   One-time block-group ACS fetch
+
 index.html
 css/style.css
 js/config.js         All external endpoint URLs, Census variable codes, LA County bbox

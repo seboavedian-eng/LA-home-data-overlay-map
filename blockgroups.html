@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LA County Block Group Explorer</title>
+
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+<link rel="stylesheet" href="css/blockgroups.css" />
+</head>
+<body>
+  <header id="app-header">
+    <h1>LA County Block Group Explorer</h1>
+    <p class="subtitle">Zip / tract / block group boundaries &mdash; click a block group for ancestry &amp; income</p>
+  </header>
+
+  <div id="app">
+    <aside id="sidebar">
+      <section>
+        <h2>Boundaries</h2>
+        <ul id="layer-toggle-list">
+          <li>
+            <input type="checkbox" id="toggle-zip" />
+            <label for="toggle-zip">
+              <span>Zip Code Borders</span>
+              <span class="layer-desc">2020 Census ZCTAs</span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-tract" />
+            <label for="toggle-tract">
+              <span>Census Tract Borders</span>
+              <span class="layer-desc">Loads for the visible area at zoom <span class="zoom-req">11+</span></span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-bg" />
+            <label for="toggle-bg">
+              <span>Block Group Borders</span>
+              <span class="layer-desc">Loads for the visible area at zoom <span class="zoom-req">12+</span>. Click one for demographics.</span>
+            </label>
+          </li>
+        </ul>
+        <div id="zoom-hint" class="hint"></div>
+      </section>
+
+      <section id="detail-section">
+        <h2>Block group detail</h2>
+        <div id="detail-panel">
+          <p class="hint">Turn on <strong>Block Group Borders</strong>, zoom in, and click a block group.</p>
+        </div>
+      </section>
+
+      <section id="status-section">
+        <button id="status-toggle" type="button">Data source status &#9660;</button>
+        <ul id="status-log" class="hidden"></ul>
+      </section>
+    </aside>
+
+    <main id="map-wrap">
+      <div id="map"></div>
+    </main>
+  </div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/blockgroups.js"></script>
+</body>
+</html>
