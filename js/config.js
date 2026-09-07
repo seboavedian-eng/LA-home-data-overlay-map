@@ -20,10 +20,12 @@ const CONFIG = {
   MAP_CENTER: [34.05, -118.25],
   MAP_ZOOM: 10,
 
-  // Basemap: CARTO Positron, free, no key required.
-  BASEMAP_URL: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+  // Basemap: OpenStreetMap standard tiles - genuinely free, no API key.
+  // (CARTO's basemap tier now asks for an API key, so it's no longer a
+  // no-signup default.)
+  BASEMAP_URL: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
   BASEMAP_ATTRIBUTION:
-    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
 
   // --- Boundaries ------------------------------------------------------
   // Census TIGERweb: 2020 ZIP Code Tabulation Areas (matches ACS ZCTA-level

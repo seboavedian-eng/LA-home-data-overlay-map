@@ -96,11 +96,12 @@ async function main() {
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64"
   );
-  await page.route("**://*.basemaps.cartocdn.com/**", (route) =>
+  await page.route("**://tile.openstreetmap.org/**", (route) =>
     route.fulfill({ contentType: "image/png", body: BLANK_PNG })
   );
 
   let tigerQueryCount = { zip: 0, tract: 0, bg: 0 };
+  let decoyQueryCount = 0;
   await page.route("**://tigerweb.geo.census.gov/**", (route) => {
     const url = route.request().url();
     if (url.includes("/2/query")) {
@@ -115,10 +116,23 @@ async function main() {
       tigerQueryCount.bg++;
       return route.fulfill(json(esriFC([BG_A, BG_B])));
     }
-    // Layer discovery (?f=json on the MapServer root)
+    // Empty layers standing in for TIGERweb's tribal/label layers, which
+    // query successfully but return nothing in most of LA County.
+    if (url.includes("/4/query") || url.includes("/5/query") || url.includes("/9/query") || url.includes("/11/query")) {
+      decoyQueryCount++;
+      return route.fulfill(json(esriFC([])));
+    }
+    // Layer discovery (?f=json on the MapServer root). The decoy layers are
+    // listed BEFORE the real ones on purpose: a naive substring match on
+    // "Census Tract"/"Block Group" picks the tribal layer and silently
+    // returns zero features, which is exactly the bug this guards against.
     return route.fulfill(
       json({
         layers: [
+          { id: 4, name: "Tribal Census Tracts", geometryType: "esriGeometryPolygon" },
+          { id: 5, name: "Tribal Block Groups", geometryType: "esriGeometryPolygon" },
+          { id: 9, name: "Census Tracts Labels", geometryType: "esriGeometryPoint" },
+          { id: 11, name: "Census Block Groups Labels", geometryType: "esriGeometryPoint" },
           { id: 2, name: "2020 Census ZIP Code Tabulation Areas", geometryType: "esriGeometryPolygon" },
           { id: 8, name: "Census Tracts", geometryType: "esriGeometryPolygon" },
           { id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" },
@@ -154,6 +168,17 @@ async function main() {
     await page.check("#toggle-bg");
     await page.waitForFunction(() => document.getElementById("status-log").textContent.includes("Block group borders: "), { timeout: 10000 });
     step("block group layer loads when toggled on", tigerQueryCount.bg > 0);
+
+    step(
+      "never queries TIGERweb's tribal/label decoy layers (the 0-features bug)",
+      decoyQueryCount === 0,
+      `decoy layers queried ${decoyQueryCount} times`
+    );
+    step(
+      "layers actually return features, not an empty result",
+      !(await page.locator("#status-log").innerText()).includes("0 features returned"),
+      await page.locator("#status-log").innerText()
+    );
 
     // --- Click a block group ---
     const clicked = await page.evaluate(() => {

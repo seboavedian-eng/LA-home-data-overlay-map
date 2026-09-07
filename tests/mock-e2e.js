@@ -37,7 +37,7 @@ async function main() {
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64"
   );
-  await page.route("**://*.basemaps.cartocdn.com/**", (route) =>
+  await page.route("**://tile.openstreetmap.org/**", (route) =>
     route.fulfill({ contentType: "image/png", body: BLANK_PNG })
   );
 
@@ -286,7 +286,7 @@ async function main() {
 
     const page2 = await browser.newPage({ viewport: { width: 1400, height: 950 } });
     await page2.route("**://api.census.gov/**", (route) => route.abort("failed")); // must never be hit
-    await page2.route("**://*.basemaps.cartocdn.com/**", (route) => route.fulfill({ contentType: "image/png", body: BLANK_PNG }));
+    await page2.route("**://tile.openstreetmap.org/**", (route) => route.fulfill({ contentType: "image/png", body: BLANK_PNG }));
     await page2.route("**://tigerweb.geo.census.gov/**", (route) => {
       const url = route.request().url();
       if (url.includes("/query")) return route.fulfill(json(F.ZCTA_ESRI));

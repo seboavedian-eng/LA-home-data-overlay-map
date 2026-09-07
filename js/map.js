@@ -15,7 +15,6 @@ const App = (() => {
     L.tileLayer(CONFIG.BASEMAP_URL, {
       maxZoom: 19,
       attribution: CONFIG.BASEMAP_ATTRIBUTION,
-      subdomains: "abcd",
     }).addTo(map);
     return map;
   }

@@ -15,16 +15,38 @@ const BG_CONFIG = {
   MAP_CENTER: [34.05, -118.25],
   MAP_ZOOM: 12,
 
-  BASEMAP_URL: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+  // OpenStreetMap standard tiles: genuinely free, no API key. (CARTO's
+  // basemap tier now asks for an API key, so it's no longer a no-signup
+  // default.)
+  BASEMAP_URL: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
   BASEMAP_ATTRIBUTION:
-    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
 
   // All three boundary types come from the same Census TIGERweb service.
+  // TIGERweb also carries "Tribal Census Tracts"/"Tribal Block Groups" and
+  // "... Labels" layers whose names collide on a loose substring match, and
+  // the tribal ones query successfully while returning zero features in most
+  // of LA County - hence the exact names and exclusions here.
   TIGERWEB: "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Current/MapServer",
   LAYERS: {
-    zip: { nameHint: "Zip Code Tabulation Area", fallbackId: 2 },
-    tract: { nameHint: "Census Tract", fallbackId: 8 },
-    blockGroup: { nameHint: "Block Group", fallbackId: 10 },
+    zip: {
+      nameHint: "Zip Code Tabulation Area",
+      exactNames: ["2020 Census ZIP Code Tabulation Areas", "Zip Code Tabulation Areas"],
+      exclude: /tribal|label/i,
+      fallbackId: 2,
+    },
+    tract: {
+      nameHint: "Census Tract",
+      exactNames: ["Census Tracts"],
+      exclude: /tribal|label/i,
+      fallbackId: 8,
+    },
+    blockGroup: {
+      nameHint: "Block Group",
+      exactNames: ["Census Block Groups", "Block Groups"],
+      exclude: /tribal|label/i,
+      fallbackId: 10,
+    },
   },
 
   MIN_ZOOM: { tract: 11, blockGroup: 12 },
@@ -82,7 +104,10 @@ const BlockGroupApp = (() => {
   async function resolveLayerId(key) {
     if (layerIds[key] === undefined) {
       const spec = BG_CONFIG.LAYERS[key];
-      layerIds[key] = await Utils.discoverLayerId(BG_CONFIG.TIGERWEB, spec.nameHint, spec.fallbackId);
+      layerIds[key] = await Utils.discoverLayerId(BG_CONFIG.TIGERWEB, spec.nameHint, spec.fallbackId, {
+        exactNames: spec.exactNames,
+        exclude: spec.exclude,
+      });
     }
     return layerIds[key];
   }
@@ -242,7 +267,19 @@ const BlockGroupApp = (() => {
       layers[key] = buildLayer(key, geojson).addTo(map);
       lastBBoxKey[key] = bboxKey;
       selectedLayer = null;
-      Utils.logStatus(key, "ok", `${label}: ${geojson.features.length} features loaded.`);
+
+      if (geojson.features.length === 0) {
+        // A successful query returning nothing usually means the wrong
+        // TIGERweb layer id was selected (their tribal/label layers query
+        // fine but are empty here), not that the area is genuinely empty.
+        Utils.logStatus(
+          key,
+          "warn",
+          `${label}: 0 features returned from layer id ${layerIds[key]}. If this area should have data, that layer id is probably wrong.`
+        );
+      } else {
+        Utils.logStatus(key, "ok", `${label}: ${geojson.features.length} features loaded.`);
+      }
     } catch (err) {
       Utils.logStatus(key, "error", `${label} failed to load: ${err.message}`);
     }
@@ -303,7 +340,6 @@ const BlockGroupApp = (() => {
     L.tileLayer(BG_CONFIG.BASEMAP_URL, {
       maxZoom: 19,
       attribution: BG_CONFIG.BASEMAP_ATTRIBUTION,
-      subdomains: "abcd",
     }).addTo(map);
 
     initStatusPanel();

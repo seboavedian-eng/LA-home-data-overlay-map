@@ -16,7 +16,12 @@ const DataStore = (() => {
   // 2020 Census ZIP Code Tabulation Areas covering LA County.
   function getZctaGeoJSON() {
     return once("zcta", async () => {
-      const layerId = await Utils.discoverLayerId(CONFIG.ZCTA_SERVER, CONFIG.ZCTA_LAYER_NAME_HINT, CONFIG.ZCTA_LAYER_ID);
+      // exclude tribal/label layers - TIGERweb's loose name collisions
+      // otherwise select a layer that queries fine but returns nothing.
+      const layerId = await Utils.discoverLayerId(CONFIG.ZCTA_SERVER, CONFIG.ZCTA_LAYER_NAME_HINT, CONFIG.ZCTA_LAYER_ID, {
+        exactNames: ["2020 Census ZIP Code Tabulation Areas", "Zip Code Tabulation Areas"],
+        exclude: /tribal|label/i,
+      });
       const url = Utils.arcgisQueryUrl(CONFIG.ZCTA_SERVER, layerId, {
         bbox: CONFIG.LA_COUNTY_BBOX,
         outFields: "*",

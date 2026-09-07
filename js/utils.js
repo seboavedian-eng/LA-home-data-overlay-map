@@ -70,25 +70,48 @@ const Utils = (() => {
     }
   }
 
-  // Look up an ArcGIS MapServer's child layer id by matching part of its
-  // name (case-insensitive). Falls back to a provided default id if
-  // discovery fails, so a wrong hard-coded guess never fully blocks a layer.
-  async function discoverLayerId(serverUrl, nameHint, fallbackId) {
+  // Look up an ArcGIS MapServer's child layer id by name. Falls back to a
+  // provided default id if discovery fails, so a wrong hard-coded guess
+  // never fully blocks a layer.
+  //
+  // Matching order matters: a plain substring search is dangerously loose on
+  // services like TIGERweb, which carries "Tribal Census Tracts" alongside
+  // "Census Tracts" and "... Labels" variants alongside the real polygon
+  // layers. Substring-matching "Census Tract" there silently selects the
+  // tribal layer, which queries fine and returns zero features - so prefer
+  // an exact name, then a substring match that skips excluded names.
+  //
+  //   options.exactNames - exact layer names to prefer, in order
+  //   options.exclude    - RegExp of layer names to never match
+  async function discoverLayerId(serverUrl, nameHint, fallbackId, options = {}) {
+    const { exactNames = [], exclude = null } = options;
     try {
       const root = await fetchJSON(`${serverUrl}?f=json`);
       const layers = root.layers || [];
-      const match = layers.find((l) =>
-        (l.name || "").toLowerCase().includes(nameHint.toLowerCase())
-      );
-      if (match) return match.id;
-      Utils.logStatus(
+      const allowed = layers.filter((l) => !(exclude && exclude.test(l.name || "")));
+
+      for (const wanted of exactNames) {
+        const hit = allowed.find((l) => (l.name || "").toLowerCase() === wanted.toLowerCase());
+        if (hit) {
+          logStatus("discover", "info", `Matched layer "${hit.name}" (id ${hit.id}) for "${nameHint}".`);
+          return hit.id;
+        }
+      }
+
+      const match = allowed.find((l) => (l.name || "").toLowerCase().includes(nameHint.toLowerCase()));
+      if (match) {
+        logStatus("discover", "info", `Matched layer "${match.name}" (id ${match.id}) for "${nameHint}".`);
+        return match.id;
+      }
+
+      logStatus(
         "discover",
         "warn",
         `No layer at ${serverUrl} matched "${nameHint}"; using fallback id ${fallbackId}.`
       );
       return fallbackId;
     } catch (err) {
-      Utils.logStatus(
+      logStatus(
         "discover",
         "warn",
         `Could not read ${serverUrl}: ${err.message}. Using fallback id ${fallbackId}.`
