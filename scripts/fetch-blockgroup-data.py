@@ -127,9 +127,18 @@ GEO_PARTS = ["state", "county", "tract", "block group"]
 
 # --- HTTP -------------------------------------------------------------------
 
+class CensusResponseError(RuntimeError):
+    """Non-JSON response body - carries the URL and a snippet for debugging."""
+
+
 def fetch_json(url):
     with urllib.request.urlopen(url, timeout=180) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read().decode("utf-8", errors="replace")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as err:
+        snippet = raw.strip()[:200] or "(empty response body)"
+        raise CensusResponseError(f"{err}. Server sent: {snippet}\n      URL: {url}") from err
 
 
 def build_url(base, variables, geo_level, key):
@@ -140,7 +149,11 @@ def build_url(base, variables, geo_level, key):
     }
     if key:
         params["key"] = key
-    return f"{base}?" + urllib.parse.urlencode(params, safe=":,*")
+    # quote_via=quote is essential: urlencode defaults to quote_plus, which
+    # encodes spaces as "+". The Census API does not accept "+" in the `for`
+    # and `in` clauses - it needs %20 - and answers a "+" query with an empty
+    # 200 response rather than an error, so this fails silently and totally.
+    return f"{base}?" + urllib.parse.urlencode(params, safe=":,*", quote_via=urllib.parse.quote)
 
 
 def fetch_rows(base, variables, geo_level, key):
@@ -172,10 +185,20 @@ def fetch_table(base, variables, key, label, prefer="block group"):
                 for geoid, values in part.items():
                     merged.setdefault(geoid, {}).update(values)
         except urllib.error.HTTPError as err:
-            print(f"  {label}: not available at {geo_level} (HTTP {err.code})")
+            body = ""
+            try:
+                body = err.read().decode("utf-8", errors="replace").strip()[:200]
+            except Exception:  # noqa: BLE001 - best effort only
+                pass
+            print(f"  {label}: not available at {geo_level} (HTTP {err.code})" + (f" - {body}" if body else ""))
+            continue
+        except CensusResponseError as err:
+            # Non-JSON body: almost always a malformed query, so show what
+            # came back and the exact URL rather than just the parse error.
+            print(f"  {label}: failed at {geo_level}\n      {err}")
             continue
         except Exception as err:  # noqa: BLE001 - report and keep going
-            print(f"  {label}: failed at {geo_level} ({err})")
+            print(f"  {label}: failed at {geo_level} ({type(err).__name__}: {err})")
             continue
 
         note = "" if geo_level == "block group" else "  <-- FELL BACK TO TRACT LEVEL"
@@ -187,14 +210,24 @@ def fetch_table(base, variables, key, label, prefer="block group"):
 
 
 def probe(base, variables, key, label):
-    """Availability check only - used to answer open questions, not to fetch."""
+    """
+    Availability check only - used to answer open questions, not to fetch.
+
+    Reports "unavailable" ONLY for an actual HTTP error from the API. Any
+    other failure (network, malformed query, non-JSON body) is reported as
+    inconclusive: it says nothing about whether the table exists, and
+    claiming otherwise would be a wrong answer stated confidently.
+    """
     try:
         fetch_rows(base, variables, "block group", key)
         print(f"  {label}: IS available at block group")
         return True
-    except Exception:  # noqa: BLE001
-        print(f"  {label}: is NOT available at block group")
+    except urllib.error.HTTPError as err:
+        print(f"  {label}: is NOT available at block group (HTTP {err.code})")
         return False
+    except Exception as err:  # noqa: BLE001
+        print(f"  {label}: INCONCLUSIVE - the probe itself failed ({type(err).__name__}: {err})")
+        return None
 
 
 # --- value helpers ----------------------------------------------------------
