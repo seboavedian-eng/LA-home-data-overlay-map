@@ -40,13 +40,35 @@ the app still tries live, just less reliably (see below).
 
 A deliberately small page: a map, three boundary toggles, and a click popup.
 
-**One-time setup** (needed before block group popups show any numbers):
+> **You must serve this over HTTP - double-clicking the .html file will not
+> work.** On a `file://` origin, browsers block the page from reading local
+> files, so the demographics data can never load. Confusingly, the map and
+> all three boundary layers still work (those are `https://` requests), so
+> only the popup numbers fail. The page detects this and shows a banner.
+
+**Step 1 - fetch the data** (once; needed before popups show any numbers):
 
 ```
+# Windows
+python scripts\fetch-blockgroup-data.py
+
+# macOS / Linux
 python3 scripts/fetch-blockgroup-data.py
 ```
 
-That pulls block-group-level data for LA County into
+**Step 2 - serve the folder and open it through localhost:**
+
+```
+# Windows
+python -m http.server 8000
+
+# macOS / Linux
+python3 -m http.server 8000
+```
+
+Then open **http://localhost:8000/blockgroups.html** (not the file path).
+
+Step 1 pulls block-group-level data for LA County into
 `js/data/bg-la-county.json` - ACS `B01001`, `B03002`, `B15003`, `B19013`,
 `B19001`, `B19301`, plus `P2` from the 2020 Census. It has to run from your
 machine rather than from the page, because api.census.gov sends no CORS

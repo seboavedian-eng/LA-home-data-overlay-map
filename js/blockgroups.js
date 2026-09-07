@@ -94,6 +94,22 @@ const BlockGroupApp = (() => {
   // as "no data file yet" sends you looking in the wrong place.
   function describeDataFailure(err) {
     const url = new URL(BG_CONFIG.BLOCK_GROUP_DATA, window.location.href).href;
+
+    // Opening the page by double-clicking the .html file gives it a file://
+    // origin, where browsers block fetch() outright. Boundaries still load
+    // (those are https:// requests), so the map looks fine and only the
+    // local data file fails - which is confusing unless it's called out.
+    if (window.location.protocol === "file:") {
+      return {
+        short: "blocked by the browser",
+        detail:
+          `This page was opened directly from disk (<code>file://</code>), and browsers block pages from ` +
+          `reading local files that way - so the data file can't load no matter what. Serve the folder over ` +
+          `HTTP instead: run <code>python -m http.server 8000</code> in the project folder, then open ` +
+          `<code>http://localhost:8000/blockgroups.html</code>.`,
+      };
+    }
+
     if (/HTTP 40[34]/.test(err.message)) {
       return {
         short: "not found",
@@ -449,6 +465,19 @@ const BlockGroupApp = (() => {
     }).addTo(map);
 
     initStatusPanel();
+
+    // Warn immediately rather than waiting for a click to fail.
+    if (window.location.protocol === "file:") {
+      const banner = document.createElement("div");
+      banner.id = "file-protocol-warning";
+      banner.innerHTML =
+        `<strong>Opened as a file, not a web page.</strong> Boundaries will work, but block group ` +
+        `demographics cannot load — browsers block local file reads over <code>file://</code>. ` +
+        `Run <code>python -m http.server 8000</code> in this folder and open ` +
+        `<code>http://localhost:8000/blockgroups.html</code> instead.`;
+      document.getElementById("sidebar").prepend(banner);
+      Utils.logStatus("setup", "warn", "Page opened over file:// - local data cannot load. Serve over HTTP instead.");
+    }
 
     document.getElementById("toggle-zip").addEventListener("change", (e) => onToggle("zip", e.target.checked));
     document.getElementById("toggle-tract").addEventListener("change", (e) => onToggle("tract", e.target.checked));

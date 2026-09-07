@@ -373,6 +373,29 @@ async function main() {
     );
     await page404.close();
     await pageBad.close();
+
+    // --- file:// origin (double-clicking the .html instead of serving it) ---
+    // The single most likely setup mistake: the map looks fine because
+    // boundaries are https:// requests, but local data can never load.
+    const pageFile = await browser.newPage();
+    await pageFile.route("**://tile.openstreetmap.org/**", (route) =>
+      route.fulfill({ contentType: "image/png", body: BLANK_PNG })
+    );
+    await pageFile.route("**://tigerweb.geo.census.gov/**", (route) => {
+      const url = route.request().url();
+      if (url.includes("/10/query")) return route.fulfill(json(esriFC([BG_A])));
+      return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
+    });
+    await pageFile.goto(`file://${path.join(REPO, "blockgroups.html")}`, { waitUntil: "load" });
+    await pageFile.waitForSelector("#toggle-bg");
+    const bannerVisible = await pageFile.locator("#file-protocol-warning").isVisible();
+    const bannerText = bannerVisible ? await pageFile.locator("#file-protocol-warning").innerText() : "";
+    step(
+      "file:// origin shows an upfront banner explaining why data can't load",
+      bannerVisible && /http\.server/.test(bannerText) && /localhost:8000/.test(bannerText),
+      bannerText.replace(/\s+/g, " ").slice(0, 200)
+    );
+    await pageFile.close();
   } finally {
     fs.rmSync(dataPath, { force: true });
   }
