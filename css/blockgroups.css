@@ -47,7 +47,8 @@ html, body {
 }
 #sidebar section:first-child h2 { margin-top: 0; }
 
-#layer-toggle-list { list-style: none; margin: 0; padding: 0; }
+#layer-toggle-list, #source-list { list-style: none; margin: 0; padding: 0; }
+#source-list li,
 #layer-toggle-list li {
   display: flex;
   align-items: flex-start;
@@ -56,9 +57,9 @@ html, body {
   border-bottom: 1px dashed var(--border);
   font-size: 0.85rem;
 }
-#layer-toggle-list li:last-child { border-bottom: none; }
-#layer-toggle-list input[type="checkbox"] { margin-top: 2px; }
-#layer-toggle-list label { display: flex; flex-direction: column; cursor: pointer; }
+#layer-toggle-list li:last-child, #source-list li:last-child { border-bottom: none; }
+#layer-toggle-list input[type="checkbox"], #source-list input[type="radio"] { margin-top: 2px; }
+#layer-toggle-list label, #source-list label { display: flex; flex-direction: column; cursor: pointer; }
 .layer-desc { font-size: 0.72rem; color: var(--muted); }
 .zoom-req { font-weight: 600; color: var(--accent); }
 
@@ -90,6 +91,16 @@ html, body {
   padding-top: 8px;
 }
 #detail-panel .footnote { font-size: 0.68rem; color: var(--muted); margin: 8px 0 0; line-height: 1.35; }
+
+.detail-card td.count { color: var(--muted); font-weight: 400; padding-left: 8px; }
+.detail-card .eth-table td.k { width: 55%; }
+.detail-card .src-note { font-size: 0.66rem; color: var(--muted); margin: 4px 0 0; }
+.detail-card .footnote code {
+  background: #eef1f4;
+  padding: 1px 3px;
+  border-radius: 3px;
+  font-size: 0.95em;
+}
 
 .bar-row { margin-bottom: 5px; }
 .bar-label { display: flex; justify-content: space-between; gap: 8px; font-size: 0.76rem; }

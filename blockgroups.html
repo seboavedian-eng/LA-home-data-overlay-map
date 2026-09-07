@@ -11,7 +11,7 @@
 <body>
   <header id="app-header">
     <h1>LA County Block Group Explorer</h1>
-    <p class="subtitle">Zip / tract / block group boundaries &mdash; click a block group for ancestry &amp; income</p>
+    <p class="subtitle">Zip / tract / block group boundaries &mdash; click a block group for demographics</p>
   </header>
 
   <div id="app">
@@ -42,6 +42,26 @@
           </li>
         </ul>
         <div id="zoom-hint" class="hint"></div>
+      </section>
+
+      <section id="source-section">
+        <h2>Ethnicity source</h2>
+        <ul id="source-list">
+          <li>
+            <input type="radio" name="eth-source" id="source-acs" value="acs" checked />
+            <label for="source-acs">
+              <span>B03002 &mdash; ACS</span>
+              <span class="layer-desc">Hispanic or Latino Origin by Race. 5-year survey estimate.</span>
+            </label>
+          </li>
+          <li>
+            <input type="radio" name="eth-source" id="source-dec" value="dec" />
+            <label for="source-dec">
+              <span>P2 &mdash; 2020 Census</span>
+              <span class="layer-desc">Redistricting file. Actual 100% count, but from 2020.</span>
+            </label>
+          </li>
+        </ul>
       </section>
 
       <section id="detail-section">

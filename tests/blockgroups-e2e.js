@@ -40,35 +40,49 @@ const ZCTA = esriPolygon({ ZCTA5CE20: "90012", NAME: "ZCTA5 90012" }, [
   [-118.30, 34.00], [-118.30, 34.10], [-118.15, 34.10], [-118.15, 34.00],
 ]);
 
-// Deliberately: ancestryTotal (1000) differs from totalPopulation (1200), so
-// the test can prove percentages use "people reporting ancestry" as the
-// denominator (400/1000 = 40.0%) and not total population (400/1200 = 33.3%).
-// Six ancestries are present so the 6th (Greek) must be excluded from top 5.
+// Round numbers chosen so every derived percentage is exact and unambiguous:
+//   age    500/300/200 of 1000  -> 50.0% / 30.0% / 20.0%
+//   sex    510 F / 490 M        -> 51.0% / 49.0%
+//   edu    240 of 800 (25+)     -> 30.0%  (NOT 24% of total pop - proves the
+//                                  denominator is the 25+ population)
+//   ACS ethnicity totals 1000, decennial totals 900 with a different mix, so
+//   switching source visibly changes both the percentages and the ordering.
 const CENSUS_DATA = {
   meta: {
     year: 2022,
-    dataset: "acs/acs5",
-    ancestryLabels: {
-      B04006_050E: "Mexican",
-      B04006_030E: "German",
-      B04006_038E: "Irish",
-      B04006_020E: "Chinese",
-      B04006_025E: "Filipino",
-      B04006_031E: "Greek",
+    decennialYear: 2020,
+    geoLevels: {
+      age: "block group",
+      ethnicityAcs: "block group",
+      ethnicityDec: "block group",
+      education: "block group",
+      income: "block group",
     },
   },
   blockGroups: {
     "060372011001": {
-      ancestryTotal: 1000,
-      ancestries: {
-        B04006_050E: 400,
-        B04006_030E: 200,
-        B04006_038E: 150,
-        B04006_020E: 100,
-        B04006_025E: 80,
-        B04006_031E: 30,
+      totalPopulation: 1000,
+      under25: 500,
+      age25to54: 300,
+      age55plus: 200,
+      female: 510,
+      male: 490,
+      ethnicityAcsTotal: 1000,
+      ethnicityAcs: {
+        "Hispanic or Latino": 450,
+        "White (non-Hispanic)": 250,
+        "Asian (non-Hispanic)": 200,
+        "Black (non-Hispanic)": 100,
       },
-      totalPopulation: 1200,
+      ethnicityDecTotal: 900,
+      ethnicityDec: {
+        "Hispanic or Latino": 270,
+        "White (non-Hispanic)": 360,
+        "Asian (non-Hispanic)": 180,
+        "Black (non-Hispanic)": 90,
+      },
+      eduTotal25plus: 800,
+      eduBachelorsPlus: 240,
       medianHouseholdIncome: 85000,
       perCapitaIncome: 41000,
     },
@@ -199,30 +213,70 @@ async function main() {
     const popupText = await page.locator(".leaflet-popup-content").innerText();
     const panelText = await page.locator("#detail-panel").innerText();
 
-    step("popup shows top 5 ancestries, highest first", (() => {
-      const order = ["Mexican", "German", "Irish", "Chinese", "Filipino"];
-      let lastIdx = -1;
-      for (const name of order) {
-        const idx = popupText.indexOf(name);
-        if (idx === -1 || idx < lastIdx) return false;
-        lastIdx = idx;
-      }
-      return true;
-    })(), popupText.replace(/\s+/g, " ").slice(0, 200));
-
-    step("6th ancestry (Greek) is excluded from the top 5", !popupText.includes("Greek"));
-
     step(
-      "percentages use people-reporting-ancestry as denominator (40.0%, not 33.3%)",
-      popupText.includes("40.0%") && popupText.includes("20.0%") && !popupText.includes("33.3%"),
-      popupText.replace(/\s+/g, " ").slice(0, 300)
+      "popup heads with census tract and block group number",
+      popupText.includes("Tract 2011") && /Block Group\s*1\b/.test(popupText),
+      popupText.replace(/\s+/g, " ").slice(0, 120)
     );
-
+    step("popup shows total population", popupText.includes("1,000"));
+    step(
+      "popup shows age bands 0-24 / 25-54 / 55+ with correct percentages",
+      popupText.includes("0 to 24") && popupText.includes("50.0%") &&
+        popupText.includes("25 to 54") && popupText.includes("30.0%") &&
+        popupText.includes("55 and over") && popupText.includes("20.0%"),
+      popupText.replace(/\s+/g, " ").slice(0, 260)
+    );
+    step(
+      "popup shows sex split (51% female / 49% male)",
+      popupText.includes("51.0%") && popupText.includes("49.0%"),
+      popupText.replace(/\s+/g, " ").slice(0, 260)
+    );
+    step(
+      "ethnicity defaults to B03002 (ACS) values, ordered high to low",
+      (() => {
+        const order = ["Hispanic or Latino", "White (non-Hispanic)", "Asian (non-Hispanic)", "Black (non-Hispanic)"];
+        let last = -1;
+        for (const label of order) {
+          const i = popupText.indexOf(label);
+          if (i === -1 || i < last) return false;
+          last = i;
+        }
+        return popupText.includes("45.0%") && popupText.includes("25.0%");
+      })(),
+      popupText.replace(/\s+/g, " ").slice(0, 320)
+    );
+    step(
+      "education % is of the 25+ population, not total population (30.0%, not 24.0%)",
+      popupText.includes("30.0%") && !popupText.includes("24.0%"),
+      popupText.replace(/\s+/g, " ").slice(0, 320)
+    );
     step("popup shows median household income", popupText.includes("$85,000"));
     step("popup shows per-capita income", popupText.includes("$41,000"));
-    step("popup shows total population separately from ancestry total", popupText.includes("1,200") && popupText.includes("1,000"));
-    step("popup explains the denominator caveat", popupText.toLowerCase().includes("not of") || popupText.toLowerCase().includes("reporting an ancestry"));
-    step("sidebar detail panel mirrors the popup", panelText.includes("Mexican") && panelText.includes("$85,000"));
+    step("sidebar detail panel mirrors the popup", panelText.includes("Hispanic or Latino") && panelText.includes("$85,000"));
+
+    // --- Ethnicity source toggle ---
+    const defaultChecked = await page.isChecked("#source-acs");
+    step("ethnicity source defaults to B03002 (ACS)", defaultChecked);
+
+    await page.check("#source-dec");
+    await page.waitForTimeout(300);
+    const decText = await page.locator("#detail-panel").innerText();
+    step(
+      "switching to P2 re-renders with 2020 Census values (White now leads at 40.0%)",
+      decText.includes("2020 Census P2") && decText.includes("40.0%") && decText.includes("30.0%") &&
+        decText.indexOf("White (non-Hispanic)") < decText.indexOf("Hispanic or Latino"),
+      decText.replace(/\s+/g, " ").slice(0, 320)
+    );
+    step(
+      "non-ethnicity numbers are unchanged by the source switch",
+      decText.includes("$85,000") && decText.includes("51.0%"),
+      decText.replace(/\s+/g, " ").slice(0, 200)
+    );
+
+    await page.check("#source-acs");
+    await page.waitForTimeout(300);
+    const backText = await page.locator("#detail-panel").innerText();
+    step("switching back to B03002 restores ACS values", backText.includes("B03002") && backText.includes("45.0%"));
 
     // Capture the interesting state (popup open with data) before the
     // teardown checks below zoom out and toggle layers off.

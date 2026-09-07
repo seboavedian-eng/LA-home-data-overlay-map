@@ -3,10 +3,10 @@
 Two pages live here:
 
 - **`blockgroups.html` - Block Group Explorer.** Toggle ZIP / census tract /
-  block group boundaries independently; with block groups on, click one to
-  see its top 5 ancestries (ACS table B04006) with percentages, plus median
-  household and per-capita income. See "Block Group Explorer" below - it
-  needs a one-time data fetch before the popups have numbers.
+  block group boundaries independently; with block groups on, click one for
+  population, age bands, sex split, ethnicity, education and income. See
+  "Block Group Explorer" below - it needs a one-time data fetch before the
+  popups have numbers.
 - **`index.html` - the full overlay map.** ZIP demographics, income levels,
   ZIP and city boundaries, public schools and district service areas, and
   CAL FIRE fire hazard severity zones, plus an address search that pulls all
@@ -46,24 +46,55 @@ A deliberately small page: a map, three boundary toggles, and a click popup.
 python3 scripts/fetch-blockgroup-data.py
 ```
 
-That pulls block-group-level ACS data for LA County into
-`js/data/bg-la-county.json`. It has to run from your machine rather than
-from the page, because api.census.gov sends no CORS headers (see "Known
-limitations"). The boundary toggles work without it; only the popup numbers
-depend on it. Add `--year 2023` to change vintage, or `--key YOUR_KEY` for a
-Census API key.
+That pulls block-group-level data for LA County into
+`js/data/bg-la-county.json` - ACS `B01001`, `B03002`, `B15003`, `B19013`,
+`B19001`, `B19301`, plus `P2` from the 2020 Census. It has to run from your
+machine rather than from the page, because api.census.gov sends no CORS
+headers (see "Known limitations"). The boundary toggles work without it;
+only the popup numbers depend on it. Add `--year 2023` to change vintage, or
+`--key YOUR_KEY` for a Census API key.
 
-**What it shows on click:** the top 5 ancestries in that block group with
-percentages, median household income, per-capita income, total population,
-and the number of people reporting an ancestry.
+The script prints exactly what it found, per table - which geography level
+each one came back at, and whether anything had to fall back to tract. If a
+table you expect isn't available at block group, that output is the
+authoritative answer.
 
-**A real caveat about those percentages.** Table B04006's universe is
-"people *reporting* an ancestry," not total population: people who report
-none are excluded, and anyone reporting two ancestries (say Irish and
-Italian) is counted in *both*. So percentages are computed against the
-ancestry-reporting count, are labeled as such in the UI, and can legitimately
-sum to more than 100%. Total population is displayed separately so you can
-see the gap.
+**What it shows on click:** census tract and block group number, total
+population, age split (0-24 / 25-54 / 55+), sex split, ethnicity breakdown,
+share with a bachelor's degree or higher, median household income and
+per-capita income.
+
+**Ethnicity has two selectable sources** (radio buttons in the sidebar):
+
+| | B03002 (default) | P2 |
+|---|---|---|
+| Source | ACS 5-year estimate | 2020 Census redistricting file |
+| Nature | Survey sample, modeled | Actual 100% count |
+| Currency | Rolling 5-year window | Fixed at April 2020 |
+
+Neither is strictly better - B03002 is more current, P2 is more precise -
+so the toggle lets you compare. Everything else on the page stays put when
+you switch.
+
+**Why B-tables and not the Subject tables you might expect.** ACS Subject
+Tables (`S0101` age/sex, `S1501` education) and Data Profiles are derived
+products that the Census Bureau does **not** publish at block group - only
+Detailed (B) tables go that deep. So:
+
+- `S0101` → **B01001** (Sex by Age). Complete replacement.
+- `S1501` → **B15003** (Educational Attainment, 25+). Gives "bachelor's or
+  higher," but **not broken out by age bracket** - that cross-tab is B15001,
+  which the fetch script probes for and reports on, since it's unlikely to be
+  published at block group either.
+
+**Age bands are 0-24 / 25-54 / 55+, not 0-25 / 25-55.** B01001's own
+brackets break exactly at 25 and 55, so these are the natural boundaries and
+nothing is double-counted.
+
+**Anything that isn't available at block group is labeled.** The fetch script
+probes each table, falls back to tract level only where it must, records
+which geography each table came from, and the UI marks those numbers
+"tract-level" rather than passing them off as block group data.
 
 **Performance note:** LA County has ~2,500 tracts and ~6,500 block groups, so
 those two layers load only for the visible map area, and only above a minimum
