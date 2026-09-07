@@ -131,12 +131,22 @@ class CensusResponseError(RuntimeError):
     """Non-JSON response body - carries the URL and a snippet for debugging."""
 
 
+class CensusKeyRequired(RuntimeError):
+    """The API rejected the request for want of an API key."""
+
+
 def fetch_json(url):
     with urllib.request.urlopen(url, timeout=180) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
     try:
         return json.loads(raw)
     except json.JSONDecodeError as err:
+        # The API answers a keyless request with an HTML "Missing Key" page,
+        # not a JSON error - so this has to be sniffed out of the body.
+        # There is no point retrying other tables or geographies: every
+        # request will get the same page.
+        if "missing key" in raw.lower() or "invalid key" in raw.lower():
+            raise CensusKeyRequired(raw) from err
         snippet = raw.strip()[:200] or "(empty response body)"
         raise CensusResponseError(f"{err}. Server sent: {snippet}\n      URL: {url}") from err
 
@@ -184,6 +194,8 @@ def fetch_table(base, variables, key, label, prefer="block group"):
                 part = fetch_rows(base, chunk, geo_level, key)
                 for geoid, values in part.items():
                     merged.setdefault(geoid, {}).update(values)
+        except CensusKeyRequired:
+            raise  # no point trying other tables - every request needs the key
         except urllib.error.HTTPError as err:
             body = ""
             try:
@@ -222,6 +234,8 @@ def probe(base, variables, key, label):
         fetch_rows(base, variables, "block group", key)
         print(f"  {label}: IS available at block group")
         return True
+    except CensusKeyRequired:
+        raise
     except urllib.error.HTTPError as err:
         print(f"  {label}: is NOT available at block group (HTTP {err.code})")
         return False
@@ -250,11 +264,59 @@ def total(values, codes):
     return sum((to_number(values.get(c)) or 0) for c in codes)
 
 
+KEY_FILE = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "census-api-key.txt")
+)
+
+KEY_HELP = f"""
+{'=' * 70}
+A Census API key is required.
+{'=' * 70}
+
+The Census Bureau now rejects keyless requests to api.census.gov, so this
+script cannot fetch anything until you have one. Keys are free and issued
+immediately.
+
+  1. Request one at: https://api.census.gov/data/key_signup.html
+     (organization can be anything, e.g. "personal project")
+  2. Check your email for the key - a long string of letters and numbers.
+     You may need to click an activation link in that email.
+  3. Either save it once, so you never have to pass it again:
+
+         Put the key on a single line in:
+         {KEY_FILE}
+
+     ...or pass it on the command line each time:
+
+         python scripts\\fetch-blockgroup-data.py --key YOUR_KEY_HERE
+
+Then re-run this script.
+{'=' * 70}
+"""
+
+
+def read_key_file():
+    """A saved key means this doesn't have to be passed on every run."""
+    try:
+        with open(KEY_FILE) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--year", type=int, default=2022, help="ACS 5-year vintage (default 2022)")
-    parser.add_argument("--key", default=os.environ.get("CENSUS_API_KEY", ""), help="Optional Census API key")
+    parser.add_argument(
+        "--key",
+        default=os.environ.get("CENSUS_API_KEY", "") or read_key_file(),
+        help="Census API key (required). Also read from CENSUS_API_KEY or census-api-key.txt",
+    )
     args = parser.parse_args()
+
+    if not args.key:
+        print(KEY_HELP, file=sys.stderr)
+        sys.exit(2)
 
     acs = f"https://api.census.gov/data/{args.year}/acs/acs5"
     dec = "https://api.census.gov/data/2020/dec/pl"
@@ -389,6 +451,11 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except CensusKeyRequired:
+        # Reported as guidance, not a stack trace: the key is the whole fix.
+        print(KEY_HELP, file=sys.stderr)
+        print("(The key you supplied was rejected, or none was supplied.)", file=sys.stderr)
+        sys.exit(2)
     except urllib.error.HTTPError as err:
         print(f"\nCensus API returned HTTP {err.code}: {err.reason}", file=sys.stderr)
         print(f"URL: {err.url}", file=sys.stderr)

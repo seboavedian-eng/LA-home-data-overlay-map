@@ -2,3 +2,5 @@ node_modules/
 tests/screenshot-*.png
 
 __pycache__/
+
+census-api-key.txt

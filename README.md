@@ -46,6 +46,13 @@ A deliberately small page: a map, three boundary toggles, and a click popup.
 > all three boundary layers still work (those are `https://` requests), so
 > only the popup numbers fail. The page detects this and shows a banner.
 
+**Step 0 - get a Census API key.** The Census Bureau rejects keyless
+requests to `api.census.gov`, so this is mandatory, not an optimization.
+Keys are free and issued immediately from
+https://api.census.gov/data/key_signup.html. Save it on one line in
+`census-api-key.txt` in the project root and the script picks it up
+automatically (that filename is gitignored, so the key won't get committed).
+
 **Step 1 - fetch the data** (once; needed before popups show any numbers):
 
 ```
@@ -55,6 +62,9 @@ python scripts\fetch-blockgroup-data.py
 # macOS / Linux
 python3 scripts/fetch-blockgroup-data.py
 ```
+
+If you'd rather not save the key to a file, pass it per run with
+`--key YOUR_KEY`, or set a `CENSUS_API_KEY` environment variable.
 
 **Step 2 - serve the folder and open it through localhost:**
 
