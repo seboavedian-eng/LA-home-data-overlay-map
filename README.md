@@ -66,7 +66,9 @@ python3 scripts/fetch-blockgroup-data.py
 If you'd rather not save the key to a file, pass it per run with
 `--key YOUR_KEY`, or set a `CENSUS_API_KEY` environment variable.
 
-**Step 2 - serve the folder and open it through localhost:**
+**Step 2 - serve the folder and open it through localhost.** On Windows,
+double-click **`start-map.bat`** and skip the rest of this step - it starts
+the server and opens the page for you. Otherwise:
 
 ```
 # Windows
@@ -77,6 +79,10 @@ python3 -m http.server 8000
 ```
 
 Then open **http://localhost:8000/blockgroups.html** (not the file path).
+
+Step 1 is one-time - the data file stays on disk. Day to day you only need
+step 2, and the server has to stay running the whole time you're using the
+map (it's a web server, not an installer).
 
 Step 1 pulls block-group-level data for LA County into
 `js/data/bg-la-county.json` - ACS `B01001`, `B03002`, `B15003`, `B19013`,
