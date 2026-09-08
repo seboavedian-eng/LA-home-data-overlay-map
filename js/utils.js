@@ -260,10 +260,28 @@ const Utils = (() => {
   // response to a GeoJSON FeatureCollection.
   async function fetchEsriAsGeoJSON(url, opts) {
     const data = await fetchJSON(url, opts);
+
+    // ArcGIS reports its own errors with HTTP 200 and an {error:{...}} body,
+    // so a failed query looks like a success to fetch(). Without this, every
+    // such failure surfaced as the generic "no features array" and the real
+    // reason - an unsupported parameter, a group layer that cannot be
+    // queried, a token requirement - was thrown away.
+    if (data && data.error) {
+      const e = data.error;
+      const details = Array.isArray(e.details) && e.details.length ? ` (${e.details.join("; ")})` : "";
+      throw new Error(`ArcGIS error ${e.code || "?"}: ${e.message || "unknown"}${details}`);
+    }
     if (!Array.isArray(data.features)) {
       throw new Error("Unexpected ArcGIS response: no features array");
     }
-    return esriFeatureSetToGeoJSON(data);
+
+    const gj = esriFeatureSetToGeoJSON(data);
+    // Servers cap how many records one query may return. When that cap is
+    // hit the response is a valid, silently INCOMPLETE answer - which on a
+    // map looks like a layer with holes in it rather than an error. Carry
+    // the flag through so callers can do something about it.
+    gj.exceededTransferLimit = !!(data.exceededTransferLimit || data.properties?.exceededTransferLimit);
+    return gj;
   }
 
   // Case/substring-tolerant field reader: government schemas vary in exact

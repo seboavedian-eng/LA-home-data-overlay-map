@@ -99,9 +99,31 @@ table you expect isn't available at block group, that output is the
 authoritative answer.
 
 **What it shows on click:** census tract and block group number, total
-population, age split (0-24 / 25-54 / 55+), sex split, ethnicity breakdown,
-share with a bachelor's degree or higher, median household income and
-per-capita income.
+population, average household size, six age bands, sex split, ethnicity
+breakdown, share with a bachelor's degree or higher, median household income,
+per-capita income and the household income brackets.
+
+Four figures are picked out in bold dark green - ZIP, education, and the two
+income numbers - because those are the ones people actually shop on.
+
+Average household size comes from ACS **B25010** (the Census Bureau's own
+figure: people living in households divided by occupied units). A data file
+fetched before B25010 was added falls back to total population over household
+count, labelled `(est.)` - that runs slightly high wherever a block group
+holds group quarters such as dorms or care homes, since those residents count
+in the population but live in no household. Re-run the fetch script for the
+published figure.
+
+Anything with a non-obvious denominator carries an **ⓘ**: hover, focus or tap
+it for the explanation. Per-capita income, for instance, divides total income
+by *every* resident including children, which is why it always sits well
+below the household median.
+
+The card on the map belongs to the map, not to the polygon under it. That
+matters because the block group layer is thrown away and rebuilt whenever you
+pan far enough to refetch - when the card was bound to a polygon, every one of
+those rebuilds closed and reopened it, which is what made it blink out and
+back in.
 
 ### Environment & hazard layers
 
@@ -113,6 +135,35 @@ default, and each has its own legend.
 | Fire hazard zones | CAL FIRE / OSFM Fire Hazard Severity Zones, via `services.gis.ca.gov` | Moderate / High / Very High, State **and** Local Responsibility Areas merged. Loads for the visible area at zoom 9+. Blank ground is outside any mapped zone - which is not the same as "no hazard". |
 | Pollution burden | CalEnviroScreen 4.0 (OEHHA), hosted ArcGIS feature layer | Census-tract polygons shaded by the CES percentile. Hover for the indicator breakdown (ozone, PM2.5, diesel PM, traffic, drinking water, pesticides, asthma). The score is **relative**: 90 means worse than 90% of California tracts, not an absolute dose. |
 | Wind speed | Global Wind Atlas 3 (DTU / World Bank), CC BY 4.0 | Mean wind speed at 250 m resolution. Needs the one-time download step below, because GWA publishes rasters only. |
+
+#### Why the fire layer used to come back with holes in it
+
+That service caps a query at **1,000 records**, and an LA-sized viewport
+holds many times that in hazard polygons. When the cap is hit, ArcGIS
+answers HTTP 200 with a perfectly valid *partial* result and a small
+`exceededTransferLimit` flag in the body - so the map drew a fraction of the
+zones as though that were all of them. Three things now handle it:
+
+- A truncated box is **split into quarters and re-queried**, recursively, up
+  to three levels deep - and only the sub-boxes that are themselves
+  truncated get split further. Overlapping edges are deduplicated on the
+  server's own `OBJECTID`. (Quadrant splitting rather than `resultOffset`
+  paging, because every ArcGIS version supports it and older ones do not
+  support pagination.)
+- **Non-wildland and unzoned polygons are dropped.** The same layer carries
+  "Non-Wildland/Non-Urban" and "Urban Unzoned" ground, which covers most of
+  flat LA. Drawing those grey blanketed the city in a colour that meant
+  nothing.
+- ArcGIS reports its own errors with HTTP 200 and an `{error: {...}}` body,
+  which used to surface as a generic parse failure. Those are now read and
+  reported verbatim, group layers (which cannot be queried at all) are
+  skipped, and a server that rejects `maxAllowableOffset` gets one retry
+  without it.
+
+The status log now reports, per sublayer, how many polygons arrived, how
+many requests it took, whether the box had to be split, whether it is *still*
+truncated, and which hazard-class values were actually seen. If the layer
+still looks wrong, that log says why.
 
 Fire and pollution are live ArcGIS REST calls with no key and no setup. Each
 has a list of candidate service URLs in `BG_CONFIG.OVERLAYS`; the first one

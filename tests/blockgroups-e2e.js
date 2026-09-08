@@ -40,12 +40,22 @@ const BG_C = esriPolygon({ GEOID: "060372011003", NAME: "Block Group 3, Census T
 ]);
 // Fire hazard zones covering the block groups: one Very High (SRA) and one
 // Moderate (LRA), so the class colouring and the two-sublayer merge are both
-// visible in one view.
+// visible in one view. A third polygon is "Non-Wildland/Non-Urban" - real
+// CAL FIRE data is full of those, and painting them grey blankets flat LA in
+// a colour that means nothing.
 const FIRE_VERY_HIGH = esriPolygon({ HAZ_CLASS: "Very High", OBJECTID: 1 }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04],
 ]);
 const FIRE_MODERATE = esriPolygon({ HAZ_CLASS: "Moderate", OBJECTID: 2 }, [
   [-118.24, 34.04], [-118.24, 34.06], [-118.22, 34.06], [-118.22, 34.04],
+]);
+const FIRE_NON_WILDLAND = esriPolygon({ HAZ_CLASS: "Non-Wildland/Non-Urban", OBJECTID: 3 }, [
+  [-118.22, 34.04], [-118.22, 34.06], [-118.20, 34.06], [-118.20, 34.04],
+]);
+// Stands in for the polygons that only arrive once a truncated query is
+// split: the mock returns it solely for sub-boxes, never for the whole view.
+const FIRE_SPLIT_ONLY = esriPolygon({ HAZ_CLASS: "High", OBJECTID: 4 }, [
+  [-118.30, 34.00], [-118.30, 34.02], [-118.28, 34.02], [-118.28, 34.00],
 ]);
 
 // CalEnviroScreen tract. Tract 06037201100 is the parent of every block group
@@ -137,6 +147,7 @@ const CENSUS_DATA = {
       eduBachelorsPlus: 240,
       medianHouseholdIncome: 85000,
       perCapitaIncome: 41000,
+      avgHouseholdSize: 3.4,
       householdCount: 400,
       incomeBrackets: { "< $10k": 40, "$50-60k": 120, "$100-125k": 200, "$200k+": 40 },
     },
@@ -166,6 +177,9 @@ const CENSUS_DATA = {
       eduBachelorsPlus: 40,
       medianHouseholdIncome: 42000,
       perCapitaIncome: 21000,
+      // No avgHouseholdSize: stands in for a data file fetched before
+      // B25010 was added, where the card has to derive the figure.
+      householdCount: 200,
     },
   },
 };
@@ -267,8 +281,24 @@ async function main() {
     const url = route.request().url();
     if (url.includes("/query")) {
       fireQueries.push(url);
-      if (url.includes("/0/query")) return route.fulfill(json(esriFC([FIRE_VERY_HIGH])));
-      if (url.includes("/1/query")) return route.fulfill(json(esriFC([FIRE_MODERATE])));
+      // The real service caps a query at 1,000 records and reports the
+      // truncation in the body, with HTTP 200 - a silently partial answer.
+      // Layer 0 does that for the full viewport and only serves everything
+      // once the client has split the box into quarters.
+      const geom = decodeURIComponent(url.match(/geometry=([^&]*)/)[1]).split(",").map(Number);
+      const boxWidth = geom[2] - geom[0];
+      const isWholeView = boxWidth > 0.08;
+      if (url.includes("/0/query")) {
+        if (isWholeView) {
+          return route.fulfill(json({ ...esriFC([FIRE_VERY_HIGH]), exceededTransferLimit: true }));
+        }
+        return route.fulfill(json(esriFC([FIRE_VERY_HIGH, FIRE_SPLIT_ONLY])));
+      }
+      if (url.includes("/1/query")) return route.fulfill(json(esriFC([FIRE_MODERATE, FIRE_NON_WILDLAND])));
+      // A group layer answers a query with an error object and HTTP 200.
+      if (url.includes("/3/query")) {
+        return route.fulfill(json({ error: { code: 400, message: "Cannot perform query on a group layer" } }));
+      }
       return route.fulfill(json(esriFC([])));
     }
     return route.fulfill(
@@ -276,6 +306,9 @@ async function main() {
         layers: [
           { id: 0, name: "Fire Hazard Severity Zones in SRA", geometryType: "esriGeometryPolygon" },
           { id: 1, name: "Very High Fire Hazard Severity Zones in LRA", geometryType: "esriGeometryPolygon" },
+          // Group layer: cannot be queried, and its children are listed
+          // separately anyway.
+          { id: 3, name: "Fire Hazard Severity Zones", subLayerIds: [0, 1] },
           { id: 7, name: "Fire Hazard Severity Zone Labels", geometryType: "esriGeometryPoint" },
         ],
       })
@@ -740,7 +773,7 @@ async function main() {
 
     // --- Info icons ---
     const infoTitles = await page.locator("#detail-panel .info-icon").evaluateAll((els) =>
-      els.map((e) => e.getAttribute("title"))
+      els.map((e) => e.getAttribute("data-tip"))
     );
     step(
       "bachelor's % carries an info icon explaining the 25+ universe",
@@ -804,6 +837,121 @@ async function main() {
       decDesc.replace(/\s+/g, " ").slice(0, 120)
     );
 
+    // --- Card: household size, key figures, per-capita note ---
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(300);
+    const sizeCard = await page.locator("#detail-panel").innerText();
+    step(
+      "card shows the published average household size (ACS B25010)",
+      /average household size/i.test(sizeCard) && sizeCard.includes("3.40 people") && !sizeCard.includes("(est.)"),
+      sizeCard.replace(/\n/g, " ").slice(0, 150)
+    );
+    step(
+      "per-capita income carries a visible note that it counts children",
+      /children included/i.test(sizeCard),
+      sizeCard.replace(/\n/g, " ").slice(-200)
+    );
+    const keyFigures = await page.evaluate(() =>
+      [...document.querySelectorAll("#detail-panel .key-figure")].map((el) => el.textContent.trim())
+    );
+    step(
+      "ZIP, education %, median income and per-capita income are the highlighted figures",
+      keyFigures.length === 4 &&
+        keyFigures[0].startsWith("ZIP") &&
+        keyFigures.includes("30.0%") &&
+        keyFigures.includes("$85,000") &&
+        keyFigures.includes("$41,000"),
+      JSON.stringify(keyFigures)
+    );
+    const keyFigureStyle = await page.evaluate(() => {
+      const el = document.querySelector("#detail-panel td.key-figure");
+      const cs = getComputedStyle(el);
+      return { color: cs.color, weight: cs.fontWeight };
+    });
+    step(
+      "highlighted figures render bold and dark green",
+      keyFigureStyle.color === "rgb(20, 102, 58)" && Number(keyFigureStyle.weight) >= 700,
+      JSON.stringify(keyFigureStyle)
+    );
+
+    // A data file without B25010 must still show a household size, marked as
+    // the estimate it is rather than passed off as the published figure.
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011003") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(300);
+    const derivedCard = await page.locator("#detail-panel").innerText();
+    step(
+      "an older data file falls back to population over households, labelled (est.)",
+      derivedCard.includes("2.50 people (est.)"),
+      derivedCard.replace(/\n/g, " ").slice(0, 140)
+    );
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(300);
+
+    // --- Info icons actually explain something on hover ---
+    step(
+      "info icons carry their explanation as data, not a native title tooltip",
+      (await page.evaluate(() => {
+        const icon = document.querySelector("#detail-panel .info-icon");
+        return { tip: !!icon.getAttribute("data-tip"), title: icon.hasAttribute("title") };
+      })).tip === true
+    );
+    await page.hover("#detail-panel .info-icon");
+    await page.waitForTimeout(200);
+    const tipText = await page.locator("#info-tip").innerText();
+    step(
+      "hovering an info icon shows the explanation",
+      (await page.locator("#info-tip").isVisible()) && tipText.length > 20,
+      tipText.slice(0, 80)
+    );
+    step(
+      "the tooltip is attached to <body>, so the scrolling card cannot clip it",
+      await page.evaluate(() => document.getElementById("info-tip").parentElement === document.body)
+    );
+    await page.mouse.move(5, 5);
+    await page.waitForTimeout(200);
+    step("the tooltip goes away when the pointer leaves", !(await page.locator("#info-tip").isVisible()));
+
+    // --- The card is a map popup, so a layer reload cannot destroy it ---
+    // This is what made it flicker: the old card was bound to a polygon, and
+    // every refetch threw that polygon away and rebuilt the popup.
+    const popupBefore = await page.evaluate(() => {
+      const el = document.querySelector(".leaflet-popup");
+      window.__cardEl = el;
+      return !!el;
+    });
+    await page.evaluate(() => BlockGroupApp.refreshForTest("blockGroup"));
+    await page.waitForTimeout(700);
+    step(
+      "the card survives a full block group layer reload as the same DOM node",
+      popupBefore &&
+        (await page.evaluate(() => window.__cardEl === document.querySelector(".leaflet-popup"))) &&
+        (await page.locator(".leaflet-popup").count()) === 1,
+      `${await page.locator(".leaflet-popup").count()} popup(s)`
+    );
+    step(
+      "the highlight is re-attached to the rebuilt polygon",
+      await page.evaluate(() => {
+        const sel = BlockGroupApp.state.selectedProps;
+        let styled = false;
+        BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+          if (l.feature.properties.GEOID === sel.GEOID && l.options.color === "#b3401f") styled = true;
+        });
+        return styled;
+      })
+    );
+
     // --- Fire hazard zones (CAL FIRE FHSZ) ---
     await page.click("#toggle-fire");
     await page.waitForTimeout(700);
@@ -812,7 +960,7 @@ async function main() {
       BlockGroupApp.state.layers.fire.eachLayer((l) => out.push(l.options.fillColor));
       return out.sort();
     });
-    step("fire layer draws hazard polygons", fireColors.length === 2, JSON.stringify(fireColors));
+    step("fire layer draws hazard polygons", fireColors.length === 3, JSON.stringify(fireColors));
     step(
       "hazard class drives the colour: Very High is red, Moderate is pale",
       fireColors.includes("#d7301f") && fireColors.includes("#fdcc8a"),
@@ -832,6 +980,50 @@ async function main() {
       "geometry is generalised server-side rather than pulled at full resolution",
       fireQueries.every((u) => u.includes("maxAllowableOffset")),
       fireQueries[0]
+    );
+    step(
+      "the un-queryable group layer is never asked for features",
+      !fireQueries.some((u) => u.includes("/3/query"))
+    );
+
+    // The record cap is the real-world failure: CAL FIRE's service returns at
+    // most 1,000 polygons and says so in the body, with HTTP 200. Before the
+    // split, that partial answer was drawn as if it were the whole layer.
+    step(
+      "a truncated response is split into smaller boxes rather than drawn as-is",
+      fireQueries.filter((u) => u.includes("/0/query")).length === 5,
+      `${fireQueries.filter((u) => u.includes("/0/query")).length} queries on layer 0 (1 whole view + 4 quadrants)`
+    );
+    const fireClasses = await page.evaluate(() => {
+      const out = [];
+      BlockGroupApp.state.layers.fire.eachLayer((l) => out.push(l.feature.properties.HAZ_CLASS));
+      return out.sort();
+    });
+    step(
+      "polygons that only the split reveals do make it onto the map",
+      fireClasses.includes("High"),
+      JSON.stringify(fireClasses)
+    );
+    step(
+      "polygons returned by two overlapping sub-boxes are not drawn twice",
+      fireClasses.filter((c) => c === "Very High").length === 1,
+      JSON.stringify(fireClasses)
+    );
+    step(
+      "non-wildland / unzoned ground is dropped instead of painted grey over the city",
+      !fireClasses.includes("Non-Wildland/Non-Urban"),
+      JSON.stringify(fireClasses)
+    );
+    const fireLog = await page.locator("#status-log").innerText();
+    step(
+      "the status log reports what the hazard field actually said",
+      /Fire hazard classes/i.test(fireLog) && /very high/i.test(fireLog),
+      (fireLog.split("\n").find((l) => /Fire hazard classes/i.test(l)) || "").slice(0, 140)
+    );
+    step(
+      "the status log says the box had to be split to beat the record cap",
+      /record cap/i.test(fireLog),
+      (fireLog.split("\n").find((l) => /record cap/i.test(l)) || "").slice(0, 140)
     );
     const fireLegend = await page.locator("#fire-legend").innerText();
     step(

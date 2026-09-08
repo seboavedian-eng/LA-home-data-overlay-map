@@ -103,6 +103,11 @@ P2_TOTAL = "P2_001N"
 B15003_TOTAL = "B15003_001E"
 B15003_BACHELORS_PLUS = ["B15003_022E", "B15003_023E", "B15003_024E", "B15003_025E"]
 
+# B25010: average household size of occupied housing units. The Census
+# Bureau's own figure, so it excludes people in group quarters on both sides
+# of the division - unlike dividing total population by household count.
+B25010_AVG_HH_SIZE = "B25010_001E"
+
 B19013_MEDIAN_HH = "B19013_001E"
 B19301_PER_CAPITA = "B19301_001E"
 
@@ -352,6 +357,9 @@ def main():
         "B19013/B19301/B19001",
     )
 
+    print("\nAverage household size (B25010):")
+    hhsize, hhsize_geo = fetch_table(acs, [B25010_AVG_HH_SIZE], args.key, "B25010")
+
     # Open question worth an empirical answer: is education-by-age-bracket
     # (B15001) published at block group? If it is, a future version can show
     # bachelor's-or-higher per age band instead of just for 25+ overall.
@@ -412,13 +420,17 @@ def main():
                 label: to_number(inc_row.get(code)) or 0 for code, label in B19001_BRACKETS.items()
             }
 
+        hh_row = lookup(hhsize, hhsize_geo) if hhsize else None
+        if hh_row:
+            rec["avgHouseholdSize"] = to_number(hh_row.get(B25010_AVG_HH_SIZE))
+
         block_groups[geoid] = rec
 
     payload = {
         "meta": {
             # Bumped when the record shape changes, so the page can tell a
             # stale data file from a missing one and say which it is.
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "ageBracketLabels": {str(k): v for k, v in B01001_BRACKETS.items()},
             "year": args.year,
             "decennialYear": 2020,
@@ -432,6 +444,7 @@ def main():
                 "ethnicityDec": eth_dec_geo,
                 "education": edu_geo,
                 "income": income_geo,
+                "householdSize": hhsize_geo,
             },
             "sources": {
                 "age": "ACS B01001 (Sex by Age)",
@@ -439,6 +452,7 @@ def main():
                 "ethnicityDec": "2020 Census P2 (redistricting file, 100% count)",
                 "education": "ACS B15003 (Educational Attainment, 25+)",
                 "income": "ACS B19013 / B19301 / B19001",
+                "householdSize": "ACS B25010 (Average Household Size of Occupied Housing Units)",
             },
         },
         "blockGroups": block_groups,

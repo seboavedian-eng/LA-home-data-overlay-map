@@ -172,7 +172,23 @@ html, body {
   cursor: help;
   vertical-align: 1px;
 }
-.info-icon:hover { background: var(--accent); border-color: var(--accent); color: white; }
+.info-icon:hover, .info-icon:focus { background: var(--accent); border-color: var(--accent); color: white; outline: none; }
+
+/* The explanation itself. Lives on <body>, not inside the card, so the
+   card's own scrolling box can never clip it. */
+#info-tip {
+  position: fixed;
+  z-index: 10000;
+  max-width: 280px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #22282f;
+  color: #f2f5f8;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
 
 .sub-label {
   font-size: 0.7rem;
@@ -326,3 +342,14 @@ html, body {
 .ces-tip td.k { padding-right: 10px; color: #5b6470; }
 .ces-tip td.v { text-align: right; font-weight: 600; }
 .ces-tip .tip-note { display: block; margin-top: 4px; color: var(--muted); font-size: 0.68rem; }
+
+/* --- Key figures on the card --- */
+/* The four numbers people actually shop on: ZIP, education, and the two
+   income figures. */
+.key-figure,
+#detail-panel td.v.key-figure,
+.detail-card td.v.key-figure {
+  color: #14663a;
+  font-weight: 700;
+}
+#detail-panel .geoid .key-figure { font-size: 0.78rem; }

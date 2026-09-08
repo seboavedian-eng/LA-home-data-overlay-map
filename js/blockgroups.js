@@ -419,7 +419,12 @@ const BlockGroupApp = (() => {
       const name = l.name || "";
       if (spec.match && !spec.match.test(name)) return false;
       if (spec.exclude && spec.exclude.test(name)) return false;
-      // A sublayer with no geometryType is a group//unknown layer: keep it and
+      // Group layers cannot be queried at all - ArcGIS answers with an error
+      // object, which used to fail the whole layer. They are recognisable by
+      // carrying child ids, and their children are listed separately anyway,
+      // so dropping them loses nothing.
+      if (Array.isArray(l.subLayerIds) && l.subLayerIds.length) return false;
+      // A sublayer with no geometryType is an unknown quantity: keep it and
       // let the query decide, rather than dropping a layer we might need.
       if (spec.polygonsOnly && l.geometryType && l.geometryType !== "esriGeometryPolygon") return false;
       return true;
@@ -456,6 +461,88 @@ const BlockGroupApp = (() => {
     throw new Error(`no server answered. Tried - ${problems.join(" | ")}`);
   }
 
+  // How far to subdivide a truncated query. Only boxes that actually come
+  // back truncated are split, so depth 3 is a worst case (64 sub-queries for
+  // one layer), not the normal cost. It needs to be this deep because CAL
+  // FIRE's service caps a query at 1,000 records and an LA-sized viewport
+  // holds many times that in hazard polygons.
+  const MAX_SPLIT_DEPTH = 3;
+
+  function quadrants(bbox) {
+    const midX = (bbox.xmin + bbox.xmax) / 2;
+    const midY = (bbox.ymin + bbox.ymax) / 2;
+    return [
+      { xmin: bbox.xmin, ymin: bbox.ymin, xmax: midX, ymax: midY },
+      { xmin: midX, ymin: bbox.ymin, xmax: bbox.xmax, ymax: midY },
+      { xmin: bbox.xmin, ymin: midY, xmax: midX, ymax: bbox.ymax },
+      { xmin: midX, ymin: midY, xmax: bbox.xmax, ymax: bbox.ymax },
+    ];
+  }
+
+  function featureKey(feature, index) {
+    const id = Utils.pickField(feature.properties, ["OBJECTID", "FID", "OID", "GlobalID"]);
+    return id === undefined ? `idx:${index}:${JSON.stringify(feature.geometry).length}` : `id:${id}`;
+  }
+
+  // One query, with the two things that actually go wrong in the field
+  // handled where they happen:
+  //
+  //  1. The record cap. FHSZ is tens of thousands of polygons; an LA-sized
+  //     viewport blows past any server's maxRecordCount, and the server
+  //     answers with a perfectly valid *partial* result. That is what a
+  //     hazard layer with chunks missing looks like. So when the response
+  //     says it was truncated, split the box into quarters and ask again -
+  //     smaller boxes hold fewer records. Every ArcGIS version supports
+  //     this; resultOffset paging does not.
+  //
+  //  2. maxAllowableOffset. Older ArcGIS Server builds reject it outright,
+  //     which fails the whole layer for the sake of an optimisation, so a
+  //     rejected query is retried once without it.
+  async function fetchOverlayFeatures(key, source, sub, bbox, depth = 0, seen = new Set(), stats = null) {
+    const spec = BG_CONFIG.OVERLAYS[key];
+    const collected = [];
+
+    const build = (simplify) =>
+      Utils.arcgisQueryUrl(source.url, sub.id, {
+        bbox,
+        outFields: spec.outFields || "*",
+        extraParams: simplify && spec.simplifyDegrees ? { maxAllowableOffset: String(spec.simplifyDegrees) } : {},
+      });
+
+    let gj;
+    try {
+      gj = await Utils.fetchEsriAsGeoJSON(build(true), { timeoutMs: 40000 });
+    } catch (err) {
+      if (!spec.simplifyDegrees || !/ArcGIS error/.test(err.message)) throw err;
+      Utils.logStatus(key, "warn", `${sub.name}: server rejected geometry simplification (${err.message}); retrying without it.`);
+      gj = await Utils.fetchEsriAsGeoJSON(build(false), { timeoutMs: 40000 });
+    }
+
+    if (stats) stats.requests += 1;
+
+    if (gj.exceededTransferLimit && depth < MAX_SPLIT_DEPTH) {
+      if (stats) stats.split = true;
+      for (const quad of quadrants(bbox)) {
+        const part = await fetchOverlayFeatures(key, source, sub, quad, depth + 1, seen, stats);
+        collected.push(...part);
+      }
+      return collected;
+    }
+
+    if (gj.exceededTransferLimit && stats) stats.stillTruncated = true;
+
+    gj.features.forEach((f, i) => {
+      // Quadrants overlap at their shared edges, and a polygon crossing one
+      // is returned by both queries, so dedupe on the server's own id.
+      const dedupeKey = featureKey(f, i);
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
+      f.properties.SOURCE_LAYER = sub.name;
+      collected.push(f);
+    });
+    return collected;
+  }
+
   async function fetchOverlay(key, bbox) {
     const spec = BG_CONFIG.OVERLAYS[key];
     const source = await resolveOverlaySource(key);
@@ -463,20 +550,18 @@ const BlockGroupApp = (() => {
     const failures = [];
 
     for (const sub of source.sublayers) {
-      const url = Utils.arcgisQueryUrl(source.url, sub.id, {
-        bbox,
-        outFields: spec.outFields || "*",
-        // maxAllowableOffset is ArcGIS's server-side generalisation: it drops
-        // vertices finer than this many degrees, which is the difference
-        // between a 6 MB and a 300 KB response for hazard zones.
-        extraParams: spec.simplifyDegrees ? { maxAllowableOffset: String(spec.simplifyDegrees) } : {},
-      });
+      const stats = { requests: 0, split: false, stillTruncated: false };
       try {
-        const gj = await Utils.fetchEsriAsGeoJSON(url, { timeoutMs: 40000 });
-        gj.features.forEach((f) => {
-          f.properties.SOURCE_LAYER = sub.name;
-          features.push(f);
-        });
+        const got = await fetchOverlayFeatures(key, source, sub, bbox, 0, new Set(), stats);
+        features.push(...got);
+        Utils.logStatus(
+          key,
+          got.length ? "info" : "warn",
+          `${sub.name}: ${got.length} polygons in ${stats.requests} request(s)` +
+            (stats.split ? ", split to get past the server's record cap" : "") +
+            (stats.stillTruncated ? " - STILL TRUNCATED, zoom in for full coverage" : "") +
+            "."
+        );
       } catch (err) {
         failures.push(`${sub.name}: ${err.message}`);
       }
@@ -501,6 +586,56 @@ const BlockGroupApp = (() => {
     if (s.includes("moderate") || s === "1") return "moderate";
     if (s.includes("high") || s === "2") return "high";
     return null;
+  }
+
+  // If the live field names ever stop matching, every polygon falls back to
+  // grey and the layer just looks wrong with no clue why. This turns that
+  // into a status line naming the values seen and the fields available.
+  function logFireClasses(geojson) {
+    if (!geojson.features.length) return;
+    const counts = {};
+    let unclassified = 0;
+    geojson.features.forEach((f) => {
+      const cls = fireClass(f.properties);
+      if (!cls) unclassified += 1;
+      counts[cls || "unclassified"] = (counts[cls || "unclassified"] || 0) + 1;
+    });
+    const summary = Object.entries(counts)
+      .map(([k, n]) => `${k}: ${n}`)
+      .join(", ");
+    Utils.logStatus(
+      "fire",
+      unclassified === geojson.features.length ? "warn" : "ok",
+      `Fire hazard classes - ${summary}.` +
+        (unclassified
+          ? ` Fields available on the first polygon: ${Object.keys(geojson.features[0].properties).join(", ")}.`
+          : "")
+    );
+  }
+
+  // CAL FIRE's polygons are not all hazard zones. The same layer carries
+  // "Non-Wildland/Non-Urban" and "Urban Unzoned" ground, which covers most of
+  // flat LA. Painting those grey blankets the city in a colour that means
+  // nothing - which is what "the fire layer looks wrong" looks like. They are
+  // dropped before they reach the map; genuinely unrecognised values are kept
+  // and drawn grey, because those are worth seeing and reporting.
+  const NON_HAZARD = /non-?wildland|urban unzoned|unzoned|not zoned|^none$|^n\/?a$/i;
+
+  function isNonHazard(props) {
+    const raw = Utils.pickField(props, [
+      "HAZ_CLASS", "FHSZ_DESC", "FHSZ", "SRA_HAZ_CODE", "HAZARD_CLASS", "HAZARD", "HAZ_CODE", "CLASS",
+    ]);
+    return raw !== undefined && raw !== null && NON_HAZARD.test(String(raw));
+  }
+
+  function dropNonHazardZones(geojson) {
+    const before = geojson.features.length;
+    geojson.features = geojson.features.filter((f) => !isNonHazard(f.properties));
+    const dropped = before - geojson.features.length;
+    if (dropped) {
+      Utils.logStatus("fire", "info", `Skipped ${dropped} non-wildland / unzoned polygons - those are not hazard zones.`);
+    }
+    return geojson;
   }
 
   function fireStyle(feature) {
@@ -840,8 +975,76 @@ const BlockGroupApp = (() => {
 
   // Small "i" with a hover explanation. Uses title= so it works without any
   // extra JS or positioning logic, including inside a Leaflet popup.
+  // The explanation is carried on the element and shown by initInfoTips
+  // below, not by the browser's own title tooltip. Two reasons: a native
+  // tooltip only appears after a long hover and is easy to miss entirely,
+  // and inside the card - which is a scrolling box - it competes with the
+  // scroll container. The custom one is attached to <body>, so it can never
+  // be clipped by the card it sits in.
   function infoIcon(text) {
-    return `<span class="info-icon" title="${String(text).replace(/"/g, "&quot;")}">i</span>`;
+    const safe = String(text).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+    return `<span class="info-icon" data-tip="${safe}" tabindex="0" role="button" aria-label="Explain this figure">i</span>`;
+  }
+
+  // One tooltip element, shown wherever an info icon is hovered, focused or
+  // tapped - the card exists in two places (map popup and sidebar) and both
+  // are re-rendered constantly, so this listens on the document rather than
+  // wiring up each icon as it is created.
+  let tipEl = null;
+
+  function hideInfoTip() {
+    if (tipEl) tipEl.classList.add("hidden");
+  }
+
+  function showInfoTip(icon) {
+    const text = icon.getAttribute("data-tip");
+    if (!text) return;
+    if (!tipEl) {
+      tipEl = document.createElement("div");
+      tipEl.id = "info-tip";
+      tipEl.className = "hidden";
+      document.body.appendChild(tipEl);
+    }
+    tipEl.textContent = text;
+    tipEl.classList.remove("hidden");
+
+    // Position under the icon, then pull back inside the window if that
+    // would push it off the right or bottom edge.
+    const box = icon.getBoundingClientRect();
+    const tip = tipEl.getBoundingClientRect();
+    let left = box.left;
+    let top = box.bottom + 6;
+    if (left + tip.width > window.innerWidth - 8) left = window.innerWidth - tip.width - 8;
+    if (top + tip.height > window.innerHeight - 8) top = box.top - tip.height - 6;
+    tipEl.style.left = `${Math.max(8, left)}px`;
+    tipEl.style.top = `${Math.max(8, top)}px`;
+  }
+
+  function initInfoTips() {
+    document.addEventListener("mouseover", (e) => {
+      const icon = e.target.closest && e.target.closest(".info-icon");
+      if (icon) showInfoTip(icon);
+    });
+    document.addEventListener("mouseout", (e) => {
+      if (e.target.closest && e.target.closest(".info-icon")) hideInfoTip();
+    });
+    document.addEventListener("focusin", (e) => {
+      const icon = e.target.closest && e.target.closest(".info-icon");
+      if (icon) showInfoTip(icon);
+    });
+    document.addEventListener("focusout", hideInfoTip);
+    // Tap support: on a touch screen there is no hover at all.
+    document.addEventListener("click", (e) => {
+      const icon = e.target.closest && e.target.closest(".info-icon");
+      if (icon) {
+        e.stopPropagation();
+        showInfoTip(icon);
+      } else {
+        hideInfoTip();
+      }
+    });
+    // A tooltip left hanging over a moving map looks broken.
+    map.on("movestart zoomstart popupclose", hideInfoTip);
   }
 
   // B19001: households by income bracket. This was being fetched all along
@@ -877,6 +1080,39 @@ const BlockGroupApp = (() => {
       ${bucket ? `<tr><td class="k">Density band</td><td class="v">
         <span class="swatch inline" style="background:${bucket.color}"></span>${bucket.label.replace(/\s*\(.*\)/, "")}
       </td></tr>` : ""}`;
+  }
+
+  // Average household size. Prefer ACS B25010, which the Census Bureau
+  // computes as population living in households divided by occupied units.
+  // Where that is missing - a data file fetched before B25010 was added -
+  // fall back to total population over the B19001 household count. The two
+  // differ slightly, because B25010 excludes people in group quarters
+  // (dorms, care homes, barracks) while total population does not, so the
+  // derived figure is labelled as an estimate rather than passed off as the
+  // published one.
+  function householdSizeRow(record) {
+    const published = record.avgHouseholdSize;
+    const households = record.householdCount;
+    const derived =
+      published === undefined || published === null
+        ? households && record.totalPopulation
+          ? record.totalPopulation / households
+          : null
+        : null;
+    const value = published !== undefined && published !== null ? published : derived;
+    if (!value) return "";
+
+    const tip = published
+      ? "ACS B25010: people living in households divided by occupied housing units. " +
+        "People in group quarters - dorms, care homes, barracks - are excluded from both sides."
+      : "Estimated as total population divided by the number of households (ACS B19001), " +
+        "because this data file predates the B25010 fetch. It runs slightly high where a " +
+        "block group holds group quarters such as dorms or care homes, since those residents " +
+        "count in the population but live in no household. Re-run the fetch script for the " +
+        "Census Bureau's own figure.";
+
+    return `<tr><td class="k">Average household size${infoIcon(tip)}</td>` +
+      `<td class="v">${value.toFixed(2)} people${published ? "" : " (est.)"}</td></tr>`;
   }
 
   function ageBandCount(record, band) {
@@ -981,10 +1217,11 @@ const BlockGroupApp = (() => {
 
     return `<div class="detail-card">
       <h3>${heading}</h3>
-      <p class="geoid">GEOID ${geoid}${zip ? ` &middot; ZIP ${zip}` : ""}</p>
+      <p class="geoid">GEOID ${geoid}${zip ? ` &middot; <span class="key-figure">ZIP ${zip}</span>` : ""}</p>
 
       <table>
         <tr><td class="k">Total population</td><td class="v">${Utils.fmtNumber(pop)}</td></tr>
+        ${householdSizeRow(record)}
         ${densityRows(feature)}
       </table>
 
@@ -1008,7 +1245,7 @@ const BlockGroupApp = (() => {
             "excluded from both the numerator and the denominator, so this " +
             "figure is not comparable with the age, sex and ethnicity " +
             "percentages above (which are shares of everyone)."
-        )}</td><td class="v">${bachelorsPct}</td></tr>
+        )}</td><td class="v key-figure">${bachelorsPct}</td></tr>
       </table>
       ${compact ? "" : `<p class="src-note">Source: ACS B15003, share of the 25-and-over population${geoNote("education")}</p>`}
 
@@ -1018,13 +1255,15 @@ const BlockGroupApp = (() => {
           "The midpoint of household incomes (ACS B19013): half the households " +
             "earn more, half less. A household is everyone living at one address, " +
             "so this is not the same as an individual's earnings."
-        )}</td><td class="v">${Utils.fmtCurrency(record.medianHouseholdIncome)}</td></tr>
+        )}</td><td class="v key-figure">${Utils.fmtCurrency(record.medianHouseholdIncome)}</td></tr>
         <tr><td class="k">Per-capita income${infoIcon(
           "Total income divided by every resident including children (ACS B19301). " +
             "Always lower than the household median, and the gap widens where " +
             "households are larger."
-        )}</td><td class="v">${Utils.fmtCurrency(record.perCapitaIncome)}</td></tr>
+        )}</td><td class="v key-figure">${Utils.fmtCurrency(record.perCapitaIncome)}</td></tr>
       </table>
+      <p class="src-note">Per-capita income counts <strong>every resident, children included</strong>,
+         which is why it sits well below the household median.</p>
       ${incomeBracketBars(record)}
       ${compact ? "" : `<p class="src-note">Source: ACS B19013 / B19301${geoNote("income")}</p>`}
 
@@ -1274,17 +1513,11 @@ const BlockGroupApp = (() => {
     const record = recordFor(selectedProps);
     const feature = selectedLayer ? selectedLayer.feature : null;
     document.getElementById("detail-panel").innerHTML = detailHTML(selectedProps, record, { feature });
-    if (selectedLayer) {
-      const html = `<div class="bg-popup">${detailHTML(selectedProps, record, { compact: true, feature })}</div>`;
-      if (selectedLayer.getPopup()) selectedLayer.setPopupContent(html);
+    if (cardPopup && cardPopup.isOpen()) {
+      cardPopup.setContent(`<div class="bg-popup">${detailHTML(selectedProps, record, { compact: true, feature })}</div>`);
     }
   }
 
-  // Popup options are fixed, and deliberately live outside selectBlockGroup:
-  // Leaflet's bindPopup builds a *brand new* Popup whenever options are
-  // passed, so re-binding with options on a layer whose popup is already open
-  // orphans that open popup on the map with nothing left pointing at it. Bind
-  // once, then only ever set new content.
   const POPUP_OPTIONS = {
     maxWidth: 300,
     minWidth: 250,
@@ -1294,73 +1527,81 @@ const BlockGroupApp = (() => {
     closeOnClick: false, // ...or when the map is clicked
   };
 
-  // Belt and braces for the orphan case above: sweep any card popup still on
-  // the map that no longer belongs to the block group being selected.
-  function closeStrayCards(keepLayer) {
-    map.eachLayer((l) => {
-      if (!(l instanceof L.Popup)) return;
-      const src = l._source;
-      if (!src || !src.feature) return; // not a block group card (e.g. the address pin)
-      if (keepLayer && src === keepLayer && keepLayer.getPopup() === l) return;
-      map.removeLayer(l);
+  // ONE popup object for the whole session, owned by the map rather than
+  // bound to a polygon.
+  //
+  // This is deliberate. A bound popup belongs to its layer, and the block
+  // group layer is thrown away and rebuilt every time the map is panned far
+  // enough to refetch - so the card had to be closed, re-bound and re-opened
+  // on each rebuild, which is what made it blink out and back in. A map-owned
+  // popup is untouched by those rebuilds: the polygons come and go
+  // underneath it and the card just stays put. It also makes "only one card
+  // at a time" structural rather than something to keep sweeping up after.
+  let cardPopup = null;
+  let selectedGeoid = null;
+
+  function ensureCardPopup() {
+    if (cardPopup) return cardPopup;
+    cardPopup = L.popup(POPUP_OPTIONS);
+    cardPopup.on("remove", () => {
+      // Closing the card clears the highlight, but keeps the sidebar copy.
+      const wasSelected = selectedLayer;
+      selectedLayer = null;
+      selectedGeoid = null;
+      if (wasSelected && wasSelected._map) wasSelected.setStyle(styleForBlockGroup(wasSelected.feature));
     });
+    return cardPopup;
   }
 
-  function selectBlockGroup(layer, props, { openPopup = true } = {}) {
+  // A synthetic click (as the tests fire) carries no latlng, so fall back to
+  // the polygon's own centre.
+  function anchorFor(layer, latlng) {
+    if (latlng) return latlng;
+    if (layer && layer.getBounds) return layer.getBounds().getCenter();
+    return map.getCenter();
+  }
+
+  function selectBlockGroup(layer, props, { openPopup = true, latlng = null } = {}) {
     const record = recordFor(props);
 
-    // Close the previous card explicitly. Popups are configured with
-    // autoClose:false so they survive the map auto-panning, but that also
-    // means Leaflet won't retire the old one - without this, every click
-    // leaves another card stranded on the map.
-    if (selectedLayer && selectedLayer !== layer) {
-      selectedLayer.closePopup();
-      selectedLayer.unbindPopup();
+    if (selectedLayer && selectedLayer !== layer && selectedLayer._map) {
       selectedLayer.setStyle(styleForBlockGroup(selectedLayer.feature));
     }
     selectedLayer = layer;
     selectedProps = props;
+    selectedGeoid = geoidOf(props);
     layer.setStyle(BG_CONFIG.STYLES.blockGroupSelected);
 
     const html = `<div class="bg-popup">${detailHTML(props, record, { compact: true, feature: layer.feature })}</div>`;
-    if (layer.getPopup()) {
-      layer.setPopupContent(html);
-    } else {
-      layer.bindPopup(html, POPUP_OPTIONS);
+    if (openPopup) {
+      const popup = ensureCardPopup();
+      popup.setLatLng(anchorFor(layer, latlng)).setContent(html);
+      if (!popup.isOpen()) popup.openOn(map);
     }
-    closeStrayCards(layer);
-    if (openPopup) layer.openPopup();
     document.getElementById("detail-panel").innerHTML = detailHTML(props, record, { feature: layer.feature });
 
     lookupZip(geoidOf(props), layer);
   }
 
-  // Re-selects the previously selected block group after a layer reload, so
-  // panning or zooming doesn't silently drop the open card.
-  //
-  // A reload genuinely can happen while a card is open: opening a popup makes
-  // Leaflet auto-pan to fit it, and for a tall popup that pan can exceed the
-  // loaded area. Restyling alone isn't enough - the popup belongs to the
-  // discarded layer object, so it has to be re-bound and re-opened on the new
-  // one, otherwise the card silently vanishes a moment after opening.
-  function restoreSelection(popupWasOpen) {
-    if (!selectedProps || !layers.blockGroup) return;
-    const wantedGeoid = geoidOf(selectedProps);
+  // After a layer reload the polygons are new objects, so the highlight has
+  // to be re-attached to the one that replaced the selected block group. The
+  // card itself needs nothing: it belongs to the map, not to the polygon.
+  function restoreSelection() {
+    if (!selectedGeoid || !layers.blockGroup) return;
 
     let found = null;
     layers.blockGroup.eachLayer((l) => {
-      if (!found && geoidOf(l.feature.properties) === wantedGeoid) found = l;
+      if (!found && geoidOf(l.feature.properties) === selectedGeoid) found = l;
     });
 
-    if (found) {
-      selectBlockGroup(found, found.feature.properties, { openPopup: popupWasOpen });
-    } else {
-      selectedLayer = null; // panned away from it; the sidebar card stays
-    }
+    selectedLayer = found;
+    if (found) found.setStyle(BG_CONFIG.STYLES.blockGroupSelected);
   }
 
   function buildLayer(key, geojson) {
     if (key === "fire") {
+      dropNonHazardZones(geojson);
+      logFireClasses(geojson);
       return L.geoJSON(geojson, {
         style: fireStyle,
         onEachFeature: (feature, layer) => {
@@ -1388,9 +1629,9 @@ const BlockGroupApp = (() => {
       return L.geoJSON(geojson, {
         style: (feature) => styleForBlockGroup(feature),
         onEachFeature: (feature, layer) => {
-          layer.on("click", () => {
+          layer.on("click", (e) => {
             if (pinArmed) return; // the armed pin-drop owns this click
-            selectBlockGroup(layer, feature.properties);
+            selectBlockGroup(layer, feature.properties, { latlng: e && e.latlng });
           });
         },
       });
@@ -1467,16 +1708,6 @@ const BlockGroupApp = (() => {
         : await fetchBoundaries(key, bbox);
       if (!enabled[key]) return; // toggled off while the request was in flight
 
-      // Capture this BEFORE removing the layer: removing it closes the popup,
-      // so asking afterwards always reports "closed" and the card would never
-      // be restored.
-      const popupWasOpen = !!(
-        key === "blockGroup" &&
-        selectedLayer &&
-        selectedLayer.isPopupOpen &&
-        selectedLayer.isPopupOpen()
-      );
-
       if (layers[key]) map.removeLayer(layers[key]);
       layers[key] = buildLayer(key, geojson).addTo(map);
       // Hazard and pollution are area fills: they belong under the boundary
@@ -1485,10 +1716,10 @@ const BlockGroupApp = (() => {
       loadedBBox[key] = bbox;
       if (key === "pollution") renderSelection(); // the open card gains its CES rows
 
-      // Re-attach the open selection to its polygon in the rebuilt layer
-      // rather than dropping it - the card should survive a pan.
+      // Re-attach the highlight to the polygon that replaced the selected
+      // one. The card is a map popup and rides through untouched.
       if (key === "blockGroup") {
-        restoreSelection(popupWasOpen);
+        restoreSelection();
         applyFilters();
       }
 
@@ -1559,8 +1790,10 @@ const BlockGroupApp = (() => {
         delete loadedBBox[key];
       }
       if (key === "blockGroup") {
+        if (cardPopup && cardPopup.isOpen()) map.closePopup(cardPopup);
         selectedLayer = null;
         selectedProps = null;
+        selectedGeoid = null;
         document.getElementById("detail-panel").innerHTML =
           '<p class="hint">Turn on <strong>Block Group Borders</strong>, zoom in, and click a block group.</p>';
       }
@@ -1982,6 +2215,7 @@ const BlockGroupApp = (() => {
     initStatusPanel();
     initAddressSearch();
     initPinDrop();
+    initInfoTips();
     renderFilterRows();
     document.getElementById("toggle-density").addEventListener("change", (e) => {
       densityShading = e.target.checked;
@@ -2045,6 +2279,8 @@ const BlockGroupApp = (() => {
 
   return {
     init,
+    // Forces a layer reload, so a test can prove the card survives one.
+    refreshForTest: (key) => refreshLayer(key, { force: true }),
     // exposed for tests
     get state() {
       return { map, enabled, layers, censusData, selectedProps, windGrid, windOverlay, pinArmed, cesByTract, basemapKind };
