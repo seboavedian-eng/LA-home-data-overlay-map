@@ -250,18 +250,30 @@ html, body {
 }
 #detail-panel h3 { margin: 0 0 2px; font-size: 0.85rem; }
 #detail-panel .geoid { font-size: 0.7rem; color: var(--muted); margin: 0 0 8px; }
+
+/* ZIP leads the card. */
+.detail-card .card-zip {
+  margin: 0 0 2px;
+  font-size: 1rem;
+  letter-spacing: 0.01em;
+}
+.detail-card h3 { font-weight: 600; }
 #detail-panel table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
 #detail-panel td { padding: 2px 0; vertical-align: top; }
 #detail-panel td.k { color: var(--muted); padding-right: 6px; }
 #detail-panel td.v { text-align: right; font-weight: 600; white-space: nowrap; }
-#detail-panel .section-label {
+/* Category headings on the card. Bold and dark, with a pale rule above, so
+   the eye can see where one section of the card ends and the next begins. */
+#detail-panel .section-label,
+.detail-card .section-label {
   font-size: 0.72rem;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--muted);
-  margin: 10px 0 4px;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 12px 0 5px;
   border-top: 1px solid var(--border);
-  padding-top: 8px;
+  padding-top: 9px;
 }
 #detail-panel .footnote { font-size: 0.68rem; color: var(--muted); margin: 8px 0 0; line-height: 1.35; }
 
@@ -352,4 +364,4 @@ html, body {
   color: #14663a;
   font-weight: 700;
 }
-#detail-panel .geoid .key-figure { font-size: 0.78rem; }
+

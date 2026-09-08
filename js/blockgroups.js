@@ -19,6 +19,19 @@
 // sluggish map.
 // ---------------------------------------------------------------------------
 
+// Sublayers that must never be drawn as hazard zones.
+//
+// "SRA/LRA Awaiting Zoning" is the one that actually bit us. It is a
+// placeholder for ground CAL FIRE has not finished re-zoning - not a hazard
+// class - and it is enormous, covering whole unincorporated areas. Because
+// its name contains "SRA", a match on /sra|lra/ pulled it in, and it was
+// then painted as though it were a real zone. That is the wrong-looking
+// wash of colour over the canyons.
+//
+// The rest are label, line, annotation and responsibility-area boundary
+// layers: they query fine and draw as noise.
+const FIRE_LAYER_EXCLUDE = /awaiting|pending|unzoned|label|annotation|\bline\b|responsibility area(s)?$|boundar/i;
+
 const BG_CONFIG = {
   MAP_CENTER: [34.05, -118.25],
   MAP_ZOOM: 12,
@@ -128,6 +141,7 @@ const BG_CONFIG = {
     { max: 1000, label: "Very low (under 1,000)", color: "#1b4332" },
   ],
 
+
   // --- Hazard / environment overlays --------------------------------------
   // These are ordinary ArcGIS REST polygon services, but unlike TIGERweb they
   // each live on their own host, so each carries its own candidate list. The
@@ -143,15 +157,41 @@ const BG_CONFIG = {
       // detail no one can see at these zooms.
       simplifyDegrees: 0.0005,
       servers: [
+        // LA County's own Hazards service first. It carries the county's
+        // adopted SRA and LRA zones for exactly the area this app covers,
+        // which is a better match than a statewide service.
+        {
+          url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Hazards/MapServer",
+          discover: {
+            nameHint: "fire hazard severity",
+            match: /fire hazard severity|fhsz|vhfhsz/i,
+            exclude: FIRE_LAYER_EXCLUDE,
+            polygonsOnly: true,
+            fallbackId: 2,
+          },
+        },
+        // Same county service on its other public host, in case the first
+        // is retired - these two have swapped over the years.
+        {
+          url: "https://arcgis.gis.lacounty.gov/arcgis/rest/services/LACounty_Dynamic/Hazards/MapServer",
+          discover: {
+            nameHint: "fire hazard severity",
+            match: /fire hazard severity|fhsz|vhfhsz/i,
+            exclude: FIRE_LAYER_EXCLUDE,
+            polygonsOnly: true,
+            fallbackId: 19,
+          },
+        },
         {
           url: "https://services.gis.ca.gov/arcgis/rest/services/Environment/Fire_Severity_Zones/MapServer",
-          // This service splits SRA and LRA into separate sublayers and also
-          // carries label/line sublayers whose names match "hazard" too -
-          // pulling those in is what drew stray unfilled lines on the old page.
+          // This service splits SRA and LRA into separate sublayers, and
+          // also carries label/line sublayers plus an "SRA/LRA Awaiting
+          // Zoning" sublayer - see FIRE_LAYER_EXCLUDE for why that one is
+          // poison.
           discover: {
-            nameHint: "hazard",
+            nameHint: "fire hazard severity",
             match: /hazard|fhsz|sra|lra/i,
-            exclude: /label|annotation|line$/i,
+            exclude: FIRE_LAYER_EXCLUDE,
             polygonsOnly: true,
             fallbackId: 0,
           },
@@ -416,7 +456,10 @@ const BlockGroupApp = (() => {
     const root = await Utils.fetchJSON(`${serverUrl}?f=json`, { timeoutMs: 20000 });
     const all = root.layers || [];
     const hits = all.filter((l) => {
-      const name = l.name || "";
+      // County services name layers FIRE_HAZARD_SEVERITY_ZONES_LRA while
+      // state ones write "Fire Hazard Severity Zones in LRA". Matching
+      // against a normalised name means one pattern covers both.
+      const name = (l.name || "").replace(/[_-]+/g, " ");
       if (spec.match && !spec.match.test(name)) return false;
       if (spec.exclude && spec.exclude.test(name)) return false;
       // Group layers cannot be queried at all - ArcGIS answers with an error
@@ -619,7 +662,7 @@ const BlockGroupApp = (() => {
   // nothing - which is what "the fire layer looks wrong" looks like. They are
   // dropped before they reach the map; genuinely unrecognised values are kept
   // and drawn grey, because those are worth seeing and reporting.
-  const NON_HAZARD = /non-?wildland|urban unzoned|unzoned|not zoned|^none$|^n\/?a$/i;
+  const NON_HAZARD = /non-?wildland|urban unzoned|unzoned|not zoned|awaiting|pending|^none$|^n\/?a$/i;
 
   function isNonHazard(props) {
     const raw = Utils.pickField(props, [
@@ -1090,16 +1133,21 @@ const BlockGroupApp = (() => {
   // (dorms, care homes, barracks) while total population does not, so the
   // derived figure is labelled as an estimate rather than passed off as the
   // published one.
+  // Returns { value, published } so the card can mark a derived figure and
+  // the filter can use the same number without duplicating the fallback.
+  function householdSize(record) {
+    if (!record) return { value: null, published: false };
+    if (record.avgHouseholdSize !== undefined && record.avgHouseholdSize !== null) {
+      return { value: record.avgHouseholdSize, published: true };
+    }
+    if (record.householdCount && record.totalPopulation) {
+      return { value: record.totalPopulation / record.householdCount, published: false };
+    }
+    return { value: null, published: false };
+  }
+
   function householdSizeRow(record) {
-    const published = record.avgHouseholdSize;
-    const households = record.householdCount;
-    const derived =
-      published === undefined || published === null
-        ? households && record.totalPopulation
-          ? record.totalPopulation / households
-          : null
-        : null;
-    const value = published !== undefined && published !== null ? published : derived;
+    const { value, published } = householdSize(record);
     if (!value) return "";
 
     const tip = published
@@ -1112,7 +1160,7 @@ const BlockGroupApp = (() => {
         "Census Bureau's own figure.";
 
     return `<tr><td class="k">Average household size${infoIcon(tip)}</td>` +
-      `<td class="v">${value.toFixed(2)} people${published ? "" : " (est.)"}</td></tr>`;
+      `<td class="v key-figure">${value.toFixed(2)} people${published ? "" : " (est.)"}</td></tr>`;
   }
 
   function ageBandCount(record, band) {
@@ -1215,9 +1263,13 @@ const BlockGroupApp = (() => {
       : `<p class="footnote">This data file predates the current age bands. Re-run
          <code>${fetchCommand()}</code> to refresh it.</p>`;
 
+    // Header order is deliberate: ZIP first and loud, because it is the thing
+    // people orient by, then the tract/block group name, then the GEOID for
+    // anyone cross-referencing Census tables.
     return `<div class="detail-card">
+      ${zip ? `<p class="card-zip key-figure">ZIP ${zip}</p>` : ""}
       <h3>${heading}</h3>
-      <p class="geoid">GEOID ${geoid}${zip ? ` &middot; <span class="key-figure">ZIP ${zip}</span>` : ""}</p>
+      <p class="geoid">GEOID ${geoid}</p>
 
       <table>
         <tr><td class="k">Total population</td><td class="v">${Utils.fmtNumber(pop)}</td></tr>
@@ -1313,6 +1365,11 @@ const BlockGroupApp = (() => {
       label: "Total population",
       unit: "",
       value: (r) => (r.totalPopulation != null ? r.totalPopulation : null),
+    },
+    householdSize: {
+      label: "Average household size (people)",
+      unit: "people",
+      value: (r) => householdSize(r).value,
     },
   };
 
@@ -1606,9 +1663,13 @@ const BlockGroupApp = (() => {
         style: fireStyle,
         onEachFeature: (feature, layer) => {
           const cls = fireClass(feature.properties);
+          const raw = Utils.pickField(feature.properties, [
+            "HAZ_CLASS", "FHSZ_DESC", "FHSZ", "SRA_HAZ_CODE", "HAZARD_CLASS", "HAZARD", "HAZ_CODE", "CLASS",
+          ]);
           layer.bindTooltip(
             `Fire hazard: ${cls ? cls.replace(/^./, (c) => c.toUpperCase()) : "unclassified"}` +
-              `<br><span style="opacity:.7">${feature.properties.SOURCE_LAYER || ""}</span>`,
+              `<br><span style="opacity:.7">${feature.properties.SOURCE_LAYER || ""}` +
+              `${raw !== undefined && String(raw).toLowerCase() !== String(cls) ? ` &middot; field says "${raw}"` : ""}</span>`,
             { sticky: true }
           );
         },

@@ -136,6 +136,27 @@ default, and each has its own legend.
 | Pollution burden | CalEnviroScreen 4.0 (OEHHA), hosted ArcGIS feature layer | Census-tract polygons shaded by the CES percentile. Hover for the indicator breakdown (ozone, PM2.5, diesel PM, traffic, drinking water, pesticides, asthma). The score is **relative**: 90 means worse than 90% of California tracts, not an absolute dose. |
 | Wind speed | Global Wind Atlas 3 (DTU / World Bank), CC BY 4.0 | Mean wind speed at 250 m resolution. Needs the one-time download step below, because GWA publishes rasters only. |
 
+#### The "Awaiting Zoning" trap
+
+The first thing that made this layer look wrong was not the record cap - it
+was a sublayer called **"SRA/LRA Awaiting Zoning"**. That is a placeholder
+for ground CAL FIRE has not finished re-zoning, not a hazard class, and its
+polygons are enormous. Because the name contains "SRA", a match on
+`/sra|lra/` pulled it in, and its features still carry an old class value, so
+they were drawn *and labelled* as Very High zones. Those sublayers are now
+excluded by name (`FIRE_LAYER_EXCLUDE`), and any feature whose class value
+reads "awaiting" or "pending" is dropped as well.
+
+The layer also now prefers **LA County's own Hazards service** over the
+statewide one - it carries the county's adopted SRA and LRA zones for exactly
+the area this app covers. Layer names are matched with underscores
+normalised, so `FIRE_HAZARD_SEVERITY_ZONES_LRA` and "Fire Hazard Severity
+Zones in LRA" both match one pattern.
+
+The polygon tooltip now also shows the source sublayer and, when it differs
+from the class we assigned, the raw field value - so a mismatch is visible
+instead of silent.
+
 #### Why the fire layer used to come back with holes in it
 
 That service caps a query at **1,000 records**, and an LA-sized viewport

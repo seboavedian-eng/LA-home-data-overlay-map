@@ -52,6 +52,12 @@ const FIRE_MODERATE = esriPolygon({ HAZ_CLASS: "Moderate", OBJECTID: 2 }, [
 const FIRE_NON_WILDLAND = esriPolygon({ HAZ_CLASS: "Non-Wildland/Non-Urban", OBJECTID: 3 }, [
   [-118.22, 34.04], [-118.22, 34.06], [-118.20, 34.06], [-118.20, 34.04],
 ]);
+// The polygon from the bug report: it sits in the "SRA/LRA Awaiting Zoning"
+// placeholder layer but still carries an old class value, so it was being
+// drawn - and labelled - as a Very High zone.
+const FIRE_AWAITING = esriPolygon({ HAZ_CLASS: "Very High", OBJECTID: 9 }, [
+  [-118.40, 34.20], [-118.40, 34.30], [-118.30, 34.30], [-118.30, 34.20],
+]);
 // Stands in for the polygons that only arrive once a truncated query is
 // split: the mock returns it solely for sub-boxes, never for the whole view.
 const FIRE_SPLIT_ONLY = esriPolygon({ HAZ_CLASS: "High", OBJECTID: 4 }, [
@@ -276,6 +282,44 @@ async function main() {
   // CAL FIRE Fire Hazard Severity Zones. The root lists a label sublayer
   // whose name also matches "hazard" - drawing it is what produced stray
   // unfilled lines on the old page, so the test asserts it is never queried.
+  // LA County's own Hazards service is tried first. Its layers are named
+  // UPPER_SNAKE_CASE, and it carries the "SRA/LRA Awaiting Zoning"
+  // placeholder that was being painted as a real hazard zone.
+  let countyFireQueries = [];
+  await page.route("**://public.gis.lacounty.gov/**", (route) => {
+    const url = route.request().url();
+    if (url.includes("/query")) {
+      countyFireQueries.push(url);
+      const geom = decodeURIComponent(url.match(/geometry=([^&]*)/)[1]).split(",").map(Number);
+      const isWholeView = geom[2] - geom[0] > 0.08;
+      if (url.includes("/19/query")) {
+        if (isWholeView) {
+          return route.fulfill(json({ ...esriFC([FIRE_VERY_HIGH]), exceededTransferLimit: true }));
+        }
+        return route.fulfill(json(esriFC([FIRE_VERY_HIGH, FIRE_SPLIT_ONLY])));
+      }
+      if (url.includes("/20/query")) return route.fulfill(json(esriFC([FIRE_MODERATE, FIRE_NON_WILDLAND])));
+      if (url.includes("/21/query")) return route.fulfill(json(esriFC([FIRE_AWAITING])));
+      if (url.includes("/2/query")) {
+        return route.fulfill(json({ error: { code: 400, message: "Cannot perform query on a group layer" } }));
+      }
+      return route.fulfill(json(esriFC([])));
+    }
+    return route.fulfill(
+      json({
+        layers: [
+          { id: 2, name: "Fire Hazard Severity Zones", subLayerIds: [19, 20] },
+          { id: 19, name: "FIRE_HAZARD_SEVERITY_ZONES_SRA", geometryType: "esriGeometryPolygon" },
+          { id: 20, name: "FIRE_HAZARD_SEVERITY_ZONES_LRA", geometryType: "esriGeometryPolygon" },
+          // The layer behind the bug report: a placeholder for ground not yet
+          // re-zoned, whose name matches on "SRA" and whose polygons are huge.
+          { id: 21, name: "SRA/LRA Awaiting Zoning", geometryType: "esriGeometryPolygon" },
+          { id: 22, name: "FIRE_HAZARD_SEVERITY_ZONES_LABELS", geometryType: "esriGeometryPoint" },
+        ],
+      })
+    );
+  });
+
   let fireQueries = [];
   await page.route("**://services.gis.ca.gov/**", (route) => {
     const url = route.request().url();
@@ -818,6 +862,12 @@ async function main() {
       els.map((e) => e.value)
     );
     step(
+      "average household size is available as a filter metric",
+      (await page.evaluate(() =>
+        [...document.querySelectorAll("#filter-metric-0 option")].map((o) => o.value)
+      )).includes("householdSize")
+    );
+    step(
       "per-capita income is available as a filter metric",
       metricOptions.includes("perCapitaIncome"),
       JSON.stringify(metricOptions.slice(0, 6))
@@ -859,13 +909,36 @@ async function main() {
       [...document.querySelectorAll("#detail-panel .key-figure")].map((el) => el.textContent.trim())
     );
     step(
-      "ZIP, education %, median income and per-capita income are the highlighted figures",
-      keyFigures.length === 4 &&
+      "ZIP, household size, education %, median income and per-capita income are the highlighted figures",
+      keyFigures.length === 5 &&
         keyFigures[0].startsWith("ZIP") &&
+        keyFigures.includes("3.40 people") &&
         keyFigures.includes("30.0%") &&
         keyFigures.includes("$85,000") &&
         keyFigures.includes("$41,000"),
       JSON.stringify(keyFigures)
+    );
+    // Header order: ZIP first and loud, then the tract/block group name,
+    // then the GEOID.
+    const headerOrder = await page.evaluate(() =>
+      [...document.querySelectorAll("#detail-panel .detail-card > *")]
+        .slice(0, 3)
+        .map((el) => `${el.tagName}:${el.className}`)
+    );
+    step(
+      "the card leads with ZIP, then tract/block group, then GEOID",
+      headerOrder[0] === "P:card-zip key-figure" && headerOrder[1] === "H3:" && headerOrder[2] === "P:geoid",
+      JSON.stringify(headerOrder)
+    );
+    const sectionStyle = await page.evaluate(() => {
+      const el = document.querySelector("#detail-panel .section-label");
+      const cs = getComputedStyle(el);
+      return { weight: cs.fontWeight, borderTop: cs.borderTopWidth, label: el.textContent.trim() };
+    });
+    step(
+      "category headings are bold with a pale rule above",
+      Number(sectionStyle.weight) >= 700 && sectionStyle.borderTop === "1px",
+      JSON.stringify(sectionStyle)
     );
     const keyFigureStyle = await page.evaluate(() => {
       const el = document.querySelector("#detail-panel td.key-figure");
@@ -967,23 +1040,41 @@ async function main() {
       JSON.stringify(fireColors)
     );
     step(
+      "LA County's own hazard service is preferred over the statewide one",
+      countyFireQueries.length > 0 && fireQueries.length === 0,
+      `${countyFireQueries.length} county queries, ${fireQueries.length} state queries`
+    );
+    step(
       "both responsibility-area sublayers are queried and merged",
-      fireQueries.some((u) => u.includes("/0/query")) && fireQueries.some((u) => u.includes("/1/query")),
-      `${fireQueries.length} queries`
+      countyFireQueries.some((u) => u.includes("/19/query")) && countyFireQueries.some((u) => u.includes("/20/query")),
+      `${countyFireQueries.length} queries`
+    );
+    step(
+      "UPPER_SNAKE_CASE county layer names still match the pattern",
+      countyFireQueries.some((u) => u.includes("/19/query")),
+      JSON.stringify(countyFireQueries.map((u) => u.match(/\/(\d+)\/query/)[1]))
     );
     step(
       "the label sublayer is never queried (the stray-lines bug)",
-      !fireQueries.some((u) => u.includes("/7/query")),
-      JSON.stringify(fireQueries.map((u) => u.match(/\/(\d+)\/query/)[1]))
+      !countyFireQueries.some((u) => u.includes("/22/query")),
+      JSON.stringify(countyFireQueries.map((u) => u.match(/\/(\d+)\/query/)[1]))
+    );
+    // The bug report: an "SRA/LRA Awaiting Zoning" polygon drawn - and
+    // labelled - as a Very High zone. It matches on "SRA", it is huge, and it
+    // is not a hazard zone at all.
+    step(
+      "the 'Awaiting Zoning' placeholder layer is never queried",
+      !countyFireQueries.some((u) => u.includes("/21/query")),
+      JSON.stringify(countyFireQueries.map((u) => u.match(/\/(\d+)\/query/)[1]))
     );
     step(
       "geometry is generalised server-side rather than pulled at full resolution",
-      fireQueries.every((u) => u.includes("maxAllowableOffset")),
-      fireQueries[0]
+      countyFireQueries.every((u) => u.includes("maxAllowableOffset")),
+      countyFireQueries[0]
     );
     step(
       "the un-queryable group layer is never asked for features",
-      !fireQueries.some((u) => u.includes("/3/query"))
+      !countyFireQueries.some((u) => u.includes("/2/query"))
     );
 
     // The record cap is the real-world failure: CAL FIRE's service returns at
@@ -991,8 +1082,8 @@ async function main() {
     // split, that partial answer was drawn as if it were the whole layer.
     step(
       "a truncated response is split into smaller boxes rather than drawn as-is",
-      fireQueries.filter((u) => u.includes("/0/query")).length === 5,
-      `${fireQueries.filter((u) => u.includes("/0/query")).length} queries on layer 0 (1 whole view + 4 quadrants)`
+      countyFireQueries.filter((u) => u.includes("/19/query")).length === 5,
+      `${countyFireQueries.filter((u) => u.includes("/19/query")).length} queries on the SRA layer (1 whole view + 4 quadrants)`
     );
     const fireClasses = await page.evaluate(() => {
       const out = [];
