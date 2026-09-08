@@ -27,7 +27,7 @@ function esriFC(features) {
 
 // Block groups sit around the default map center (34.05, -118.25) so they
 // fall inside the viewport at the default zoom 12.
-const BG_A = esriPolygon({ GEOID: "060372011001", NAME: "Block Group 1, Census Tract 2011" }, [
+const BG_A = esriPolygon({ GEOID: "060372011001", NAME: "Block Group 1, Census Tract 2011", AREALAND: 5179976 }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04],
 ]);
 const BG_B = esriPolygon({ GEOID: "060372011002", NAME: "Block Group 2, Census Tract 2011" }, [
@@ -35,7 +35,7 @@ const BG_B = esriPolygon({ GEOID: "060372011002", NAME: "Block Group 2, Census T
 ]);
 // Third block group exists so filters have something to discriminate:
 // BG_C fails both filters that BG_A passes.
-const BG_C = esriPolygon({ GEOID: "060372011003", NAME: "Block Group 3, Census Tract 2011" }, [
+const BG_C = esriPolygon({ GEOID: "060372011003", NAME: "Block Group 3, Census Tract 2011", AREALAND: 25900 }, [
   [-118.22, 34.04], [-118.22, 34.06], [-118.20, 34.06], [-118.20, 34.04],
 ]);
 const TRACT = esriPolygon({ GEOID: "06037201100", NAME: "Census Tract 2011" }, [
@@ -161,6 +161,22 @@ async function main() {
   await page.route("**://tile.openstreetmap.org/**", (route) =>
     route.fulfill({ contentType: "image/png", body: BLANK_PNG })
   );
+  await page.route("**://services.arcgisonline.com/**", (route) =>
+    route.fulfill({ contentType: "image/png", body: BLANK_PNG })
+  );
+
+  // Nominatim now backs autocomplete. It matches partial input, which is the
+  // whole reason it replaced the Census geocoder here.
+  let nominatimQueries = [];
+  await page.route("**://nominatim.openstreetmap.org/**", (route) => {
+    nominatimQueries.push(route.request().url());
+    return route.fulfill(
+      json([
+        { display_name: "200 N Spring St, Los Angeles, CA 90012, USA", lon: "-118.2437", lat: "34.0537" },
+        { display_name: "200 S Spring St, Los Angeles, CA 90012, USA", lon: "-118.2450", lat: "34.0520" },
+      ])
+    );
+  });
 
   let tigerQueryCount = { zip: 0, tract: 0, bg: 0 };
   let decoyQueryCount = 0;
@@ -403,6 +419,144 @@ async function main() {
     await page.waitForTimeout(300);
     const cleared = await page.locator("#filter-summary").innerText();
     step("clearing filters restores the normal view", /Off/i.test(cleared), cleared);
+
+    step("there are four filter slots", (await page.locator(".filter-row").count()) === 4);
+
+    // Four filters at once, all ANDed. Set them so BG_A passes every one.
+    await page.selectOption("#filter-metric-0", "bachelors");
+    await page.fill("#filter-value-0", "20");
+    await page.check("#filter-on-0");
+    await page.selectOption("#filter-metric-1", "eth:Asian (non-Hispanic)");
+    await page.fill("#filter-value-1", "15");
+    await page.check("#filter-on-1");
+    await page.selectOption("#filter-metric-2", "medianIncome");
+    await page.fill("#filter-value-2", "60000");
+    await page.check("#filter-on-2");
+    await page.selectOption("#filter-metric-3", "age:25 to 34");
+    await page.fill("#filter-value-3", "10");
+    await page.check("#filter-on-3");
+    await page.waitForTimeout(400);
+    const fourFilters = await page.locator("#filter-summary").innerText();
+    step(
+      "all four filters AND together",
+      /1 of 3/.test(fourFilters) && (fourFilters.match(/AND/g) || []).length === 3,
+      fourFilters
+    );
+    await page.click("#filter-clear");
+    await page.waitForTimeout(300);
+
+    // --- Density shading ---
+    // BG_A: 1000 people over 2 sq mi  ->    500/sq mi -> least dense -> deepest
+    // BG_C:  500 people over 0.01 sq mi -> 50,000/sq mi -> densest  -> palest
+    // Select BG_B first: the selected block group deliberately keeps its
+    // highlight rather than being repainted by the density scale, so parking
+    // the selection on the no-data polygon leaves both data-bearing ones
+    // showing their true density colour.
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011002") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(300);
+
+    await page.check("#toggle-density");
+    await page.waitForTimeout(500);
+    const densityFills = await page.evaluate(() => {
+      const out = {};
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        out[l.feature.properties.GEOID] = l.options.fillColor;
+      });
+      return out;
+    });
+    step(
+      "least dense block group gets the deepest green, densest gets the palest",
+      densityFills["060372011003"] === "#e8f6ee" && densityFills["060372011001"] === "#1b4332",
+      JSON.stringify(densityFills)
+    );
+    step(
+      "density legend appears with five buckets",
+      (await page.locator("#density-legend .legend-row").count()) === 5
+    );
+
+    // Back to BG_A (1000 people over 2 sq mi) to read its density on the card.
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(300);
+    const densityCard = await page.locator("#detail-panel").innerText();
+    step(
+      "card shows land area, density and the density band",
+      /2\.00 sq mi/.test(densityCard) && /500 \/sq mi/.test(densityCard) && /Very low/i.test(densityCard),
+      densityCard.replace(/\s+/g, " ").slice(0, 240)
+    );
+
+    const distLog = await page.locator("#status-log").innerText();
+    step(
+      "actual density percentiles are logged so the buckets can be tuned",
+      /20th/.test(distLog) && /80th/.test(distLog),
+      (distLog.match(/Density of[^\n]*/) || [""])[0]
+    );
+
+    await page.uncheck("#toggle-density");
+    await page.waitForTimeout(300);
+    step(
+      "turning density off restores the plain style",
+      (await page.evaluate(() => {
+        let c = null;
+        BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+          if (l.feature.properties.GEOID === "060372011003") c = l.options.fillColor;
+        });
+        return c;
+      })) === "#1b4d8c"
+    );
+
+    // --- Ethnicity as bars, matching the age section ---
+    const ethBars = await page.evaluate(() => {
+      const panel = document.getElementById("detail-panel");
+      const labels = [...panel.querySelectorAll(".bar-row .bar-label span")].map((s) => s.textContent);
+      return labels.filter((t) => /Hispanic|White|Asian|Black/.test(t));
+    });
+    step(
+      "ethnicity is rendered as bars, not a plain table",
+      ethBars.length >= 4,
+      JSON.stringify(ethBars.slice(0, 6))
+    );
+
+    // --- Autocomplete now uses a partial-matching service ---
+    await page.fill("#address-input", "200 N Spring");
+    await page.waitForFunction(
+      () => !document.getElementById("address-suggestions").classList.contains("hidden"),
+      { timeout: 10000 }
+    );
+    const suggestionCount = await page.locator("#address-suggestions li").count();
+    step(
+      "typing a PARTIAL address returns suggestions (the old geocoder returned none)",
+      suggestionCount === 2,
+      `${suggestionCount} suggestions from ${nominatimQueries.length} query/queries`
+    );
+    step(
+      "suggestions come from the partial-matching service, not the exact-match geocoder",
+      nominatimQueries.length > 0,
+      nominatimQueries[0] || "none"
+    );
+
+    await page.click("#address-suggestions li:first-child");
+    await page.waitForFunction(
+      () => /Tract/.test(document.getElementById("search-status").textContent),
+      { timeout: 15000 }
+    );
+    const searchStatus = await page.locator("#search-status").innerText();
+    step(
+      "picking a suggestion resolves it to a block group",
+      /Tract 2011/.test(searchStatus) && /Block Group/.test(searchStatus),
+      searchStatus
+    );
+    step(
+      "a pin is dropped at the address",
+      (await page.locator(".leaflet-marker-icon").count()) > 0
+    );
 
     // Capture the interesting state (popup open with data) before the
     // teardown checks below zoom out and toggle layers off.

@@ -75,9 +75,34 @@ const BG_CONFIG = {
     { label: "65 and over", brackets: [20, 21, 22, 23, 24, 25] },
   ],
 
-  // Census geocoder - free, no key, US addresses.
+  // Nominatim (OpenStreetMap) powers the as-you-type suggestions - it does
+  // partial matching, which the Census geocoder does not. Their usage policy
+  // caps this at ~1 request/second, hence the debounce below.
+  NOMINATIM_URL: "https://nominatim.openstreetmap.org/search",
+  SEARCH_DEBOUNCE_MS: 700,
+
+  // Census geocoder - exact-match fallback if Nominatim is unavailable.
   GEOCODER_URL: "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress",
   GEOCODER_BENCHMARK: "Public_AR_Current",
+
+  // Population per square mile. Deliberately ordered densest-first: the
+  // densest bucket gets the palest fill and the least dense the deepest
+  // green, per the brief.
+  //
+  // NOTE ON THESE THRESHOLDS: I could not sample live block groups to derive
+  // them - this build environment has no network access to the Census API.
+  // They come from the known spread of LA County densities, which runs from
+  // near-empty mountain and desert block groups to very dense central
+  // neighbourhoods. Turn on density shading and check the status log: it
+  // reports the actual percentiles of whatever is on screen, so these can be
+  // tuned against real numbers in one edit here.
+  DENSITY_BUCKETS: [
+    { max: Infinity, label: "Very high (25,000+ /sq mi)", color: "#e8f6ee" },
+    { max: 25000, label: "High (12,000-25,000)", color: "#b7e4c7" },
+    { max: 12000, label: "Medium (5,000-12,000)", color: "#74c69d" },
+    { max: 5000, label: "Low (1,000-5,000)", color: "#40916c" },
+    { max: 1000, label: "Very low (under 1,000)", color: "#1b4332" },
+  ],
 
   // Padding (in degrees) added around the viewport when loading polygons, so
   // small pans don't trigger a refetch - which used to destroy the open popup.
@@ -112,6 +137,7 @@ const BlockGroupApp = (() => {
   let selectedProps = null;   // so the open detail can re-render on source switch
   let moveTimer = null;
   let ethSource = "acs";      // "acs" = B03002 (default), "dec" = 2020 Census P2
+  let densityShading = false; // population-density colour scale on/off
 
   // --- data ---------------------------------------------------------------
 
@@ -286,6 +312,101 @@ const BlockGroupApp = (() => {
     </div>`;
   }
 
+  // --- Density ------------------------------------------------------------
+  // Population per square mile of LAND area (water excluded - a coastal block
+  // group that is mostly ocean would otherwise look artificially empty).
+  //
+  // TIGERweb supplies AREALAND in square metres on each feature. If it's
+  // missing, the area is computed from the polygon itself using the spherical
+  // excess formula, so density still works rather than silently blanking.
+
+  const EARTH_RADIUS_M = 6371008.8;
+  const SQ_METERS_PER_SQ_MILE = 2589988.11;
+
+  function ringAreaSqMeters(ring) {
+    if (!ring || ring.length < 4) return 0;
+    let total = 0;
+    for (let i = 0; i < ring.length - 1; i++) {
+      const [lon1, lat1] = ring[i];
+      const [lon2, lat2] = ring[i + 1];
+      total +=
+        ((lon2 - lon1) * Math.PI) / 180 *
+        (2 + Math.sin((lat1 * Math.PI) / 180) + Math.sin((lat2 * Math.PI) / 180));
+    }
+    return Math.abs((total * EARTH_RADIUS_M * EARTH_RADIUS_M) / 2);
+  }
+
+  function geometryAreaSqMeters(geometry) {
+    if (!geometry) return 0;
+    const polys =
+      geometry.type === "Polygon"
+        ? [geometry.coordinates]
+        : geometry.type === "MultiPolygon"
+        ? geometry.coordinates
+        : [];
+    // First ring is the outer boundary; the rest are holes and subtract.
+    return polys.reduce(
+      (sum, rings) =>
+        sum + rings.reduce((a, ring, i) => a + (i === 0 ? ringAreaSqMeters(ring) : -ringAreaSqMeters(ring)), 0),
+      0
+    );
+  }
+
+  function landAreaSqMiles(feature) {
+    const declared = Number(Utils.pickField(feature.properties, ["AREALAND", "ALAND"]));
+    const sqm = declared > 0 ? declared : geometryAreaSqMeters(feature.geometry);
+    return sqm > 0 ? sqm / SQ_METERS_PER_SQ_MILE : null;
+  }
+
+  function densityOf(feature) {
+    const record = recordFor(feature.properties);
+    if (!record || !record.totalPopulation) return null;
+    const sqMiles = landAreaSqMiles(feature);
+    if (!sqMiles) return null;
+    return record.totalPopulation / sqMiles;
+  }
+
+  function densityBucket(density) {
+    if (density == null) return null;
+    // Buckets are listed densest-first, so scan from the sparse end up.
+    const ordered = [...BG_CONFIG.DENSITY_BUCKETS].reverse();
+    return ordered.find((b) => density < b.max) || ordered[ordered.length - 1];
+  }
+
+  // Reports the real percentiles of what's on screen, so the hardcoded
+  // thresholds above can be checked against actual data.
+  function logDensityDistribution() {
+    if (!layers.blockGroup) return;
+    const values = [];
+    layers.blockGroup.eachLayer((l) => {
+      const d = densityOf(l.feature);
+      if (d != null) values.push(d);
+    });
+    if (values.length < 2) return; // min/max alone is still useful for calibration
+    values.sort((a, b) => a - b);
+    const at = (p) => Math.round(values[Math.floor((values.length - 1) * p)]);
+    Utils.logStatus(
+      "density",
+      "info",
+      `Density of ${values.length} visible block groups (people/sq mi) - ` +
+        `min ${at(0)}, 20th ${at(0.2)}, 40th ${at(0.4)}, 60th ${at(0.6)}, 80th ${at(0.8)}, max ${at(1)}.`
+    );
+  }
+
+  function densityRows(feature) {
+    if (!feature) return "";
+    const sqMiles = landAreaSqMiles(feature);
+    const density = densityOf(feature);
+    if (density == null || !sqMiles) return "";
+    const bucket = densityBucket(density);
+    return `
+      <tr><td class="k">Land area</td><td class="v">${sqMiles.toFixed(2)} sq mi</td></tr>
+      <tr><td class="k">Density</td><td class="v">${Utils.fmtNumber(Math.round(density))} /sq mi</td></tr>
+      ${bucket ? `<tr><td class="k">Density band</td><td class="v">
+        <span class="swatch inline" style="background:${bucket.color}"></span>${bucket.label.replace(/\s*\(.*\)/, "")}
+      </td></tr>` : ""}`;
+  }
+
   function ageBandCount(record, band) {
     if (!record.ageBrackets) return null;
     return band.brackets.reduce((sum, i) => sum + (record.ageBrackets[String(i)] || 0), 0);
@@ -340,14 +461,16 @@ const BlockGroupApp = (() => {
     if (!counts) {
       return `<p class="footnote">No ${sourceName} data for this block group.</p>`;
     }
-    const rows = Object.entries(counts)
+    // Bars rather than a table, matching the age section - relative size is
+    // the thing you actually read here, and a column of percentages makes you
+    // do that comparison in your head.
+    const bars = Object.entries(counts)
       .filter(([, count]) => count > 0)
       .sort((a, b) => b[1] - a[1])
-      .map(([label, count]) => `<tr><td class="k">${label}</td><td class="v">${pctText(count, total)}</td>
-        <td class="v count">${Utils.fmtNumber(count)}</td></tr>`)
+      .map(([label, count]) => barRow(label, count, total))
       .join("");
 
-    return `<table class="eth-table">${rows}</table>
+    return `${bars || "<p class='footnote'>No ethnicity counts for this block group.</p>"}
       <p class="src-note">Source: ${sourceName}${geoNote("ethnicity" + (useDecennial ? "Dec" : "Acs"))}</p>`;
   }
 
@@ -360,7 +483,7 @@ const BlockGroupApp = (() => {
 
   // compact=true trims the footnotes for the map popup, which has to fit on
   // screen; the sidebar carries the fuller version.
-  function detailHTML(props, record, { compact = false } = {}) {
+  function detailHTML(props, record, { compact = false, feature = null } = {}) {
     const { tractLabel, bgLabel, geoid } = tractAndBlockGroup(props);
     const heading = `Tract ${tractLabel}, Block Group ${bgLabel}`;
 
@@ -395,6 +518,7 @@ const BlockGroupApp = (() => {
 
       <table>
         <tr><td class="k">Total population</td><td class="v">${Utils.fmtNumber(pop)}</td></tr>
+        ${densityRows(feature)}
       </table>
 
       <div class="section-label">Age</div>
@@ -505,6 +629,8 @@ const BlockGroupApp = (() => {
   const filters = [
     { enabled: false, metric: "bachelors", op: "above", value: 50 },
     { enabled: false, metric: "eth:Asian (non-Hispanic)", op: "above", value: 30 },
+    { enabled: false, metric: "medianIncome", op: "above", value: 100000 },
+    { enabled: false, metric: "age:25 to 34", op: "above", value: 20 },
   ];
 
   function activeFilters() {
@@ -525,10 +651,34 @@ const BlockGroupApp = (() => {
     });
   }
 
+  // Filters take precedence over density shading: if you've asked "show me
+  // the block groups matching X", that answer shouldn't be repainted by an
+  // unrelated colour scale.
   function styleForBlockGroup(feature) {
-    if (!activeFilters().length) return BG_CONFIG.STYLES.blockGroup;
-    const record = recordFor(feature.properties);
-    return matchesFilters(record) ? BG_CONFIG.STYLES.blockGroupMatch : BG_CONFIG.STYLES.blockGroupNoMatch;
+    if (activeFilters().length) {
+      const record = recordFor(feature.properties);
+      return matchesFilters(record) ? BG_CONFIG.STYLES.blockGroupMatch : BG_CONFIG.STYLES.blockGroupNoMatch;
+    }
+    if (densityShading) {
+      const bucket = densityBucket(densityOf(feature));
+      if (bucket) {
+        return { color: "#1b4332", weight: 0.6, fillColor: bucket.color, fillOpacity: 0.75 };
+      }
+      return { color: "#9aa3ad", weight: 0.4, fillColor: "#e9edf0", fillOpacity: 0.3 };
+    }
+    return BG_CONFIG.STYLES.blockGroup;
+  }
+
+  function renderDensityLegend() {
+    const box = document.getElementById("density-legend");
+    if (!densityShading) {
+      box.classList.add("hidden");
+      return;
+    }
+    box.classList.remove("hidden");
+    box.innerHTML = BG_CONFIG.DENSITY_BUCKETS.map(
+      (b) => `<div class="legend-row"><span class="swatch" style="background:${b.color}"></span>${b.label}</div>`
+    ).join("");
   }
 
   function applyFilters() {
@@ -613,9 +763,10 @@ const BlockGroupApp = (() => {
   function renderSelection() {
     if (!selectedProps) return;
     const record = recordFor(selectedProps);
-    document.getElementById("detail-panel").innerHTML = detailHTML(selectedProps, record);
+    const feature = selectedLayer ? selectedLayer.feature : null;
+    document.getElementById("detail-panel").innerHTML = detailHTML(selectedProps, record, { feature });
     if (selectedLayer) {
-      const html = `<div class="bg-popup">${detailHTML(selectedProps, record, { compact: true })}</div>`;
+      const html = `<div class="bg-popup">${detailHTML(selectedProps, record, { compact: true, feature })}</div>`;
       if (selectedLayer.getPopup()) selectedLayer.setPopupContent(html);
     }
   }
@@ -630,7 +781,7 @@ const BlockGroupApp = (() => {
     selectedProps = props;
     layer.setStyle(BG_CONFIG.STYLES.blockGroupSelected);
 
-    layer.bindPopup(`<div class="bg-popup">${detailHTML(props, record, { compact: true })}</div>`, {
+    layer.bindPopup(`<div class="bg-popup">${detailHTML(props, record, { compact: true, feature: layer.feature })}</div>`, {
       maxWidth: 300,
       minWidth: 250,
       maxHeight: 480,
@@ -639,7 +790,7 @@ const BlockGroupApp = (() => {
       closeOnClick: false, // ...or when the map is clicked
     });
     if (openPopup) layer.openPopup();
-    document.getElementById("detail-panel").innerHTML = detailHTML(props, record);
+    document.getElementById("detail-panel").innerHTML = detailHTML(props, record, { feature: layer.feature });
 
     lookupZip(geoidOf(props), layer);
   }
@@ -803,7 +954,33 @@ const BlockGroupApp = (() => {
   let searchMarker = null;
   let suggestions = [];
 
-  async function geocode(text) {
+  // Suggestions come from Nominatim, NOT the Census geocoder. The Census
+  // geocoder is an address *matcher*: it wants a complete, well-formed
+  // address and returns nothing for a partial one, so using it for
+  // as-you-type suggestions produces an empty list until the address is
+  // fully typed - which looks exactly like broken autocomplete.
+  // Nominatim does partial/fuzzy matching, needs no key, and returns
+  // coordinates directly.
+  async function suggestAddresses(text) {
+    const params = new URLSearchParams({
+      q: text,
+      format: "jsonv2",
+      addressdetails: "1",
+      limit: "6",
+      countrycodes: "us",
+      // Bias toward LA County without hard-excluding anything outside it.
+      viewbox: `${BG_CONFIG.LA_COUNTY_BBOX.xmin},${BG_CONFIG.LA_COUNTY_BBOX.ymax},${BG_CONFIG.LA_COUNTY_BBOX.xmax},${BG_CONFIG.LA_COUNTY_BBOX.ymin}`,
+    });
+    const results = await Utils.fetchJSON(`${BG_CONFIG.NOMINATIM_URL}?${params}`, { timeoutMs: 15000 });
+    return (Array.isArray(results) ? results : []).map((r) => ({
+      matchedAddress: r.display_name,
+      coordinates: { x: Number(r.lon), y: Number(r.lat) },
+    }));
+  }
+
+  // Fallback for when Nominatim is unreachable (rate limited, blocked by an
+  // extension). Needs a complete address, but better than nothing.
+  async function geocodeExact(text) {
     const params = new URLSearchParams({
       address: text,
       benchmark: BG_CONFIG.GEOCODER_BENCHMARK,
@@ -811,6 +988,16 @@ const BlockGroupApp = (() => {
     });
     const data = await Utils.fetchJSON(`${BG_CONFIG.GEOCODER_URL}?${params}`, { timeoutMs: 15000 });
     return (data && data.result && data.result.addressMatches) || [];
+  }
+
+  async function geocode(text) {
+    try {
+      const hits = await suggestAddresses(text);
+      if (hits.length) return hits;
+    } catch (err) {
+      Utils.logStatus("search", "warn", `Address suggestions unavailable (${err.message}); trying the Census geocoder.`);
+    }
+    return geocodeExact(text);
   }
 
   async function blockGroupAt(lat, lon) {
@@ -967,6 +1154,14 @@ const BlockGroupApp = (() => {
     initStatusPanel();
     initAddressSearch();
     renderFilterRows();
+    document.getElementById("toggle-density").addEventListener("change", (e) => {
+      densityShading = e.target.checked;
+      renderDensityLegend();
+      applyFilters();      // repaints polygons under the new scheme
+      renderSelection();   // card gains/keeps its density rows
+      if (densityShading) logDensityDistribution();
+    });
+
     document.getElementById("filter-clear").addEventListener("click", () => {
       filters.forEach((f) => (f.enabled = false));
       renderFilterRows();
