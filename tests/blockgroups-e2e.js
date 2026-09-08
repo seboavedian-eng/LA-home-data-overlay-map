@@ -38,6 +38,37 @@ const BG_B = esriPolygon({ GEOID: "060372011002", NAME: "Block Group 2, Census T
 const BG_C = esriPolygon({ GEOID: "060372011003", NAME: "Block Group 3, Census Tract 2011", AREALAND: 25900 }, [
   [-118.22, 34.04], [-118.22, 34.06], [-118.20, 34.06], [-118.20, 34.04],
 ]);
+// Fire hazard zones covering the block groups: one Very High (SRA) and one
+// Moderate (LRA), so the class colouring and the two-sublayer merge are both
+// visible in one view.
+const FIRE_VERY_HIGH = esriPolygon({ HAZ_CLASS: "Very High", OBJECTID: 1 }, [
+  [-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04],
+]);
+const FIRE_MODERATE = esriPolygon({ HAZ_CLASS: "Moderate", OBJECTID: 2 }, [
+  [-118.24, 34.04], [-118.24, 34.06], [-118.22, 34.06], [-118.22, 34.04],
+]);
+
+// CalEnviroScreen tract. Tract 06037201100 is the parent of every block group
+// above (GEOID 0603720110 0 + block group digit), which is what lets the card
+// inherit a tract-level score. Published as a NUMBER, missing the leading
+// zero of state FIPS 06 - exactly how OEHHA's copy serves it.
+const CES_TRACT = esriPolygon(
+  {
+    Tract: 6037201100,
+    CIscoreP: 87.4,
+    Ozone_Pctl: 91,
+    Ozone: 0.056,
+    PM2_5_Pctl: 78,
+    PM2_5: 12.4,
+    Diesel_PM_Pctl: 95,
+    Diesel_PM: 30.1,
+    Traffic_Pctl: 88,
+    Traffic: 1900,
+    TotPop19: 4200,
+  },
+  [[-118.26, 34.04], [-118.26, 34.06], [-118.20, 34.06], [-118.20, 34.04]]
+);
+
 const TRACT = esriPolygon({ GEOID: "06037201100", NAME: "Census Tract 2011" }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.22, 34.06], [-118.22, 34.04],
 ]);
@@ -147,6 +178,21 @@ async function main() {
   fs.mkdirSync(path.dirname(dataPath), { recursive: true });
   fs.writeFileSync(dataPath, JSON.stringify(CENSUS_DATA));
 
+  // A 2x2 wind grid over the block groups: calm in the north-west, windy in
+  // the south-east, so a wrong row/column order shows up as a wrong reading
+  // rather than a plausible one.
+  const windPath = path.join(REPO, "js", "data", "wind-la-county.json");
+  fs.writeFileSync(
+    windPath,
+    JSON.stringify({
+      meta: { height: "100 m", units: "m/s", source: "Global Wind Atlas 3 (test fixture)" },
+      bbox: { west: -118.28, south: 34.02, east: -118.18, north: 34.08 },
+      nrows: 2,
+      ncols: 2,
+      values: [2.0, 5.0, 6.5, 9.0],
+    })
+  );
+
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1400, height: 950 } });
 
@@ -167,17 +213,80 @@ async function main() {
     route.fulfill({ contentType: "image/png", body: BLANK_PNG })
   );
 
+  // OpenFreeMap's Positron style, reduced to the smallest valid MapLibre
+  // style: one background layer, no sources, so nothing else is fetched.
+  const MINIMAL_STYLE = {
+    version: 8,
+    name: "Positron (test stub)",
+    sources: {},
+    layers: [{ id: "background", type: "background", paint: { "background-color": "#f7f8fa" } }],
+  };
+  let styleRequests = 0;
+  await page.route("**://tiles.openfreemap.org/**", (route) => {
+    styleRequests++;
+    return route.fulfill(json(MINIMAL_STYLE));
+  });
+
   // Nominatim now backs autocomplete. It matches partial input, which is the
   // whole reason it replaced the Census geocoder here.
   let nominatimQueries = [];
+  let reverseQueries = [];
   await page.route("**://nominatim.openstreetmap.org/**", (route) => {
-    nominatimQueries.push(route.request().url());
+    const url = route.request().url();
+    // Same host, two different services: /search returns an array of
+    // candidates, /reverse returns one place object for a coordinate.
+    if (url.includes("/reverse")) {
+      reverseQueries.push(url);
+      return route.fulfill(
+        json({
+          display_name: "410 W Temple St, Civic Center, Los Angeles, Los Angeles County, California, 90012, United States",
+          address: {
+            house_number: "410",
+            road: "W Temple St",
+            city: "Los Angeles",
+            state: "California",
+            postcode: "90012",
+          },
+        })
+      );
+    }
+    nominatimQueries.push(url);
     return route.fulfill(
       json([
         { display_name: "200 N Spring St, Los Angeles, CA 90012, USA", lon: "-118.2437", lat: "34.0537" },
         { display_name: "200 S Spring St, Los Angeles, CA 90012, USA", lon: "-118.2450", lat: "34.0520" },
       ])
     );
+  });
+
+  // CAL FIRE Fire Hazard Severity Zones. The root lists a label sublayer
+  // whose name also matches "hazard" - drawing it is what produced stray
+  // unfilled lines on the old page, so the test asserts it is never queried.
+  let fireQueries = [];
+  await page.route("**://services.gis.ca.gov/**", (route) => {
+    const url = route.request().url();
+    if (url.includes("/query")) {
+      fireQueries.push(url);
+      if (url.includes("/0/query")) return route.fulfill(json(esriFC([FIRE_VERY_HIGH])));
+      if (url.includes("/1/query")) return route.fulfill(json(esriFC([FIRE_MODERATE])));
+      return route.fulfill(json(esriFC([])));
+    }
+    return route.fulfill(
+      json({
+        layers: [
+          { id: 0, name: "Fire Hazard Severity Zones in SRA", geometryType: "esriGeometryPolygon" },
+          { id: 1, name: "Very High Fire Hazard Severity Zones in LRA", geometryType: "esriGeometryPolygon" },
+          { id: 7, name: "Fire Hazard Severity Zone Labels", geometryType: "esriGeometryPoint" },
+        ],
+      })
+    );
+  });
+
+  // CalEnviroScreen 4.0, OEHHA's hosted copy.
+  let cesQueries = [];
+  await page.route("**://services1.arcgis.com/**", (route) => {
+    cesQueries.push(route.request().url());
+    return route.fulfill(json(esriFC([CES_TRACT])));
   });
 
   let tigerQueryCount = { zip: 0, tract: 0, bg: 0 };
@@ -232,6 +341,29 @@ async function main() {
     await page.waitForSelector("#toggle-bg");
 
     step("page loads with three boundary toggles", (await page.locator("#layer-toggle-list li").count()) === 3);
+
+    // --- Basemap: vector by default ---
+    await page.waitForTimeout(600);
+    step(
+      "basemap is the OpenFreeMap vector style, not raster tiles",
+      (await page.evaluate(() => BlockGroupApp.state.basemapKind)) === "vector" && styleRequests > 0,
+      `${styleRequests} style request(s)`
+    );
+    // The Esri raster basemap this replaced stops publishing tiles at 16, so
+    // "can we actually get to 20" is the point of the swap.
+    const reachedZoom = await page.evaluate(() => {
+      BlockGroupApp.state.map.setZoom(20);
+      return BlockGroupApp.state.map.getZoom();
+    });
+    step("the map zooms to 20, well past the raster basemap's zoom 16 ceiling", reachedZoom === 20, `reached ${reachedZoom}`);
+    await page.evaluate(() => BlockGroupApp.state.map.setView(BG_CONFIG.MAP_CENTER, BG_CONFIG.MAP_ZOOM));
+    await page.waitForTimeout(200);
+    const attribution = await page.locator(".leaflet-control-attribution").innerText();
+    step(
+      "attribution credits OpenFreeMap, OpenMapTiles and OpenStreetMap",
+      /OpenFreeMap/.test(attribution) && /OpenMapTiles/.test(attribution) && /OpenStreetMap/.test(attribution),
+      attribution
+    );
     step("no layers are on before any toggle is clicked", tigerQueryCount.zip === 0 && tigerQueryCount.tract === 0 && tigerQueryCount.bg === 0);
 
     // --- Zip toggle ---
@@ -672,6 +804,161 @@ async function main() {
       decDesc.replace(/\s+/g, " ").slice(0, 120)
     );
 
+    // --- Fire hazard zones (CAL FIRE FHSZ) ---
+    await page.click("#toggle-fire");
+    await page.waitForTimeout(700);
+    const fireColors = await page.evaluate(() => {
+      const out = [];
+      BlockGroupApp.state.layers.fire.eachLayer((l) => out.push(l.options.fillColor));
+      return out.sort();
+    });
+    step("fire layer draws hazard polygons", fireColors.length === 2, JSON.stringify(fireColors));
+    step(
+      "hazard class drives the colour: Very High is red, Moderate is pale",
+      fireColors.includes("#d7301f") && fireColors.includes("#fdcc8a"),
+      JSON.stringify(fireColors)
+    );
+    step(
+      "both responsibility-area sublayers are queried and merged",
+      fireQueries.some((u) => u.includes("/0/query")) && fireQueries.some((u) => u.includes("/1/query")),
+      `${fireQueries.length} queries`
+    );
+    step(
+      "the label sublayer is never queried (the stray-lines bug)",
+      !fireQueries.some((u) => u.includes("/7/query")),
+      JSON.stringify(fireQueries.map((u) => u.match(/\/(\d+)\/query/)[1]))
+    );
+    step(
+      "geometry is generalised server-side rather than pulled at full resolution",
+      fireQueries.every((u) => u.includes("maxAllowableOffset")),
+      fireQueries[0]
+    );
+    const fireLegend = await page.locator("#fire-legend").innerText();
+    step(
+      "fire legend lists the three classes and warns blank is not 'no hazard'",
+      /Very high/i.test(fireLegend) && /Moderate/i.test(fireLegend) && /not the same as/i.test(fireLegend),
+      fireLegend.replace(/\n/g, " | ")
+    );
+
+    // --- Pollution (CalEnviroScreen 4.0) ---
+    await page.click("#toggle-pollution");
+    await page.waitForTimeout(700);
+    const cesFill = await page.evaluate(() => {
+      let color = null;
+      BlockGroupApp.state.layers.pollution.eachLayer((l) => (color = l.options.fillColor));
+      return color;
+    });
+    step("pollution layer shades tracts by CES percentile (87th = most burdened band)", cesFill === "#b35806", String(cesFill));
+    step(
+      "a tract published as a number still keys on the 11-digit GEOID",
+      Object.keys(await page.evaluate(() => BlockGroupApp.state.cesByTract)).includes("06037201100"),
+      JSON.stringify(Object.keys(await page.evaluate(() => BlockGroupApp.state.cesByTract)))
+    );
+
+    // Re-select a block group: its card should now inherit the parent tract's score.
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(400);
+    // Section labels are uppercased by CSS, so match case-insensitively:
+    // innerText reports what the user actually sees.
+    const cesCard = await page.locator("#detail-panel").innerText();
+    step(
+      "block group card inherits its parent tract's CalEnviroScreen score",
+      /pollution burden/i.test(cesCard) && cesCard.includes("87.4th pct"),
+      cesCard.replace(/\n/g, " ").slice(-160)
+    );
+    const pollutionLegend = await page.locator("#pollution-legend").innerText();
+    step("pollution legend spans the five percentile bands", pollutionLegend.split("\n").filter(Boolean).length === 5, pollutionLegend.replace(/\n/g, " | "));
+
+    // --- Wind (Global Wind Atlas grid) ---
+    await page.click("#toggle-wind");
+    await page.waitForTimeout(600);
+    step(
+      "wind grid loads from the local snapshot",
+      await page.evaluate(() => !!BlockGroupApp.state.windGrid),
+      JSON.stringify(await page.evaluate(() => BlockGroupApp.state.windGrid && BlockGroupApp.state.windGrid.meta))
+    );
+    step(
+      "wind draws as an image overlay covering the grid's bbox",
+      (await page.locator("#map img.leaflet-image-layer").count()) === 1,
+      `${await page.locator("#map img.leaflet-image-layer").count()} image layer(s)`
+    );
+    // The block group's centre sits in the grid's SOUTH-WEST cell (6.5 m/s).
+    // The north-west cell holds 2.0, so a flipped row order would read 2.0
+    // here and this check would catch it.
+    const windCard = await page.locator("#detail-panel").innerText();
+    step(
+      "card reports the wind speed sampled at this block group, with rows the right way up",
+      /mean wind speed/i.test(windCard) && windCard.includes("6.5 m/s"),
+      windCard.replace(/\n/g, " ").slice(-120)
+    );
+    const windLegend = await page.locator("#wind-legend").innerText();
+    step("wind legend spans five speed bands", windLegend.split("\n").filter(Boolean).length === 5, windLegend.replace(/\n/g, " | "));
+
+    // --- Drop a pin ---
+    const selectedBefore = await page.evaluate(() => BlockGroupApp.state.selectedProps.GEOID);
+    await page.click("#drop-pin");
+    step("the drop-pin button arms rather than acting immediately", await page.evaluate(() => BlockGroupApp.state.pinArmed));
+    step(
+      "armed mode is visible: the button changes and the map takes a crosshair",
+      (await page.locator("#drop-pin.armed").count()) === 1 && (await page.locator("#map.pin-armed").count()) === 1
+    );
+
+    // Click straight onto a block group polygon. While armed, that must drop
+    // a pin and NOT change the selected block group - the whole reason the
+    // mode is armed rather than always-on.
+    await page.evaluate(() => {
+      const target = BlockGroupApp.state.layers.blockGroup.getLayers()[2];
+      target.fire("click");
+      BlockGroupApp.state.layers.blockGroup._map.fire("click", { latlng: L.latLng(34.055, -118.243) });
+    });
+    await page.waitForTimeout(600);
+    step(
+      "a click while armed drops a pin instead of selecting a block group",
+      (await page.evaluate(() => BlockGroupApp.state.selectedProps.GEOID)) === selectedBefore,
+      `still ${selectedBefore}`
+    );
+    step("the pin lands on the map", (await page.locator(".leaflet-marker-icon").count()) === 1);
+    step("the mode disarms itself after one drop", !(await page.evaluate(() => BlockGroupApp.state.pinArmed)));
+    step("the pin is reverse-geocoded", reverseQueries.length === 1, JSON.stringify(reverseQueries));
+    const pinPopup = await page.locator(".leaflet-popup-content").allInnerTexts();
+    step(
+      "the pin popup shows the street address, not the full Nominatim chain",
+      pinPopup.some((t) => t.includes("410 W Temple St, Los Angeles, California, 90012")) &&
+        !pinPopup.some((t) => t.includes("United States")),
+      JSON.stringify(pinPopup)
+    );
+    step(
+      "the address box is filled in from the pin",
+      (await page.inputValue("#address-input")).startsWith("410 W Temple St"),
+      await page.inputValue("#address-input")
+    );
+
+    // Escape cancels an armed pin without dropping anything.
+    await page.click("#drop-pin");
+    await page.keyboard.press("Escape");
+    step("Escape cancels armed mode", !(await page.evaluate(() => BlockGroupApp.state.pinArmed)));
+
+    await page.click("#clear-pin");
+    await page.waitForTimeout(200);
+    step("clearing the pin also removes the dropped one", (await page.locator(".leaflet-marker-icon").count()) === 0);
+
+    // Turn the environment layers back off so the teardown checks below see
+    // the same map they were written against.
+    await page.click("#toggle-fire");
+    await page.click("#toggle-pollution");
+    await page.click("#toggle-wind");
+    await page.waitForTimeout(300);
+    step(
+      "turning the environment layers off removes them and their legends",
+      (await page.locator("#map img.leaflet-image-layer").count()) === 0 &&
+        !(await page.locator("#fire-legend").isVisible()) &&
+        !(await page.locator("#pollution-legend").isVisible())
+    );
+
     // Capture the interesting state (popup open with data) before the
     // teardown checks below zoom out and toggle layers off.
     await page.screenshot({ path: path.join(__dirname, "screenshot-blockgroups.png") });
@@ -703,6 +990,44 @@ async function main() {
     step("toggling a layer off removes it", zipOff);
 
     step("no console/page errors thrown", consoleErrors.length === 0, consoleErrors.join(" | "));
+
+    // --- Basemap fallback when OpenFreeMap is unreachable ---
+    // OpenFreeMap is donation-funded and single-maintainer, so "it is down"
+    // is a real scenario, and it fails asynchronously - long after addTo()
+    // returned - which is the part that is easy to get wrong.
+    const pageNoVector = await browser.newPage();
+    await pageNoVector.route("**://tiles.openfreemap.org/**", (route) =>
+      route.fulfill({ status: 503, contentType: "text/plain", body: "down" })
+    );
+    await pageNoVector.route("**://services.arcgisonline.com/**", (route) =>
+      route.fulfill({ contentType: "image/png", body: BLANK_PNG })
+    );
+    await pageNoVector.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    await pageNoVector
+      .waitForFunction(() => BlockGroupApp.state.basemapKind === "raster", { timeout: 8000 })
+      .catch(() => {});
+    step(
+      "an unreachable OpenFreeMap falls back to the raster basemap",
+      (await pageNoVector.evaluate(() => BlockGroupApp.state.basemapKind)) === "raster",
+      String(await pageNoVector.evaluate(() => BlockGroupApp.state.basemapKind))
+    );
+    const fallbackLog = await pageNoVector.locator("#status-log").innerText();
+    step(
+      "the fallback says why, and warns the raster basemap stops at zoom 16",
+      /raster basemap/i.test(fallbackLog) && fallbackLog.includes("zoom 16"),
+      fallbackLog.replace(/\n/g, " | ").slice(0, 180)
+    );
+    step(
+      "the fallback raster upscales past its last real tile instead of going blank",
+      await pageNoVector.evaluate(() => {
+        let found = null;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (l.options && l.options.maxNativeZoom) found = l.options.maxNativeZoom;
+        });
+        return found === 16;
+      })
+    );
+    await pageNoVector.close();
 
     // --- Missing / corrupt data file diagnostics ---
     // These are what a user actually hits before running the fetch script,
@@ -834,6 +1159,7 @@ async function main() {
     await pageFile.close();
   } finally {
     fs.rmSync(dataPath, { force: true });
+    fs.rmSync(windPath, { force: true });
   }
 
   const failed = steps.filter((s) => !s.ok);

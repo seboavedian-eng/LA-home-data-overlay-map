@@ -23,16 +23,31 @@ const BG_CONFIG = {
   MAP_CENTER: [34.05, -118.25],
   MAP_ZOOM: 12,
 
-  // Esri World Light Gray Canvas: a muted basemap built for data overlays -
-  // minimal labels, no POI clutter, so the polygons carry the visual weight.
-  // Standard OSM tiles are a general-purpose map and fight the data for
-  // attention.
-  BASEMAP_URL:
+  // Basemap: OpenFreeMap's Positron style, drawn as vector tiles through
+  // MapLibre GL. Vector matters here for one concrete reason - the Esri
+  // raster canvas this replaced only publishes tiles to zoom 16, so the map
+  // went soft exactly where a block group fills the screen. Vector tiles are
+  // drawn at whatever zoom you are at, so labels and streets stay sharp to
+  // zoom 20. OpenFreeMap needs no key and sets no limits; it is donation
+  // funded and single-maintainer, hence the raster fallback below.
+  BASEMAP_STYLE: "https://tiles.openfreemap.org/styles/positron",
+  BASEMAP_ATTRIBUTION:
+    '&copy; <a href="https://openfreemap.org/">OpenFreeMap</a> &copy; <a href="https://www.openmaptiles.org/">OpenMapTiles</a> ' +
+    'Data from <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  MAX_ZOOM: 20,
+
+  // Raster fallback, used when WebGL is unavailable (older machines, remote
+  // desktops, GPU blocklists) or OpenFreeMap cannot be reached.
+  //
+  // maxNativeZoom is the important part: Esri's Light Gray Canvas stops
+  // publishing tiles at zoom 16, so without it the basemap goes blank past
+  // that zoom instead of upscaling the last real tile.
+  FALLBACK_BASEMAP_URL:
     "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-  BASEMAP_ATTRIBUTION: "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
-  // Place names/roads ride on top of the polygons so they stay readable.
-  BASEMAP_LABELS_URL:
+  FALLBACK_BASEMAP_LABELS_URL:
     "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+  FALLBACK_BASEMAP_ATTRIBUTION: "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
+  FALLBACK_MAX_NATIVE_ZOOM: 16,
 
   // All three boundary types come from the same Census TIGERweb service.
   // TIGERweb also carries "Tribal Census Tracts"/"Tribal Block Groups" and
@@ -113,6 +128,117 @@ const BG_CONFIG = {
     { max: 1000, label: "Very low (under 1,000)", color: "#1b4332" },
   ],
 
+  // --- Hazard / environment overlays --------------------------------------
+  // These are ordinary ArcGIS REST polygon services, but unlike TIGERweb they
+  // each live on their own host, so each carries its own candidate list. The
+  // first URL that answers wins; the rest exist because government GIS
+  // endpoints move without notice and a dead URL should degrade to "try the
+  // next one", not to a broken layer.
+  OVERLAYS: {
+    fire: {
+      label: "Fire hazard zones",
+      minZoom: 9,
+      // Simplify geometry server-side. FHSZ is tens of thousands of small
+      // adjacent polygons statewide; full-resolution rings are megabytes for
+      // detail no one can see at these zooms.
+      simplifyDegrees: 0.0005,
+      servers: [
+        {
+          url: "https://services.gis.ca.gov/arcgis/rest/services/Environment/Fire_Severity_Zones/MapServer",
+          // This service splits SRA and LRA into separate sublayers and also
+          // carries label/line sublayers whose names match "hazard" too -
+          // pulling those in is what drew stray unfilled lines on the old page.
+          discover: {
+            nameHint: "hazard",
+            match: /hazard|fhsz|sra|lra/i,
+            exclude: /label|annotation|line$/i,
+            polygonsOnly: true,
+            fallbackId: 0,
+          },
+        },
+      ],
+      outFields: "*",
+    },
+    pollution: {
+      label: "Pollution burden (CalEnviroScreen 4.0)",
+      minZoom: 8,
+      simplifyDegrees: 0.0005,
+      // CES 4.0 is one statewide census-tract layer. OEHHA publishes it as a
+      // hosted feature layer; the State Water Board mirrors it on its own
+      // portal, which is the fallback if OEHHA's moves.
+      servers: [
+        {
+          url: "https://services1.arcgis.com/PCHfdHz4GlDNAhBb/arcgis/rest/services/CalEnviroScreen_4_0_Results_/FeatureServer",
+          layerId: 0,
+        },
+        {
+          url: "https://services.arcgis.com/o6oETlrWetREI1A2/arcgis/rest/services/CES4/FeatureServer",
+          layerId: 0,
+        },
+        {
+          url: "https://gispublic.waterboards.ca.gov/portalserver/rest/services/Cal_Enviroscreen_40/MapServer",
+          discover: { nameHint: "calenviroscreen", match: /enviroscreen|ces/i, polygonsOnly: true, fallbackId: 0 },
+        },
+      ],
+      outFields: "*",
+    },
+  },
+
+  // Fire Hazard Severity Zone classes. CAL FIRE only maps three, and only
+  // inside a responsibility area - unmapped ground is genuinely unmapped
+  // rather than "no hazard", which the legend says explicitly.
+  FIRE_CLASS_COLORS: {
+    "very high": "#d7301f",
+    high: "#fc8d59",
+    moderate: "#fdcc8a",
+  },
+
+  // CalEnviroScreen percentile bands. CES is a *relative* score: 90 means
+  // "worse than 90% of California census tracts", not an absolute dose.
+  POLLUTION_BUCKETS: [
+    { max: 20, label: "0-20th percentile (least burdened)", color: "#f7f7f7" },
+    { max: 40, label: "20-40th", color: "#fee0b6" },
+    { max: 60, label: "40-60th", color: "#fdb863" },
+    { max: 80, label: "60-80th", color: "#e08214" },
+    { max: 100, label: "80-100th (most burdened)", color: "#b35806" },
+  ],
+
+  // CES 4.0 field names, as they appear in OEHHA's published shapefile.
+  // Each entry is a list because the hosted copies differ in punctuation
+  // (Diesel_PM vs DieselPM) and pickField matches on substrings.
+  CES_FIELDS: {
+    score: ["CIscoreP", "CIScoreP", "CES_4_0_Percentile", "Percentile"],
+    rawScore: ["CIscore", "CIScore"],
+    tract: ["Tract", "GEOID", "Census_Tract", "TractID"],
+    population: ["TotPop19", "TotPop", "Population"],
+    indicators: [
+      { label: "Ozone", pctl: ["Ozone_Pctl", "OzoneP"], raw: ["Ozone"], unit: "ppm-hours" },
+      { label: "PM2.5", pctl: ["PM2_5_Pctl", "PM25_Pctl", "PM2_5P"], raw: ["PM2_5", "PM25"], unit: "\u00b5g/m\u00b3" },
+      { label: "Diesel PM", pctl: ["Diesel_PM_Pctl", "DieselPM_Pctl", "DieselP"], raw: ["Diesel_PM", "DieselPM"], unit: "kg/day" },
+      { label: "Traffic", pctl: ["Traffic_Pctl", "TrafficP"], raw: ["Traffic"], unit: "vehicle-km/hr" },
+      { label: "Drinking water", pctl: ["Drink_Wat_Pctl", "DrinkingWaterP", "Drinking_Water_Pctl"], raw: ["Drink_Wat", "DrinkingWater"], unit: "index" },
+      { label: "Pesticides", pctl: ["Pesticide_Pctl", "PesticidesP"], raw: ["Pesticide", "Pesticides"], unit: "lbs/sq mi" },
+      { label: "Asthma ER visits", pctl: ["Asthma_Pctl", "AsthmaP"], raw: ["Asthma"], unit: "per 10k" },
+    ],
+  },
+
+  // --- Wind ---------------------------------------------------------------
+  // Global Wind Atlas 3 ships as GeoTIFF only - no tile or WMS service - so
+  // scripts/fetch-wind-data.py turns a downloaded GeoTIFF into the compact
+  // JSON grid the page draws. See README for the two-minute download step.
+  WIND_DATA: "js/data/wind-la-county.json",
+  WIND_BUCKETS: [
+    { max: 3, label: "Under 3 m/s (calm)", color: "#f0f9e8" },
+    { max: 4.5, label: "3-4.5 m/s", color: "#bae4bc" },
+    { max: 6, label: "4.5-6 m/s", color: "#7bccc4" },
+    { max: 7.5, label: "6-7.5 m/s", color: "#43a2ca" },
+    { max: Infinity, label: "7.5+ m/s (windiest)", color: "#0868ac" },
+  ],
+
+  // Nominatim again, this time backwards: a dropped pin has coordinates and
+  // needs the street address, which is the reverse of the search box.
+  NOMINATIM_REVERSE_URL: "https://nominatim.openstreetmap.org/reverse",
+
   // Padding (in degrees) added around the viewport when loading polygons, so
   // small pans don't trigger a refetch - which used to destroy the open popup.
   BBOX_PADDING: 0.02,
@@ -138,7 +264,7 @@ const BlockGroupApp = (() => {
   let map;
   const layers = {};        // key -> L.geoJSON currently on the map
   const layerIds = {};      // key -> resolved TIGERweb layer id
-  const enabled = { zip: false, tract: false, blockGroup: false };
+  const enabled = { zip: false, tract: false, blockGroup: false, fire: false, pollution: false, wind: false };
   const loadedBBox = {};    // key -> padded bbox covered by the current layer
   let censusData = null;    // { meta, blockGroups } from the local snapshot
   let censusDataError = null;
@@ -276,6 +402,313 @@ const BlockGroupApp = (() => {
       outFields: BG_CONFIG.OUT_FIELDS[key] || BG_CONFIG.OUT_FIELDS.default,
     });
     return Utils.fetchEsriAsGeoJSON(url, { timeoutMs: 40000 });
+  }
+
+  // --- Hazard / environment overlays --------------------------------------
+  // Each overlay has a candidate list of servers. Resolution is cached per
+  // key: pick the first server that answers, and on a MapServer work out
+  // which sublayers to draw (CAL FIRE splits State and Local Responsibility
+  // Areas across sublayers, and mixes in label/line sublayers that must not
+  // be drawn).
+  const overlaySources = {};
+
+  async function resolveOverlaySublayers(serverUrl, spec) {
+    const root = await Utils.fetchJSON(`${serverUrl}?f=json`, { timeoutMs: 20000 });
+    const all = root.layers || [];
+    const hits = all.filter((l) => {
+      const name = l.name || "";
+      if (spec.match && !spec.match.test(name)) return false;
+      if (spec.exclude && spec.exclude.test(name)) return false;
+      // A sublayer with no geometryType is a group//unknown layer: keep it and
+      // let the query decide, rather than dropping a layer we might need.
+      if (spec.polygonsOnly && l.geometryType && l.geometryType !== "esriGeometryPolygon") return false;
+      return true;
+    });
+    if (!hits.length) return [{ id: spec.fallbackId, name: `fallback id ${spec.fallbackId}` }];
+    return hits.map((l) => ({ id: l.id, name: l.name || `layer ${l.id}` }));
+  }
+
+  async function resolveOverlaySource(key) {
+    if (overlaySources[key]) return overlaySources[key];
+    const spec = BG_CONFIG.OVERLAYS[key];
+    const problems = [];
+
+    for (const candidate of spec.servers) {
+      try {
+        let sublayers;
+        if (candidate.discover) {
+          sublayers = await resolveOverlaySublayers(candidate.url, candidate.discover);
+        } else {
+          sublayers = [{ id: candidate.layerId, name: `layer ${candidate.layerId}` }];
+        }
+        const source = { url: candidate.url, sublayers };
+        overlaySources[key] = source;
+        Utils.logStatus(
+          key,
+          "info",
+          `${spec.label}: using ${candidate.url} (${sublayers.map((l) => l.name).join(", ")}).`
+        );
+        return source;
+      } catch (err) {
+        problems.push(`${candidate.url}: ${err.message}`);
+      }
+    }
+    throw new Error(`no server answered. Tried - ${problems.join(" | ")}`);
+  }
+
+  async function fetchOverlay(key, bbox) {
+    const spec = BG_CONFIG.OVERLAYS[key];
+    const source = await resolveOverlaySource(key);
+    const features = [];
+    const failures = [];
+
+    for (const sub of source.sublayers) {
+      const url = Utils.arcgisQueryUrl(source.url, sub.id, {
+        bbox,
+        outFields: spec.outFields || "*",
+        // maxAllowableOffset is ArcGIS's server-side generalisation: it drops
+        // vertices finer than this many degrees, which is the difference
+        // between a 6 MB and a 300 KB response for hazard zones.
+        extraParams: spec.simplifyDegrees ? { maxAllowableOffset: String(spec.simplifyDegrees) } : {},
+      });
+      try {
+        const gj = await Utils.fetchEsriAsGeoJSON(url, { timeoutMs: 40000 });
+        gj.features.forEach((f) => {
+          f.properties.SOURCE_LAYER = sub.name;
+          features.push(f);
+        });
+      } catch (err) {
+        failures.push(`${sub.name}: ${err.message}`);
+      }
+    }
+
+    // Every sublayer failing is a layer failure; some failing is worth saying
+    // out loud but not worth throwing away the ones that worked.
+    if (failures.length && !features.length) throw new Error(failures.join(" | "));
+    if (failures.length) Utils.logStatus(key, "warn", `${spec.label}: ${failures.join(" | ")}`);
+    return { type: "FeatureCollection", features };
+  }
+
+  // --- Fire hazard --------------------------------------------------------
+
+  function fireClass(props) {
+    const raw = Utils.pickField(props, [
+      "HAZ_CLASS", "FHSZ_DESC", "FHSZ", "SRA_HAZ_CODE", "HAZARD_CLASS", "HAZARD", "HAZ_CODE", "CLASS",
+    ]);
+    if (raw === undefined || raw === null || raw === "") return null;
+    const s = String(raw).toLowerCase();
+    if (s.includes("very high") || s === "3") return "very high";
+    if (s.includes("moderate") || s === "1") return "moderate";
+    if (s.includes("high") || s === "2") return "high";
+    return null;
+  }
+
+  function fireStyle(feature) {
+    const cls = fireClass(feature.properties);
+    return {
+      // No stroke: these are thousands of small adjacent polygons, and a
+      // border on each one turns a smooth hazard surface into a grid.
+      stroke: false,
+      fillColor: cls ? BG_CONFIG.FIRE_CLASS_COLORS[cls] : "#b0b7bf",
+      fillOpacity: cls ? 0.5 : 0.25,
+    };
+  }
+
+  // --- Pollution (CalEnviroScreen 4.0) ------------------------------------
+
+  function cesValue(props, names) {
+    const v = Utils.pickField(props, names);
+    const n = typeof v === "string" ? parseFloat(v) : v;
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function cesScore(props) {
+    return cesValue(props, BG_CONFIG.CES_FIELDS.score);
+  }
+
+  function pollutionBucket(score) {
+    if (score === null) return null;
+    return BG_CONFIG.POLLUTION_BUCKETS.find((b) => score <= b.max) || null;
+  }
+
+  function pollutionStyle(feature) {
+    const bucket = pollutionBucket(cesScore(feature.properties));
+    if (!bucket) return { color: "#9aa3ad", weight: 0.4, fillColor: "#e9edf0", fillOpacity: 0.15 };
+    return { color: "#8a5000", weight: 0.4, fillColor: bucket.color, fillOpacity: 0.6 };
+  }
+
+  // CES is tract-level, so a block group inherits its parent tract's score:
+  // the first 11 digits of a block group GEOID are the tract GEOID.
+  const cesByTract = {};
+
+  function rememberCesTracts(geojson) {
+    geojson.features.forEach((f) => {
+      const raw = Utils.pickField(f.properties, BG_CONFIG.CES_FIELDS.tract);
+      if (raw === undefined || raw === null) return;
+      // The Tract field is published as a number in some copies, so it can
+      // arrive as 6037101110 - missing the leading zero of state FIPS 06.
+      const digits = String(raw).replace(/\D/g, "");
+      const geoid = digits.length === 10 ? `0${digits}` : digits;
+      if (geoid.length === 11) cesByTract[geoid] = f.properties;
+    });
+  }
+
+  function cesForBlockGroup(props) {
+    const geoid = geoidOf(props) || "";
+    return geoid.length >= 11 ? cesByTract[geoid.slice(0, 11)] || null : null;
+  }
+
+  function cesRows(props) {
+    const ces = cesForBlockGroup(props);
+    if (!ces) return "";
+    const score = cesScore(ces);
+    if (score === null) return "";
+    const bucket = pollutionBucket(score);
+    return `
+      <div class="section-label">Pollution burden${infoIcon(
+        "CalEnviroScreen 4.0, from OEHHA. The score is a percentile against every other California census tract, not an absolute measure: 90 means this tract scores worse than 90% of the state. It is reported for the whole tract, so every block group inside it shares one value."
+      )}</div>
+      <table>
+        <tr><td class="k">CalEnviroScreen score</td><td class="v">${score.toFixed(1)}th pct</td></tr>
+        <tr><td class="k">Band</td><td class="v">${bucket ? bucket.label : "Unknown"}</td></tr>
+      </table>`;
+  }
+
+  // --- Wind (Global Wind Atlas 3) -----------------------------------------
+  // GWA publishes GeoTIFF rasters only - no tile service, no WMS - so this
+  // reads the JSON grid that scripts/fetch-wind-data.py bakes out of a
+  // downloaded GeoTIFF: a plain row-major array of mean wind speeds plus the
+  // bounding box it covers.
+  let windGrid = null;
+  let windError = null;
+  let windOverlay = null;
+
+  async function loadWindData() {
+    if (windGrid || windError) return;
+    try {
+      const res = await fetch(BG_CONFIG.WIND_DATA, { cache: "no-cache" });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      const data = await res.json();
+      if (!data.values || !data.bbox || !data.nrows || !data.ncols) {
+        throw new Error("file is missing bbox/nrows/ncols/values");
+      }
+      windGrid = data;
+      Utils.logStatus(
+        "wind",
+        "ok",
+        `Wind grid loaded: ${data.ncols}x${data.nrows} cells at ${data.meta && data.meta.height ? data.meta.height : "?"} height.`
+      );
+    } catch (err) {
+      windError = err;
+      Utils.logStatus(
+        "wind",
+        "error",
+        `No wind data at ${BG_CONFIG.WIND_DATA} (${err.message}). Download a Global Wind Atlas GeoTIFF for LA County and run ${fetchCommand().replace("fetch-blockgroup-data.py", "fetch-wind-data.py")} - see README.`
+      );
+    }
+  }
+
+  function windAt(lat, lon) {
+    if (!windGrid) return null;
+    const { bbox, nrows, ncols, values } = windGrid;
+    if (lat > bbox.north || lat < bbox.south || lon < bbox.west || lon > bbox.east) return null;
+    const row = Math.min(nrows - 1, Math.floor(((bbox.north - lat) / (bbox.north - bbox.south)) * nrows));
+    const col = Math.min(ncols - 1, Math.floor(((lon - bbox.west) / (bbox.east - bbox.west)) * ncols));
+    const v = values[row * ncols + col];
+    return Number.isFinite(v) ? v : null;
+  }
+
+  function windBucket(speed) {
+    if (speed === null || speed === undefined) return null;
+    return BG_CONFIG.WIND_BUCKETS.find((b) => speed < b.max) || BG_CONFIG.WIND_BUCKETS[BG_CONFIG.WIND_BUCKETS.length - 1];
+  }
+
+  // Web Mercator y, in radians of the projected axis. Leaflet places an image
+  // overlay linearly in *projected* space, so a grid drawn in equal steps of
+  // latitude would sit progressively wrong as you move north. Drawing each
+  // pixel row at its true Mercator position is what keeps the raster aligned
+  // with the block group polygons underneath it.
+  function mercatorY(lat) {
+    return Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
+  }
+  function inverseMercatorY(y) {
+    return ((2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180) / Math.PI;
+  }
+
+  function buildWindOverlay() {
+    const { bbox, ncols } = windGrid;
+    const width = Math.min(ncols, 1200);
+    const yTop = mercatorY(bbox.north);
+    const yBottom = mercatorY(bbox.south);
+    // Keep pixels roughly square in projected space so the colour blocks
+    // don't look stretched.
+    const lonSpan = bbox.east - bbox.west;
+    const height = Math.max(1, Math.round((width * (yTop - yBottom)) / ((lonSpan * Math.PI) / 180)));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    const img = ctx.createImageData(width, height);
+
+    for (let j = 0; j < height; j += 1) {
+      const y = yTop + ((j + 0.5) / height) * (yBottom - yTop);
+      const lat = inverseMercatorY(y);
+      for (let i = 0; i < width; i += 1) {
+        const lon = bbox.west + ((i + 0.5) / width) * lonSpan;
+        const bucket = windBucket(windAt(lat, lon));
+        const o = (j * width + i) * 4;
+        if (!bucket) {
+          img.data[o + 3] = 0; // transparent where the grid has no data
+          continue;
+        }
+        const hex = bucket.color;
+        img.data[o] = parseInt(hex.slice(1, 3), 16);
+        img.data[o + 1] = parseInt(hex.slice(3, 5), 16);
+        img.data[o + 2] = parseInt(hex.slice(5, 7), 16);
+        img.data[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+
+    return L.imageOverlay(canvas.toDataURL(), [[bbox.south, bbox.west], [bbox.north, bbox.east]], {
+      opacity: 0.5,
+      interactive: false,
+    });
+  }
+
+  function windRows(feature) {
+    if (!windGrid || !feature || !feature.geometry) return "";
+    const center = centroidOf(feature);
+    if (!center) return "";
+    const speed = windAt(center.lat, center.lon);
+    if (speed === null) return "";
+    const bucket = windBucket(speed);
+    const height = (windGrid.meta && windGrid.meta.height) || "100 m";
+    return `
+      <div class="section-label">Wind${infoIcon(
+        `Mean wind speed ${height} above ground, from Global Wind Atlas 3 (DTU/World Bank). A long-run climatological average at 250 m resolution, sampled at this block group's centre - not a forecast and not a Santa Ana gust figure.`
+      )}</div>
+      <table>
+        <tr><td class="k">Mean wind speed</td><td class="v">${speed.toFixed(1)} m/s</td></tr>
+        <tr><td class="k">Band</td><td class="v">${bucket ? bucket.label : "Unknown"}</td></tr>
+      </table>`;
+  }
+
+  // Average of the outer ring's vertices - good enough to sample a raster
+  // with, and far cheaper than a true area centroid.
+  function centroidOf(feature) {
+    const g = feature.geometry;
+    const ring =
+      g.type === "Polygon" ? g.coordinates[0] : g.type === "MultiPolygon" ? g.coordinates[0][0] : null;
+    if (!ring || !ring.length) return null;
+    let lat = 0;
+    let lon = 0;
+    ring.forEach(([x, y]) => {
+      lon += x;
+      lat += y;
+    });
+    return { lat: lat / ring.length, lon: lon / ring.length };
   }
 
   // --- rendering ----------------------------------------------------------
@@ -594,6 +1027,9 @@ const BlockGroupApp = (() => {
       </table>
       ${incomeBracketBars(record)}
       ${compact ? "" : `<p class="src-note">Source: ACS B19013 / B19301${geoNote("income")}</p>`}
+
+      ${enabled.pollution ? cesRows(props) : ""}
+      ${enabled.wind ? windRows(feature) : ""}
 
       ${
         compact
@@ -924,11 +1360,38 @@ const BlockGroupApp = (() => {
   }
 
   function buildLayer(key, geojson) {
+    if (key === "fire") {
+      return L.geoJSON(geojson, {
+        style: fireStyle,
+        onEachFeature: (feature, layer) => {
+          const cls = fireClass(feature.properties);
+          layer.bindTooltip(
+            `Fire hazard: ${cls ? cls.replace(/^./, (c) => c.toUpperCase()) : "unclassified"}` +
+              `<br><span style="opacity:.7">${feature.properties.SOURCE_LAYER || ""}</span>`,
+            { sticky: true }
+          );
+        },
+      });
+    }
+
+    if (key === "pollution") {
+      rememberCesTracts(geojson);
+      return L.geoJSON(geojson, {
+        style: pollutionStyle,
+        onEachFeature: (feature, layer) => {
+          layer.bindTooltip(() => pollutionTooltip(feature.properties), { sticky: true });
+        },
+      });
+    }
+
     if (key === "blockGroup") {
       return L.geoJSON(geojson, {
         style: (feature) => styleForBlockGroup(feature),
         onEachFeature: (feature, layer) => {
-          layer.on("click", () => selectBlockGroup(layer, feature.properties));
+          layer.on("click", () => {
+            if (pinArmed) return; // the armed pin-drop owns this click
+            selectBlockGroup(layer, feature.properties);
+          });
         },
       });
     }
@@ -945,10 +1408,39 @@ const BlockGroupApp = (() => {
     });
   }
 
+  function labelFor(key) {
+    const overlay = BG_CONFIG.OVERLAYS[key];
+    if (overlay) return overlay.label;
+    return { zip: "Zip code borders", tract: "Census tract borders", blockGroup: "Block group borders" }[key];
+  }
+
+  function minZoomFor(key) {
+    const overlay = BG_CONFIG.OVERLAYS[key];
+    return overlay ? overlay.minZoom : BG_CONFIG.MIN_ZOOM[key];
+  }
+
+  function pollutionTooltip(props) {
+    const score = cesScore(props);
+    const rows = BG_CONFIG.CES_FIELDS.indicators
+      .map((ind) => {
+        const pctl = cesValue(props, ind.pctl);
+        if (pctl === null) return "";
+        const raw = cesValue(props, ind.raw);
+        const rawText = raw === null ? "" : ` <span style="opacity:.6">(${raw} ${ind.unit})</span>`;
+        return `<tr><td class="k">${ind.label}</td><td class="v">${pctl.toFixed(0)}th${rawText}</td></tr>`;
+      })
+      .join("");
+    const tract = Utils.pickField(props, BG_CONFIG.CES_FIELDS.tract);
+    return `<div class="ces-tip"><strong>Census tract ${tract || "?"}</strong><br>
+      CalEnviroScreen ${score === null ? "not scored" : `${score.toFixed(1)}th percentile`}
+      <table>${rows}</table>
+      <span class="tip-note">Percentiles are against all California tracts.</span></div>`;
+  }
+
   async function refreshLayer(key, { force = false } = {}) {
     if (!enabled[key]) return;
 
-    const minZoom = BG_CONFIG.MIN_ZOOM[key];
+    const minZoom = minZoomFor(key);
     if (minZoom && map.getZoom() < minZoom) {
       if (layers[key]) {
         map.removeLayer(layers[key]);
@@ -961,15 +1453,18 @@ const BlockGroupApp = (() => {
 
     const bbox = key === "zip" ? BG_CONFIG.LA_COUNTY_BBOX : bboxOfView();
 
+
     // Skip the refetch entirely when the current view is still inside the
     // padded area already loaded. This is what stops a popup's auto-pan from
     // triggering a reload that would destroy that same popup.
     if (!force && layers[key] && viewIsInside(loadedBBox[key])) return;
 
-    const label = { zip: "Zip code borders", tract: "Census tract borders", blockGroup: "Block group borders" }[key];
+    const label = labelFor(key);
     Utils.logStatus(key, "info", `Loading ${label}...`);
     try {
-      const geojson = await fetchBoundaries(key, bbox);
+      const geojson = BG_CONFIG.OVERLAYS[key]
+        ? await fetchOverlay(key, bbox)
+        : await fetchBoundaries(key, bbox);
       if (!enabled[key]) return; // toggled off while the request was in flight
 
       // Capture this BEFORE removing the layer: removing it closes the popup,
@@ -984,7 +1479,11 @@ const BlockGroupApp = (() => {
 
       if (layers[key]) map.removeLayer(layers[key]);
       layers[key] = buildLayer(key, geojson).addTo(map);
+      // Hazard and pollution are area fills: they belong under the boundary
+      // lines and the block group polygons, not on top of them.
+      if (BG_CONFIG.OVERLAYS[key] && layers[key].bringToBack) layers[key].bringToBack();
       loadedBBox[key] = bbox;
+      if (key === "pollution") renderSelection(); // the open card gains its CES rows
 
       // Re-attach the open selection to its polygon in the rebuilt layer
       // rather than dropping it - the card should survive a pan.
@@ -1000,7 +1499,9 @@ const BlockGroupApp = (() => {
         Utils.logStatus(
           key,
           "warn",
-          `${label}: 0 features returned from layer id ${layerIds[key]}. If this area should have data, that layer id is probably wrong.`
+          BG_CONFIG.OVERLAYS[key]
+            ? `${label}: 0 features in this view. Either nothing is mapped here, or the service moved.`
+            : `${label}: 0 features returned from layer id ${layerIds[key]}. If this area should have data, that layer id is probably wrong.`
         );
       } else {
         Utils.logStatus(key, "ok", `${label}: ${geojson.features.length} features loaded.`);
@@ -1027,7 +1528,29 @@ const BlockGroupApp = (() => {
     }
   }
 
+  async function onToggleWind(checked) {
+    enabled.wind = checked;
+    if (!checked) {
+      if (windOverlay) {
+        map.removeLayer(windOverlay);
+        windOverlay = null;
+      }
+      renderOverlayLegend("wind");
+      renderSelection();
+      return;
+    }
+    await loadWindData();
+    if (!enabled.wind) return; // toggled off while the file was loading
+    if (windGrid && !windOverlay) {
+      windOverlay = buildWindOverlay().addTo(map);
+      windOverlay.bringToBack();
+    }
+    renderOverlayLegend("wind");
+    renderSelection(); // the open card gains its wind rows
+  }
+
   function onToggle(key, checked) {
+    if (key === "wind") return onToggleWind(checked);
     enabled[key] = checked;
     if (!checked) {
       if (layers[key]) {
@@ -1041,11 +1564,48 @@ const BlockGroupApp = (() => {
         document.getElementById("detail-panel").innerHTML =
           '<p class="hint">Turn on <strong>Block Group Borders</strong>, zoom in, and click a block group.</p>';
       }
+      if (BG_CONFIG.OVERLAYS[key]) {
+        renderOverlayLegend(key);
+        if (key === "pollution") renderSelection();
+      }
       updateZoomHint();
       return;
     }
     if (key === "blockGroup") loadCensusData();
+    if (BG_CONFIG.OVERLAYS[key]) renderOverlayLegend(key);
     refreshLayer(key, { force: true });
+  }
+
+  // One legend box per overlay, shown only while that overlay is on.
+  function renderOverlayLegend(key) {
+    const box = document.getElementById(`${key}-legend`);
+    if (!box) return;
+    if (!enabled[key]) {
+      box.classList.add("hidden");
+      box.innerHTML = "";
+      return;
+    }
+    let rows;
+    if (key === "fire") {
+      rows = Object.entries(BG_CONFIG.FIRE_CLASS_COLORS).map(
+        ([name, color]) =>
+          `<div class="legend-row"><span class="swatch" style="background:${color}"></span>${name.replace(
+            /^./,
+            (c) => c.toUpperCase()
+          )}</div>`
+      );
+      rows.push('<div class="legend-note">Blank ground is outside any mapped zone, which is not the same as "no hazard".</div>');
+    } else if (key === "pollution") {
+      rows = BG_CONFIG.POLLUTION_BUCKETS.map(
+        (b) => `<div class="legend-row"><span class="swatch" style="background:${b.color}"></span>${b.label}</div>`
+      );
+    } else {
+      rows = BG_CONFIG.WIND_BUCKETS.map(
+        (b) => `<div class="legend-row"><span class="swatch" style="background:${b.color}"></span>${b.label}</div>`
+      );
+    }
+    box.classList.remove("hidden");
+    box.innerHTML = rows.join("");
   }
 
   // --- Address search -----------------------------------------------------
@@ -1188,6 +1748,7 @@ const BlockGroupApp = (() => {
   }
 
   function clearPin() {
+    setPinArmed(false);
     if (searchMarker) {
       map.removeLayer(searchMarker);
       searchMarker = null;
@@ -1197,6 +1758,90 @@ const BlockGroupApp = (() => {
     document.getElementById("search-status").textContent = "";
     suggestions = [];
     renderSuggestions();
+  }
+
+  // --- Drop a pin ---------------------------------------------------------
+  // A plain map click already means "select this block group", so pin-drop is
+  // an explicitly armed mode: press the button, the next click on the map
+  // drops a pin and reverse-geocodes it, then the mode disarms itself. One
+  // click never does both things, and the block group click handler stands
+  // down while the mode is armed.
+  let pinArmed = false;
+
+  function setPinArmed(armed) {
+    pinArmed = armed;
+    const btn = document.getElementById("drop-pin");
+    btn.classList.toggle("armed", armed);
+    btn.textContent = armed ? "Click the map… (Esc to cancel)" : "Drop a pin";
+    document.getElementById("map").classList.toggle("pin-armed", armed);
+    if (armed) {
+      const status = document.getElementById("search-status");
+      status.className = "hint";
+      status.textContent = "Click anywhere on the map to drop a pin there.";
+    }
+  }
+
+  async function reverseGeocode(lat, lon) {
+    const url =
+      `${BG_CONFIG.NOMINATIM_REVERSE_URL}?` +
+      new URLSearchParams({ lat: String(lat), lon: String(lon), format: "jsonv2", zoom: "18", addressdetails: "1" });
+    const data = await Utils.fetchJSON(url, { timeoutMs: 15000 });
+    if (!data || data.error) throw new Error((data && data.error) || "no address found");
+    return data;
+  }
+
+  // Nominatim's display_name is the full "house, street, neighbourhood, city,
+  // county, state, ZIP, country" chain. The first four parts are the street
+  // address people recognise; the rest is noise in a popup this size.
+  function shortAddress(place) {
+    const a = place.address || {};
+    const line1 = [a.house_number, a.road].filter(Boolean).join(" ");
+    const city = a.city || a.town || a.village || a.suburb || a.neighbourhood || "";
+    const parts = [line1 || a.name, city, a.state, a.postcode].filter(Boolean);
+    return parts.length ? parts.join(", ") : place.display_name || "";
+  }
+
+  async function dropPinAt(latlng) {
+    if (searchMarker) map.removeLayer(searchMarker);
+    searchMarker = L.marker(latlng).addTo(map);
+    document.getElementById("clear-pin").classList.remove("hidden");
+
+    const coords = `${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`;
+    searchMarker.bindPopup(`<div class="pin-popup"><strong>Looking up address…</strong><br>${coords}</div>`).openPopup();
+
+    const status = document.getElementById("search-status");
+    try {
+      const place = await reverseGeocode(latlng.lat, latlng.lng);
+      const address = shortAddress(place);
+      const wind = windAt(latlng.lat, latlng.lng);
+      searchMarker.setPopupContent(
+        `<div class="pin-popup"><strong>${address || "No address on record here"}</strong>` +
+          `<br><span class="pin-coords">${coords}</span>` +
+          (wind === null ? "" : `<br><span class="pin-coords">Mean wind ${wind.toFixed(1)} m/s</span>`) +
+          `</div>`
+      );
+      document.getElementById("address-input").value = address;
+      status.className = "hint ok";
+      status.textContent = address || "Pin dropped - no street address at this point.";
+    } catch (err) {
+      searchMarker.setPopupContent(`<div class="pin-popup"><strong>${coords}</strong><br>Address lookup failed.</div>`);
+      status.className = "hint error";
+      status.textContent = `Pin dropped, but the address lookup failed: ${err.message}`;
+    }
+  }
+
+  function initPinDrop() {
+    document.getElementById("drop-pin").addEventListener("click", () => setPinArmed(!pinArmed));
+
+    map.on("click", (e) => {
+      if (!pinArmed) return;
+      setPinArmed(false);
+      dropPinAt(e.latlng);
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && pinArmed) setPinArmed(false);
+    });
   }
 
   function initAddressSearch() {
@@ -1246,6 +1891,72 @@ const BlockGroupApp = (() => {
     });
   }
 
+  // --- Basemap ------------------------------------------------------------
+  let basemapKind = null; // "vector" | "raster", exposed for tests
+
+  function webglAvailable() {
+    try {
+      const canvas = document.createElement("canvas");
+      return !!(canvas.getContext("webgl2") || canvas.getContext("webgl"));
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function addRasterBasemap(reason) {
+    L.tileLayer(BG_CONFIG.FALLBACK_BASEMAP_URL, {
+      maxZoom: BG_CONFIG.MAX_ZOOM,
+      maxNativeZoom: BG_CONFIG.FALLBACK_MAX_NATIVE_ZOOM,
+      attribution: BG_CONFIG.FALLBACK_BASEMAP_ATTRIBUTION,
+    }).addTo(map);
+    // Labels ride in a pane above the polygon fills so street names stay
+    // readable instead of being buried by them.
+    L.tileLayer(BG_CONFIG.FALLBACK_BASEMAP_LABELS_URL, {
+      maxZoom: BG_CONFIG.MAX_ZOOM,
+      maxNativeZoom: BG_CONFIG.FALLBACK_MAX_NATIVE_ZOOM,
+      pane: "shadowPane",
+    }).addTo(map);
+    basemapKind = "raster";
+    Utils.logStatus("basemap", "warn", `Using the Esri raster basemap: ${reason}. It is only published to zoom ${BG_CONFIG.FALLBACK_MAX_NATIVE_ZOOM}, so it softens past that.`);
+  }
+
+  function addBasemap() {
+    if (typeof L.maplibreGL !== "function") {
+      addRasterBasemap("MapLibre did not load");
+      return;
+    }
+    if (!webglAvailable()) {
+      addRasterBasemap("this browser has no WebGL");
+      return;
+    }
+    try {
+      const gl = L.maplibreGL({
+        style: BG_CONFIG.BASEMAP_STYLE,
+        attribution: BG_CONFIG.BASEMAP_ATTRIBUTION,
+      }).addTo(map);
+      // The GL layer does not feed Leaflet's attribution control the way a
+      // tile layer does, and OpenFreeMap's terms ask for the OpenMapTiles and
+      // OpenStreetMap credit, so add it explicitly.
+      if (map.attributionControl) map.attributionControl.addAttribution(BG_CONFIG.BASEMAP_ATTRIBUTION);
+      basemapKind = "vector";
+      Utils.logStatus("basemap", "ok", "Vector basemap (OpenFreeMap Positron) - sharp to zoom 20.");
+
+      // A style that 404s or a host that is down fails asynchronously, well
+      // after addTo() returned, so the swap to raster has to happen here.
+      const glMap = gl.getMaplibreMap && gl.getMaplibreMap();
+      if (glMap && glMap.on) {
+        glMap.on("error", (e) => {
+          if (basemapKind !== "vector") return; // already fell back
+          map.removeLayer(gl);
+          if (map.attributionControl) map.attributionControl.removeAttribution(BG_CONFIG.BASEMAP_ATTRIBUTION);
+          addRasterBasemap(`OpenFreeMap failed (${(e && e.error && e.error.message) || "tile or style error"})`);
+        });
+      }
+    } catch (err) {
+      addRasterBasemap(`MapLibre failed to start (${err.message})`);
+    }
+  }
+
   function initStatusPanel() {
     const toggle = document.getElementById("status-toggle");
     const list = document.getElementById("status-log");
@@ -1262,17 +1973,15 @@ const BlockGroupApp = (() => {
   function init() {
     // preferCanvas: with a few thousand block group polygons, Leaflet's
     // default SVG renderer creates a DOM node each and panning crawls.
-    map = L.map("map", { preferCanvas: true }).setView(BG_CONFIG.MAP_CENTER, BG_CONFIG.MAP_ZOOM);
-    L.tileLayer(BG_CONFIG.BASEMAP_URL, {
-      maxZoom: 19,
-      attribution: BG_CONFIG.BASEMAP_ATTRIBUTION,
-    }).addTo(map);
-    // Labels go in Leaflet's top pane so streets stay readable over the
-    // polygon fills rather than being buried by them.
-    L.tileLayer(BG_CONFIG.BASEMAP_LABELS_URL, { maxZoom: 19, pane: "shadowPane" }).addTo(map);
+    map = L.map("map", { preferCanvas: true, maxZoom: BG_CONFIG.MAX_ZOOM }).setView(
+      BG_CONFIG.MAP_CENTER,
+      BG_CONFIG.MAP_ZOOM
+    );
+    addBasemap();
 
     initStatusPanel();
     initAddressSearch();
+    initPinDrop();
     renderFilterRows();
     document.getElementById("toggle-density").addEventListener("change", (e) => {
       densityShading = e.target.checked;
@@ -1304,6 +2013,9 @@ const BlockGroupApp = (() => {
     document.getElementById("toggle-zip").addEventListener("change", (e) => onToggle("zip", e.target.checked));
     document.getElementById("toggle-tract").addEventListener("change", (e) => onToggle("tract", e.target.checked));
     document.getElementById("toggle-bg").addEventListener("change", (e) => onToggle("blockGroup", e.target.checked));
+    document.getElementById("toggle-fire").addEventListener("change", (e) => onToggle("fire", e.target.checked));
+    document.getElementById("toggle-pollution").addEventListener("change", (e) => onToggle("pollution", e.target.checked));
+    document.getElementById("toggle-wind").addEventListener("change", (e) => onToggle("wind", e.target.checked));
 
     // Switching ethnicity source re-renders whatever block group is open.
     document.querySelectorAll('input[name="eth-source"]').forEach((radio) => {
@@ -1322,6 +2034,8 @@ const BlockGroupApp = (() => {
       moveTimer = setTimeout(() => {
         refreshLayer("tract");
         refreshLayer("blockGroup");
+        refreshLayer("fire");
+        refreshLayer("pollution");
       }, 400);
       updateZoomHint();
     });
@@ -1333,7 +2047,7 @@ const BlockGroupApp = (() => {
     init,
     // exposed for tests
     get state() {
-      return { enabled, layers, censusData };
+      return { map, enabled, layers, censusData, selectedProps, windGrid, windOverlay, pinArmed, cesByTract, basemapKind };
     },
   };
 })();

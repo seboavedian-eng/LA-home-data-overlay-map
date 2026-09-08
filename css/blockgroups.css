@@ -292,3 +292,37 @@ html, body {
   #sidebar { width: 100%; min-width: 0; max-height: 45vh; }
   #map-wrap { height: 55vh; }
 }
+
+/* --- Drop-pin mode --- */
+#drop-pin {
+  margin-top: 6px;
+  font-size: 0.75rem;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: white;
+  cursor: pointer;
+}
+#drop-pin:hover { border-color: var(--accent); color: var(--accent); }
+#drop-pin.armed {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+/* Leaflet sets its own cursor on the map pane, hence the specificity. */
+#map.pin-armed, #map.pin-armed .leaflet-grab { cursor: crosshair; }
+
+.pin-popup { font-size: 0.8rem; line-height: 1.4; }
+.pin-coords { color: var(--muted); font-size: 0.72rem; }
+
+/* --- Overlay legends (fire / pollution / wind) --- */
+.legend-box { margin-top: 8px; font-size: 0.74rem; }
+.legend-box .legend-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.legend-box .legend-note { color: var(--muted); font-size: 0.7rem; margin-top: 4px; line-height: 1.35; }
+
+.ces-tip { font-size: 0.76rem; line-height: 1.35; }
+.ces-tip table { border-collapse: collapse; margin-top: 4px; }
+.ces-tip td { padding: 1px 0; }
+.ces-tip td.k { padding-right: 10px; color: #5b6470; }
+.ces-tip td.v { text-align: right; font-weight: 600; }
+.ces-tip .tip-note { display: block; margin-top: 4px; color: var(--muted); font-size: 0.68rem; }

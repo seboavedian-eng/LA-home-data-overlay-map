@@ -38,7 +38,8 @@ the app still tries live, just less reliably (see below).
 
 ## Block Group Explorer (`blockgroups.html`)
 
-A deliberately small page: a map, three boundary toggles, and a click popup.
+A deliberately small page: a map, boundary toggles, environment/hazard
+toggles, and a click popup.
 
 > **You must serve this over HTTP - double-clicking the .html file will not
 > work.** On a `file://` origin, browsers block the page from reading local
@@ -101,6 +102,67 @@ authoritative answer.
 population, age split (0-24 / 25-54 / 55+), sex split, ethnicity breakdown,
 share with a bachelor's degree or higher, median household income and
 per-capita income.
+
+### Environment & hazard layers
+
+Three extra toggles sit under the boundary ones. All three are off by
+default, and each has its own legend.
+
+| Layer | Source | Notes |
+|---|---|---|
+| Fire hazard zones | CAL FIRE / OSFM Fire Hazard Severity Zones, via `services.gis.ca.gov` | Moderate / High / Very High, State **and** Local Responsibility Areas merged. Loads for the visible area at zoom 9+. Blank ground is outside any mapped zone - which is not the same as "no hazard". |
+| Pollution burden | CalEnviroScreen 4.0 (OEHHA), hosted ArcGIS feature layer | Census-tract polygons shaded by the CES percentile. Hover for the indicator breakdown (ozone, PM2.5, diesel PM, traffic, drinking water, pesticides, asthma). The score is **relative**: 90 means worse than 90% of California tracts, not an absolute dose. |
+| Wind speed | Global Wind Atlas 3 (DTU / World Bank), CC BY 4.0 | Mean wind speed at 250 m resolution. Needs the one-time download step below, because GWA publishes rasters only. |
+
+Fire and pollution are live ArcGIS REST calls with no key and no setup. Each
+has a list of candidate service URLs in `BG_CONFIG.OVERLAYS`; the first one
+that answers is used, and the status log names it - so if a state endpoint
+moves, the fix is one line there rather than a code change.
+
+Once pollution or wind is on, the block group card gains a matching section:
+the parent tract's CalEnviroScreen score (a block group GEOID's first 11
+digits are its tract), and the mean wind speed sampled at the block group's
+centre.
+
+### Optional: wind data (one-time, about two minutes)
+
+The Global Wind Atlas has no tile service and no WMS - it publishes GeoTIFF
+downloads only - so there is nothing a browser can toggle on directly. One
+script converts a downloaded GeoTIFF into the small JSON grid the page draws:
+
+1. Open https://globalwindatlas.info and zoom to Los Angeles County.
+2. Choose **Mean wind speed** at the height you want. 100 m is the GWA
+   default; 10 m or 50 m is closer to what a house actually feels.
+3. Download the GeoTIFF for a custom area covering the county (roughly
+   -119.0 to -117.5 longitude, 32.7 to 34.9 latitude).
+4. Run:
+
+```
+pip install numpy tifffile
+
+# Windows
+python scripts\fetch-wind-data.py C:\path\to\downloaded.tif --height "50 m"
+
+# macOS / Linux
+python3 scripts/fetch-wind-data.py ~/Downloads/downloaded.tif --height "50 m"
+```
+
+That writes `js/data/wind-la-county.json` (around 200 KB) and the Wind
+toggle starts working on the next reload. Skip this and everything else on
+the page still works; the Wind toggle just reports that the file is missing.
+
+`numpy` and `tifffile` are pip-installable wheels on Windows -
+deliberately not rasterio/GDAL, which need a compiler or conda.
+
+### Drop a pin
+
+The address box finds an address and drops a pin on it. To go the other way -
+click a spot, get the address - press **Drop a pin**, then click the map.
+It is an armed mode rather than an always-on behaviour because a plain map
+click already means "select this block group"; while the mode is armed the
+block group click handler stands down, and the mode disarms itself after one
+drop (Escape cancels). The pin popup shows the reverse-geocoded street
+address, the coordinates, and the wind speed there if wind data is loaded.
 
 **Ethnicity has two selectable sources** (radio buttons in the sidebar):
 
@@ -244,6 +306,28 @@ release comes out.
   affect you day-to-day - it only affected how this was verified. See
   "How this was tested" below for what that verification actually covered.
 
+### Basemap
+
+The Block Group Explorer draws its basemap from **OpenFreeMap**'s Positron
+style as vector tiles, through MapLibre GL (both vendored in `vendor/`, no
+CDN). OpenFreeMap needs no API key, no signup, and sets no request limits.
+
+This replaced Esri's Light Gray Canvas raster tiles for a concrete reason:
+that service only publishes tiles to zoom 16, so the map went soft exactly
+where a single block group fills the screen. Vector tiles are drawn at
+whatever zoom you are at, so the map is sharp to zoom 20.
+
+CARTO's Positron - the obvious alternative - started requiring an API key in
+August 2026, which is the "API KEY REQUIRED" watermark you may have seen on
+other maps.
+
+Esri's raster tiles are still there as a fallback and take over automatically
+if WebGL is unavailable (older machines, some remote desktops) or OpenFreeMap
+cannot be reached - it is donation-funded and single-maintainer, so that is a
+real scenario. The fallback sets `maxNativeZoom: 16`, so past zoom 16 it
+upscales its last real tile rather than going blank. Either way the status
+log says which basemap you got and why.
+
 ## How this was tested
 
 Every endpoint URL and field/table schema above was confirmed via
@@ -295,6 +379,16 @@ own eyes**: load the page, toggle each layer, and run one address search,
 and let me know if anything comes back empty - most likely fix is a one-line
 field-name or layer-id tweak in `js/config.js` or `js/datastore.js`.
 
+### The wind converter is tested without a wind file
+
+`tests/test_wind_grid.py` builds synthetic GeoTIFFs carrying the same
+georeferencing tags the Global Wind Atlas writes, then checks the conversion
+against values computable by hand: that row 0 is the north edge and not the
+south, that the output is clipped to the overlap with LA County rather than
+to the requested box, that negative sentinels become nulls instead of
+negative wind speeds, and that a projected or ungeoreferenced file is
+rejected with an actionable message. No GWA download is needed to run it.
+
 ## Project layout
 
 ```
@@ -302,6 +396,7 @@ blockgroups.html      Block Group Explorer page (see above)
 js/blockgroups.js      ...its map, toggles, viewport loading and popup
 css/blockgroups.css    ...its styles
 scripts/fetch-blockgroup-data.py   One-time block-group ACS fetch
+scripts/fetch-wind-data.py         One-time Global Wind Atlas GeoTIFF -> JSON grid
 
 index.html
 css/style.css
@@ -316,6 +411,7 @@ js/main.js             Bootstraps everything
 js/data/                Local ACS snapshot lives here once you run the fetch script (see below)
 vendor/leaflet/         Leaflet 1.9.4, vendored (no CDN dependency)
 vendor/turf/            turf.js 6.5.0, vendored (no CDN dependency)
+vendor/maplibre/        MapLibre GL 5.24 + maplibre-gl-leaflet, vendored - the vector basemap
 scripts/fetch-census-data.sh   One-time local Census data snapshot (see "Running it")
 ```
 
