@@ -21,6 +21,7 @@
         <div id="search-wrap">
           <input id="address-input" type="text" autocomplete="off" spellcheck="false"
                  placeholder="e.g. 200 N Spring St, Los Angeles" />
+          <button id="clear-pin" type="button" class="hidden" title="Remove the pin from the map">&times;</button>
           <ul id="address-suggestions" class="hidden"></ul>
         </div>
         <div id="search-status" class="hint"></div>
@@ -81,15 +82,27 @@
           <li>
             <input type="radio" name="eth-source" id="source-acs" value="acs" checked />
             <label for="source-acs">
-              <span>B03002 &mdash; ACS</span>
-              <span class="layer-desc">Hispanic or Latino Origin by Race. 5-year survey estimate.</span>
+              <span>B03002 &mdash; ACS 5-year</span>
+              <span class="layer-desc">
+                <strong>Current but estimated.</strong> Pooled from five years of American
+                Community Survey responses (2018&ndash;2022), sampling roughly 1 in 20
+                households. Updated every year, so it reflects recent change &mdash; but each
+                figure is a statistical estimate with a margin of error, which can be wide
+                in small or sparsely-populated block groups.
+              </span>
             </label>
           </li>
           <li>
             <input type="radio" name="eth-source" id="source-dec" value="dec" />
             <label for="source-dec">
               <span>P2 &mdash; 2020 Census</span>
-              <span class="layer-desc">Redistricting file. Actual 100% count, but from 2020.</span>
+              <span class="layer-desc">
+                <strong>Exact but frozen.</strong> From the decennial Census redistricting
+                file &mdash; a 100% count of every resident, not a sample, so there is no
+                margin of error. But it is a snapshot of April 2020 and does not move until
+                2030, so it misses everything since. Counts are also lightly perturbed for
+                privacy, which shows up most in very small block groups.
+              </span>
             </label>
           </li>
         </ul>

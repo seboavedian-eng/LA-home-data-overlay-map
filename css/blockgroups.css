@@ -154,6 +154,54 @@ html, body {
 }
 #filter-summary.active { color: var(--ok); font-weight: 600; }
 
+/* --- Info icon (hover explanation) --- */
+.info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 4px;
+  border-radius: 50%;
+  border: 1px solid var(--muted);
+  color: var(--muted);
+  font-size: 9px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  vertical-align: 1px;
+}
+.info-icon:hover { background: var(--accent); border-color: var(--accent); color: white; }
+
+.sub-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  margin: 6px 0 4px;
+}
+
+/* --- Clear-pin button --- */
+#clear-pin {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: #dde1e6;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+#clear-pin:hover { background: var(--accent); color: white; }
+#address-input { padding-right: 30px; }
+
 /* --- Density legend --- */
 #density-legend { margin-top: 8px; font-size: 0.74rem; }
 #density-legend .legend-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }

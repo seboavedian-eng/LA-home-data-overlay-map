@@ -63,6 +63,15 @@ const BG_CONFIG = {
 
   MIN_ZOOM: { tract: 11, blockGroup: 12 },
 
+  // Only the attributes actually used. Requesting "*" pulls every TIGERweb
+  // field for thousands of polygons, which is dead weight over the wire.
+  OUT_FIELDS: {
+    zip: "GEOID,ZCTA5CE20,BASENAME,NAME",
+    tract: "GEOID,NAME,BASENAME",
+    blockGroup: "GEOID,NAME,BASENAME,TRACT,BLKGRP,AREALAND",
+    default: "*",
+  },
+
   // Display age bands, grouped from B01001's own brackets (which is why the
   // data file stores raw brackets - changing this list needs no re-fetch).
   // Keys are B01001 bracket indexes; see ageBracketLabels in the data file.
@@ -262,7 +271,10 @@ const BlockGroupApp = (() => {
 
   async function fetchBoundaries(key, bbox) {
     const layerId = await resolveLayerId(key);
-    const url = Utils.arcgisQueryUrl(BG_CONFIG.TIGERWEB, layerId, { bbox, outFields: "*" });
+    const url = Utils.arcgisQueryUrl(BG_CONFIG.TIGERWEB, layerId, {
+      bbox,
+      outFields: BG_CONFIG.OUT_FIELDS[key] || BG_CONFIG.OUT_FIELDS.default,
+    });
     return Utils.fetchEsriAsGeoJSON(url, { timeoutMs: 40000 });
   }
 
@@ -393,6 +405,33 @@ const BlockGroupApp = (() => {
     );
   }
 
+  // Small "i" with a hover explanation. Uses title= so it works without any
+  // extra JS or positioning logic, including inside a Leaflet popup.
+  function infoIcon(text) {
+    return `<span class="info-icon" title="${String(text).replace(/"/g, "&quot;")}">i</span>`;
+  }
+
+  // B19001: households by income bracket. This was being fetched all along
+  // but never displayed - the card only showed the single median figure.
+  function incomeBracketBars(record) {
+    const brackets = record.incomeBrackets;
+    if (!brackets) return "";
+    const households = record.householdCount || Object.values(brackets).reduce((a, b) => a + b, 0);
+    if (!households) return "";
+
+    const rows = Object.entries(brackets)
+      .filter(([, n]) => n > 0)
+      .map(([label, n]) => barRow(label, n, households))
+      .join("");
+    if (!rows) return "";
+
+    return `<div class="sub-label">Households by income bracket${infoIcon(
+      "ACS B19001. Percentages are of the " +
+        Utils.fmtNumber(households) +
+        " households in this block group, not of people."
+    )}</div>${rows}`;
+  }
+
   function densityRows(feature) {
     if (!feature) return "";
     const sqMiles = landAreaSqMiles(feature);
@@ -427,12 +466,7 @@ const BlockGroupApp = (() => {
     zipCache[geoid] = null; // mark in-flight so we don't ask twice
     try {
       const c = layer.getBounds().getCenter();
-      const layerId = await Utils.discoverLayerId(
-        BG_CONFIG.TIGERWEB,
-        BG_CONFIG.LAYERS.zip.nameHint,
-        BG_CONFIG.LAYERS.zip.fallbackId,
-        { exactNames: BG_CONFIG.LAYERS.zip.exactNames, exclude: BG_CONFIG.LAYERS.zip.exclude }
-      );
+      const layerId = await resolveLayerId("zip"); // cached; this used to refetch every click
       const url = Utils.arcgisQueryUrl(BG_CONFIG.TIGERWEB, layerId, {
         bbox: { xmin: c.lng, ymin: c.lat, xmax: c.lng, ymax: c.lat },
         outFields: "*",
@@ -535,15 +569,30 @@ const BlockGroupApp = (() => {
 
       <div class="section-label">Education</div>
       <table>
-        <tr><td class="k">Bachelor's degree or higher</td><td class="v">${bachelorsPct}</td></tr>
+        <tr><td class="k">Bachelor's degree or higher${infoIcon(
+          "Share of residents aged 25 and over, not of total population. " +
+            "ACS table B15003 only covers the 25+ population - under-25s are " +
+            "excluded from both the numerator and the denominator, so this " +
+            "figure is not comparable with the age, sex and ethnicity " +
+            "percentages above (which are shares of everyone)."
+        )}</td><td class="v">${bachelorsPct}</td></tr>
       </table>
       ${compact ? "" : `<p class="src-note">Source: ACS B15003, share of the 25-and-over population${geoNote("education")}</p>`}
 
       <div class="section-label">Income</div>
       <table>
-        <tr><td class="k">Median household income</td><td class="v">${Utils.fmtCurrency(record.medianHouseholdIncome)}</td></tr>
-        <tr><td class="k">Per-capita income</td><td class="v">${Utils.fmtCurrency(record.perCapitaIncome)}</td></tr>
+        <tr><td class="k">Median household income${infoIcon(
+          "The midpoint of household incomes (ACS B19013): half the households " +
+            "earn more, half less. A household is everyone living at one address, " +
+            "so this is not the same as an individual's earnings."
+        )}</td><td class="v">${Utils.fmtCurrency(record.medianHouseholdIncome)}</td></tr>
+        <tr><td class="k">Per-capita income${infoIcon(
+          "Total income divided by every resident including children (ACS B19301). " +
+            "Always lower than the household median, and the gap widens where " +
+            "households are larger."
+        )}</td><td class="v">${Utils.fmtCurrency(record.perCapitaIncome)}</td></tr>
       </table>
+      ${incomeBracketBars(record)}
       ${compact ? "" : `<p class="src-note">Source: ACS B19013 / B19301${geoNote("income")}</p>`}
 
       ${
@@ -570,10 +619,20 @@ const BlockGroupApp = (() => {
       unit: "%",
       value: (r) => (r.eduTotal25plus ? (r.eduBachelorsPlus / r.eduTotal25plus) * 100 : null),
     },
+    density: {
+      label: "Population density (/sq mi)",
+      unit: "/sq mi",
+      value: (r, f) => (f ? densityOf(f) : null),
+    },
     medianIncome: {
       label: "Median household income ($)",
       unit: "$",
       value: (r) => (r.medianHouseholdIncome != null ? r.medianHouseholdIncome : null),
+    },
+    perCapitaIncome: {
+      label: "Per-capita income ($)",
+      unit: "$",
+      value: (r) => (r.perCapitaIncome != null ? r.perCapitaIncome : null),
     },
     population: {
       label: "Total population",
@@ -630,7 +689,9 @@ const BlockGroupApp = (() => {
     { enabled: false, metric: "bachelors", op: "above", value: 50 },
     { enabled: false, metric: "eth:Asian (non-Hispanic)", op: "above", value: 30 },
     { enabled: false, metric: "medianIncome", op: "above", value: 100000 },
+    { enabled: false, metric: "perCapitaIncome", op: "above", value: 50000 },
     { enabled: false, metric: "age:25 to 34", op: "above", value: 20 },
+    { enabled: false, metric: "density", op: "below", value: 5000 },
   ];
 
   function activeFilters() {
@@ -640,33 +701,45 @@ const BlockGroupApp = (() => {
   // A block group matches only if EVERY active filter passes. No data for a
   // given metric counts as not matching - better than silently treating a
   // gap as a zero.
-  function matchesFilters(record) {
+  function matchesFilters(record, feature) {
     if (!record) return false;
     return activeFilters().every((f) => {
       const metric = metricFor(f.metric);
       if (!metric) return true;
-      const v = metric.value(record);
+      const v = metric.value(record, feature);
       if (v == null) return false;
       return f.op === "above" ? v > Number(f.value) : v < Number(f.value);
     });
   }
 
-  // Filters take precedence over density shading: if you've asked "show me
-  // the block groups matching X", that answer shouldn't be repainted by an
-  // unrelated colour scale.
-  function styleForBlockGroup(feature) {
-    if (activeFilters().length) {
-      const record = recordFor(feature.properties);
-      return matchesFilters(record) ? BG_CONFIG.STYLES.blockGroupMatch : BG_CONFIG.STYLES.blockGroupNoMatch;
-    }
+  // A block group's colour is a property OF THE BLOCK GROUP, not of the
+  // filter. Density shading decides the shade; filters only decide whether
+  // that shade is shown or dimmed. So turning filters on doesn't repaint
+  // anything - the survivors keep exactly the shade they already had.
+  function baseStyleFor(feature) {
     if (densityShading) {
       const bucket = densityBucket(densityOf(feature));
-      if (bucket) {
-        return { color: "#1b4332", weight: 0.6, fillColor: bucket.color, fillOpacity: 0.75 };
-      }
-      return { color: "#9aa3ad", weight: 0.4, fillColor: "#e9edf0", fillOpacity: 0.3 };
+      return bucket
+        ? { color: "#1b4332", weight: 0.6, fillColor: bucket.color, fillOpacity: 0.75 }
+        : { color: "#9aa3ad", weight: 0.4, fillColor: "#e9edf0", fillOpacity: 0.3 };
     }
     return BG_CONFIG.STYLES.blockGroup;
+  }
+
+  function styleForBlockGroup(feature) {
+    const base = baseStyleFor(feature);
+    if (!activeFilters().length) return base;
+
+    const record = recordFor(feature.properties);
+    if (matchesFilters(record, feature)) {
+      // Keep the block group's own shade; just make it read as "selected".
+      return densityShading
+        ? { ...base, weight: 1.4, color: "#14663a" }
+        : BG_CONFIG.STYLES.blockGroupMatch;
+    }
+    // Non-matching: dimmed rather than recoloured, so the shading you're
+    // looking at stays comparable.
+    return { ...base, fillOpacity: 0.04, weight: 0.3, color: "#9aa3ad" };
   }
 
   function renderDensityLegend() {
@@ -688,7 +761,7 @@ const BlockGroupApp = (() => {
       layers.blockGroup.eachLayer((l) => {
         total++;
         const style = styleForBlockGroup(l.feature);
-        if (style === BG_CONFIG.STYLES.blockGroupMatch) matched++;
+        if (matchesFilters(recordFor(l.feature.properties), l.feature)) matched++;
         if (l !== selectedLayer) l.setStyle(style);
       });
     }
@@ -771,24 +844,55 @@ const BlockGroupApp = (() => {
     }
   }
 
+  // Popup options are fixed, and deliberately live outside selectBlockGroup:
+  // Leaflet's bindPopup builds a *brand new* Popup whenever options are
+  // passed, so re-binding with options on a layer whose popup is already open
+  // orphans that open popup on the map with nothing left pointing at it. Bind
+  // once, then only ever set new content.
+  const POPUP_OPTIONS = {
+    maxWidth: 300,
+    minWidth: 250,
+    maxHeight: 480,
+    autoPanPadding: [20, 20],
+    autoClose: false,   // don't vanish when another popup opens
+    closeOnClick: false, // ...or when the map is clicked
+  };
+
+  // Belt and braces for the orphan case above: sweep any card popup still on
+  // the map that no longer belongs to the block group being selected.
+  function closeStrayCards(keepLayer) {
+    map.eachLayer((l) => {
+      if (!(l instanceof L.Popup)) return;
+      const src = l._source;
+      if (!src || !src.feature) return; // not a block group card (e.g. the address pin)
+      if (keepLayer && src === keepLayer && keepLayer.getPopup() === l) return;
+      map.removeLayer(l);
+    });
+  }
+
   function selectBlockGroup(layer, props, { openPopup = true } = {}) {
     const record = recordFor(props);
 
+    // Close the previous card explicitly. Popups are configured with
+    // autoClose:false so they survive the map auto-panning, but that also
+    // means Leaflet won't retire the old one - without this, every click
+    // leaves another card stranded on the map.
     if (selectedLayer && selectedLayer !== layer) {
+      selectedLayer.closePopup();
+      selectedLayer.unbindPopup();
       selectedLayer.setStyle(styleForBlockGroup(selectedLayer.feature));
     }
     selectedLayer = layer;
     selectedProps = props;
     layer.setStyle(BG_CONFIG.STYLES.blockGroupSelected);
 
-    layer.bindPopup(`<div class="bg-popup">${detailHTML(props, record, { compact: true, feature: layer.feature })}</div>`, {
-      maxWidth: 300,
-      minWidth: 250,
-      maxHeight: 480,
-      autoPanPadding: [20, 20],
-      autoClose: false,   // don't vanish when another popup opens
-      closeOnClick: false, // ...or when the map is clicked
-    });
+    const html = `<div class="bg-popup">${detailHTML(props, record, { compact: true, feature: layer.feature })}</div>`;
+    if (layer.getPopup()) {
+      layer.setPopupContent(html);
+    } else {
+      layer.bindPopup(html, POPUP_OPTIONS);
+    }
+    closeStrayCards(layer);
     if (openPopup) layer.openPopup();
     document.getElementById("detail-panel").innerHTML = detailHTML(props, record, { feature: layer.feature });
 
@@ -1034,6 +1138,7 @@ const BlockGroupApp = (() => {
 
     if (searchMarker) map.removeLayer(searchMarker);
     searchMarker = L.marker([lat, lon]).addTo(map).bindPopup(match.matchedAddress);
+    document.getElementById("clear-pin").classList.remove("hidden");
     map.setView([lat, lon], Math.max(map.getZoom(), BG_CONFIG.MIN_ZOOM.blockGroup + 2));
 
     status.className = "hint";
@@ -1082,9 +1187,22 @@ const BlockGroupApp = (() => {
     }
   }
 
+  function clearPin() {
+    if (searchMarker) {
+      map.removeLayer(searchMarker);
+      searchMarker = null;
+    }
+    document.getElementById("clear-pin").classList.add("hidden");
+    document.getElementById("address-input").value = "";
+    document.getElementById("search-status").textContent = "";
+    suggestions = [];
+    renderSuggestions();
+  }
+
   function initAddressSearch() {
     const input = document.getElementById("address-input");
     const status = document.getElementById("search-status");
+    document.getElementById("clear-pin").addEventListener("click", clearPin);
 
     input.addEventListener("input", () => {
       clearTimeout(searchTimer);
@@ -1109,7 +1227,7 @@ const BlockGroupApp = (() => {
           status.className = "hint error";
           status.textContent = `Address lookup failed: ${err.message}`;
         }
-      }, 450);
+      }, BG_CONFIG.SEARCH_DEBOUNCE_MS);
     });
 
     input.addEventListener("keydown", (e) => {
@@ -1142,7 +1260,9 @@ const BlockGroupApp = (() => {
   }
 
   function init() {
-    map = L.map("map").setView(BG_CONFIG.MAP_CENTER, BG_CONFIG.MAP_ZOOM);
+    // preferCanvas: with a few thousand block group polygons, Leaflet's
+    // default SVG renderer creates a DOM node each and panning crawls.
+    map = L.map("map", { preferCanvas: true }).setView(BG_CONFIG.MAP_CENTER, BG_CONFIG.MAP_ZOOM);
     L.tileLayer(BG_CONFIG.BASEMAP_URL, {
       maxZoom: 19,
       attribution: BG_CONFIG.BASEMAP_ATTRIBUTION,

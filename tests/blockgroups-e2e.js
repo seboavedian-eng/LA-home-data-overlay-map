@@ -106,6 +106,8 @@ const CENSUS_DATA = {
       eduBachelorsPlus: 240,
       medianHouseholdIncome: 85000,
       perCapitaIncome: 41000,
+      householdCount: 400,
+      incomeBrackets: { "< $10k": 40, "$50-60k": 120, "$100-125k": 200, "$200k+": 40 },
     },
     // Fails both default filters: 10% bachelor's (not >50) and 5% Asian
     // (not >30). Used to prove filtering discriminates rather than
@@ -420,7 +422,7 @@ async function main() {
     const cleared = await page.locator("#filter-summary").innerText();
     step("clearing filters restores the normal view", /Off/i.test(cleared), cleared);
 
-    step("there are four filter slots", (await page.locator(".filter-row").count()) === 4);
+    step("there are six filter slots", (await page.locator(".filter-row").count()) === 6);
 
     // Four filters at once, all ANDed. Set them so BG_A passes every one.
     await page.selectOption("#filter-metric-0", "bachelors");
@@ -556,6 +558,118 @@ async function main() {
     step(
       "a pin is dropped at the address",
       (await page.locator(".leaflet-marker-icon").count()) > 0
+    );
+
+    // --- Clear-pin button ---
+    step("clear-pin button appears once a pin exists", await page.locator("#clear-pin").isVisible());
+    await page.click("#clear-pin");
+    await page.waitForTimeout(300);
+    step(
+      "clear-pin removes the pin and empties the box",
+      (await page.locator(".leaflet-marker-icon").count()) === 0 &&
+        (await page.inputValue("#address-input")) === "" &&
+        !(await page.locator("#clear-pin").isVisible())
+    );
+
+    // --- Only one card on the map at a time ---
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(300);
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011003") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(400);
+    step(
+      "clicking another block group leaves exactly one card on the map",
+      (await page.locator(".leaflet-popup").count()) === 1,
+      `${await page.locator(".leaflet-popup").count()} popups`
+    );
+
+    // --- Income brackets (B19001 - fetched all along, now rendered) ---
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(300);
+    const incomeCard = await page.locator("#detail-panel").innerText();
+    step(
+      "card shows the B19001 household income brackets, not just the median",
+      /Households by income bracket/i.test(incomeCard) &&
+        incomeCard.includes("$100-125k") &&
+        incomeCard.includes("50.0%"), // 200 of 400 households
+      incomeCard.replace(/\s+/g, " ").slice(0, 260)
+    );
+
+    // --- Info icons ---
+    const infoTitles = await page.locator("#detail-panel .info-icon").evaluateAll((els) =>
+      els.map((e) => e.getAttribute("title"))
+    );
+    step(
+      "bachelor's % carries an info icon explaining the 25+ universe",
+      infoTitles.some((t) => /25 and over/i.test(t) && /not of total population/i.test(t)),
+      JSON.stringify(infoTitles.map((t) => (t || "").slice(0, 50)))
+    );
+
+    // --- Density shade persists under filters ---
+    // The whole point: a block group's colour belongs to the block group.
+    // Turning a filter on must not repaint the survivors.
+    await page.check("#toggle-density");
+    await page.waitForTimeout(400);
+    const shadeBefore = await page.evaluate(() => {
+      let c = null;
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011003") c = l.options.fillColor;
+      });
+      return c;
+    });
+    await page.selectOption("#filter-metric-0", "bachelors");
+    await page.fill("#filter-value-0", "5");
+    await page.check("#filter-on-0");
+    await page.waitForTimeout(400);
+    const shadeAfter = await page.evaluate(() => {
+      let c = null;
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011003") c = l.options.fillColor;
+      });
+      return c;
+    });
+    step(
+      "a matching block group keeps its density shade when a filter is applied",
+      shadeBefore === shadeAfter && shadeBefore === "#e8f6ee",
+      `before=${shadeBefore} after=${shadeAfter}`
+    );
+    await page.click("#filter-clear");
+    await page.uncheck("#toggle-density");
+    await page.waitForTimeout(300);
+
+    // --- Per-capita income is filterable ---
+    const metricOptions = await page.locator("#filter-metric-0 option").evaluateAll((els) =>
+      els.map((e) => e.value)
+    );
+    step(
+      "per-capita income is available as a filter metric",
+      metricOptions.includes("perCapitaIncome"),
+      JSON.stringify(metricOptions.slice(0, 6))
+    );
+
+    // --- Source descriptions ---
+    const acsDesc = await page.locator('label[for="source-acs"]').innerText();
+    const decDesc = await page.locator('label[for="source-dec"]').innerText();
+    step(
+      "ACS option explains it is a current but estimated sample",
+      /estimat/i.test(acsDesc) && /margin of error/i.test(acsDesc) && acsDesc.length > 120,
+      acsDesc.replace(/\s+/g, " ").slice(0, 120)
+    );
+    step(
+      "2020 Census option explains it is exact but frozen at 2020",
+      /100% count/i.test(decDesc) && /2020/.test(decDesc) && decDesc.length > 120,
+      decDesc.replace(/\s+/g, " ").slice(0, 120)
     );
 
     // Capture the interesting state (popup open with data) before the
