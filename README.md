@@ -236,8 +236,10 @@ cross-tabs value by structure type at any geography. For a single-family
 figure the only free source is the LA County Assessor.
 
 1. At [data.lacounty.gov](https://data.lacounty.gov) search **Assessor** and
-   download the current **Assessor Parcel Data** roll as **CSV** (not the
-   shapefile or geodatabase - you don't need parcel geometry).
+   download the **Assessor Parcel Data** roll as **CSV** (not the shapefile or
+   geodatabase - you don't need parcel geometry). The multi-year export
+   (rolls 2021 to present) is fine: it stacks every roll year, so one parcel
+   appears once per year, and the script keeps only each parcel's newest row.
 2. Save it as `raw-data/assessor-roll-2025.csv`.
 3. Run:
 
@@ -274,7 +276,14 @@ median rests on**, with fewer than three flagged as thin on the card.
 
 The run prints the use codes it kept and dropped, so the "01xx means single
 family" assumption can be checked against your own file rather than taken on
-trust.
+trust, plus the 5th/95th percentile of the block group medians so an
+implausible tail is visible immediately.
+
+**Deduplication matters on the multi-year export.** A house that sold in 2023
+appears in the 2023, 2024 and 2025 rolls; one that sold in 2025 appears once.
+Counted as-is that inflates every count and quietly weights each median toward
+older, cheaper sales, so parcels are deduplicated on `AIN` with the newest
+roll year winning.
 
 Read the result as a *level* - which neighbourhoods are 800k and which are 2m
 - rather than as today's asking price: it lags the market by up to three years

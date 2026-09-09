@@ -197,5 +197,95 @@ check(
     fetch_parcel.locate(-117.00, 34.05, index, shapes) is None,
 )
 
+# --- End to end, including the multi-year roll trap --------------------------
+# The county's "rolls 2021 to present" export stacks every roll year, so one
+# parcel appears once per year - the same house, revalued ~2% annually.
+# Counted as-is, a 2023 sale lands in the median three times and a 2025 sale
+# once, which both inflates the counts and weights the result toward older,
+# cheaper sales.
+import csv as _csv
+import tempfile as _tempfile
+import json as _json
+
+tmp = _tempfile.mkdtemp()
+csv_path = os.path.join(tmp, "roll.csv")
+out_path = os.path.join(tmp, "out.json")
+
+FIELDS = [
+    "AIN", "Roll Year", "Property Use Code", "Property Use Type", "Number of Units",
+    "Land Value", "Improvement Value", "Recording Date", "Square Footage",
+    "Location Latitude", "Location Longitude", "Year Built",
+]
+
+
+def row(ain, roll, land, imp, lat=34.05, lon=-118.25, recorded="20240115", sqft="1500", use="0100"):
+    return {
+        "AIN": ain, "Roll Year": roll, "Property Use Code": use,
+        "Property Use Type": "Single Family Residence" if use.startswith("01") else "Condominium",
+        "Number of Units": "1",
+        "Land Value": land, "Improvement Value": imp, "Recording Date": recorded,
+        "Square Footage": sqft, "Location Latitude": lat, "Location Longitude": lon,
+        "Year Built": "1955",
+    }
+
+
+with open(csv_path, "w", newline="", encoding="utf-8") as fh:
+    writer = _csv.DictWriter(fh, fieldnames=FIELDS)
+    writer.writeheader()
+    # One house, three roll years, trending up. Only the newest should count.
+    writer.writerow(row("111", "2023", "500000", "500000"))
+    writer.writerow(row("111", "2024", "510000", "510000"))
+    writer.writerow(row("111", "2025", "520000", "520000"))
+    # A second house in the same block group, one roll year.
+    writer.writerow(row("222", "2025", "1000000", "1000000"))
+    # A condo: excluded by use code.
+    writer.writerow(row("333", "2025", "400000", "400000", use="0500"))
+    # A long-held house: recorded in 1994, so not a recent transfer.
+    writer.writerow(row("444", "2025", "60000", "40000", recorded="19940301"))
+    # A house in the second block group.
+    writer.writerow(row("555", "2025", "300000", "300000", lat=34.05, lon=-118.15))
+
+# The polygons the parcels are binned into, standing in for TIGERweb.
+fetch_parcel.fetch_block_groups = lambda: {
+    "060372011001": [left_outer],
+    "060372011002": [right_outer],
+}
+
+argv = sys.argv
+sys.argv = ["fetch-parcel-data.py", "--csv", csv_path, "--out", out_path, "--years", 3 and "3"]
+try:
+    fetch_parcel.main()
+finally:
+    sys.argv = argv
+
+with open(out_path, encoding="utf-8") as fh:
+    result = _json.load(fh)
+
+bg1 = result["blockGroups"].get("060372011001", {})
+bg2 = result["blockGroups"].get("060372011002", {})
+
+check(
+    "a parcel repeated across roll years counts once, not three times",
+    bg1.get("saleCount") == 2,
+    f"saleCount={bg1.get('saleCount')} (two houses: AIN 111 and 222)",
+)
+check(
+    "the newest roll year's value is the one kept",
+    # AIN 111 -> 1,040,000 (2025 row), AIN 222 -> 2,000,000; median of the two.
+    bg1.get("medianSalePrice") == 1520000,
+    f"median={bg1.get('medianSalePrice')} - the 2025 row for AIN 111 is $1,040,000, not the 2023 row's $1,000,000",
+)
+check("the condo is excluded", bg1.get("saleCount") != 3)
+check(
+    "a house last sold in 1994 is not treated as a recent transfer",
+    bg1.get("saleCount") == 2,
+)
+check("the second block group is kept separate", bg2.get("saleCount") == 1, str(bg2))
+check(
+    "the payload records what the number actually is",
+    "Proposition 13" in result["meta"]["note"],
+    result["meta"].get("basis"),
+)
+
 print(f"\n{len(failures) and 'FAILURES: ' + ', '.join(failures) or 'All checks passed.'}")
 sys.exit(1 if failures else 0)

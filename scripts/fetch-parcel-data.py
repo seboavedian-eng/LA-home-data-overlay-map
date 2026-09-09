@@ -45,8 +45,10 @@ on three houses is visible as such rather than passing for a market rate.
 
 WHAT YOU NEED
 -------------
-  1. From https://data.lacounty.gov (search "Assessor"), download the current
-     "Assessor Parcel Data" roll as CSV.
+  1. From https://data.lacounty.gov (search "Assessor"), download the
+     "Assessor Parcel Data" roll as CSV. The multi-year export (rolls 2021 to
+     present) is fine - it stacks every roll year, so one parcel appears once
+     per year, and this script keeps only each parcel's newest row.
   2. Save it as  raw-data/assessor-roll-2025.csv  in this project.
   3. Run:  python scripts/fetch-parcel-data.py
 
@@ -94,6 +96,8 @@ COLUMNS = {
     "sqft": ["Square Footage", "SQFTmain", "SqFtMain", "BuildingSqFt", "MainSqFt"],
     "year_built": ["Year Built", "YearBuilt", "Effective Year", "EffectiveYearBuilt"],
     "units": ["Number of Units", "Units", "UnitsCount"],
+    "ain": ["AIN", "Assessor ID", "APN", "ParcelID"],
+    "roll_year": ["Roll Year", "RollYear", "TaxYear"],
 }
 
 # LA County use codes: the leading "01" is single-family residence. The text
@@ -353,6 +357,9 @@ def main():
     sales = {}
     per_sqft = {}
     years = {}
+    parcels = {}      # AIN -> (roll year, entry), so one row survives per parcel
+    unkeyed = []      # rows with no AIN at all: kept, but undeduplicated
+    duplicates = 0
     read = kept = 0
     unplaced = 0
 
@@ -362,7 +369,7 @@ def main():
         cols = {}
         for key in ("lat", "lon", "use_code", "sale_date"):
             cols[key] = find_column(header, COLUMNS[key], key.replace("_", " "))
-        for key in ("use_type", "land_value", "improvement_value", "total_value", "base_year", "sqft", "year_built", "units"):
+        for key in ("use_type", "land_value", "improvement_value", "total_value", "base_year", "sqft", "year_built", "units", "ain", "roll_year"):
             try:
                 cols[key] = find_column(header, COLUMNS[key], key)
             except ParcelDataError:
@@ -431,12 +438,43 @@ def main():
                 continue
 
             kept += 1
-            sales.setdefault(geoid, []).append(price)
-            if sqft_value and sqft_value > 200:
-                per_sqft.setdefault(geoid, []).append(price / sqft_value)
             built = to_float(row.get(cols["year_built"])) if cols.get("year_built") else None
-            if built and 1800 < built < 2100:
-                years.setdefault(geoid, []).append(built)
+            entry = (price, sqft_value, built, geoid)
+
+            # A multi-year roll export carries the same parcel once per roll
+            # year - the same house, revalued about 2% a year. Counted as-is,
+            # a 2023 sale appears three times and a 2025 sale once, which
+            # both inflates every count and quietly weights the median toward
+            # older, cheaper sales. Keep one row per parcel: the newest.
+            ain = str(row.get(cols["ain"]) or "").strip() if cols.get("ain") else ""
+            if ain:
+                roll = to_float(row.get(cols.get("roll_year"))) or 0
+                previous = parcels.get(ain)
+                if previous is None:
+                    parcels[ain] = (roll, entry)
+                else:
+                    if roll > previous[0]:
+                        parcels[ain] = (roll, entry)
+                    duplicates += 1
+                continue
+
+            unkeyed.append(entry)
+
+    for _, entry in parcels.values():
+        price, sqft_value, built, geoid = entry
+        sales.setdefault(geoid, []).append(price)
+        if sqft_value and sqft_value > 200:
+            per_sqft.setdefault(geoid, []).append(price / sqft_value)
+        if built and 1800 < built < 2100:
+            years.setdefault(geoid, []).append(built)
+    for price, sqft_value, built, geoid in unkeyed:
+        sales.setdefault(geoid, []).append(price)
+        if sqft_value and sqft_value > 200:
+            per_sqft.setdefault(geoid, []).append(price / sqft_value)
+        if built and 1800 < built < 2100:
+            years.setdefault(geoid, []).append(built)
+
+    unique = len(parcels) + len(unkeyed)
 
     # So the "01xx means single family" assumption can be checked against the
     # file rather than taken on trust.
@@ -448,7 +486,7 @@ def main():
     if stale:
         print(f"  {stale:,} recent deeds dropped as stale values (excluded transfers, no reassessment)")
 
-    if not kept:
+    if not unique:
         raise ParcelDataError(
             f"read {read:,} rows but found no usable single-family parcels.\n"
             "  The matched columns and the use codes seen are printed above - check them against the file.\n"
@@ -469,6 +507,9 @@ def main():
         records[geoid] = record
 
     all_medians = sorted(r["medianSalePrice"] for r in records.values())
+
+    def pct(p):
+        return all_medians[min(len(all_medians) - 1, int(len(all_medians) * p))]
     payload = {
         "meta": {
             "schemaVersion": 1,
@@ -496,15 +537,22 @@ def main():
 
     thin = sum(1 for r in records.values() if r["thin"])
     print(f"\nWrote {args.out} ({os.path.getsize(args.out) / 1024:.0f} KB)")
-    print(f"  {read:,} rows read, {kept:,} single-family parcels transferred since {cutoff}")
+    print(f"  {read:,} rows read, {kept:,} matching rows, {unique:,} distinct parcels transferred since {cutoff}")
+    if duplicates:
+        print(
+            f"  {duplicates:,} rows were repeat roll years for a parcel already seen - only its newest row counts"
+        )
+    if unkeyed:
+        print(f"  {len(unkeyed):,} rows had no parcel id and could not be deduplicated")
     print(f"  {len(records):,} block groups have at least one sale")
     print(f"  {thin:,} of those rest on fewer than {args.min_sales} sales and are flagged as thin")
     if unplaced:
         print(f"  {unplaced:,} sales fell outside every LA County block group (county edge, bad coordinates)")
     print(
-        f"  median of the block group medians: ${all_medians[len(all_medians) // 2]:,}"
-        f" (range ${all_medians[0]:,} to ${all_medians[-1]:,})"
+        f"  median of the block group medians: ${pct(0.5):,}"
+        f"  (5th pct ${pct(0.05):,}, 95th pct ${pct(0.95):,})"
     )
+    print(f"  full range ${all_medians[0]:,} to ${all_medians[-1]:,} - check the tails look like real LA prices")
     print(
         "\nNote: these are current-roll values, so a sale from a year or two ago reads a few"
         "\npercent above what it actually sold for (Prop 13 trends a base value up ~2% a year)."
