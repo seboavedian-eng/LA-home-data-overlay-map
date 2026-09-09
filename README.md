@@ -196,6 +196,38 @@ the parent tract's CalEnviroScreen score (a block group GEOID's first 11
 digits are its tract), and the mean wind speed sampled at the block group's
 centre.
 
+### Hazard layers added later
+
+| Layer | Source | Notes |
+|---|---|---|
+| FEMA flood zones | National Flood Hazard Layer, `hazards.fema.gov` | A/AE/V/VE is the 1% annual chance floodplain - the zone where a federally-backed mortgage requires flood insurance. A shaded X (0.2% chance) is told apart from a plain X by the `ZONE_SUBTY` field, not the zone letter. |
+| Liquefaction & landslide | CA Geological Survey seismic hazard zones | CGS publishes the two as separate services, so this layer draws **both** rather than the first that answers. These mark where a site investigation is required before building - not a prediction that ground will fail. |
+| Aviation noise | BTS / DOT National Transportation Noise Map | Aircraft only. **Published as a 24-hour A-weighted average (LAeq), not DNL** - so it carries no 10 dB night-time penalty and is *not* directly comparable with HUD's 65 dB DNL limit. An airport that flies at night feels worse than this number implies, which the card and legend both say. |
+
+Noise is a raster rather than polygons, so it is drawn by asking the map
+service to render each tile (`export`, with the tile's own bounding box in
+Web Mercator) - no plugin needed - and the per-block-group value comes from
+the same service's `identify` endpoint.
+
+### More ACS measures on the card
+
+`B25024` (units in structure), `B25003` (tenure), `B08301` (commute mode) and
+`B25035`/`B25034` (year built) are fetched alongside the original tables, and
+appear as **Housing stock** and **Work** sections plus five new filters:
+detached-house share, owner-occupancy, work-from-home share, median year
+built and the pre-1980 share.
+
+Why those four: detached share is what separates a dense block group of small
+lots from one holding an apartment tower, which density alone cannot do;
+owner-occupancy says whether a median income describes owners or renters;
+work-from-home is the closest thing to an occupation signal at this geography;
+and year built carries LA's lead paint (pre-1978), asbestos (pre-1980) and
+soft-story (pre-1994) thresholds.
+
+The script also **probes** B08303, B23025, B11003 and B25077 without using
+them, so the run prints whether each is published at block group - a
+definitive answer rather than an assumption.
+
 ### Optional: wind data (one-time, about two minutes)
 
 The Global Wind Atlas has no tile service and no WMS - it publishes GeoTIFF

@@ -82,6 +82,27 @@
             </label>
           </li>
           <li>
+            <input type="checkbox" id="toggle-flood" />
+            <label for="toggle-flood">
+              <span>FEMA flood zones</span>
+              <span class="layer-desc">National Flood Hazard Layer. A/AE/V/VE is the 1% annual chance floodplain &mdash; where a mortgage requires flood insurance. Zoom <span class="zoom-req">10+</span>.</span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-seismic" />
+            <label for="toggle-seismic">
+              <span>Liquefaction &amp; landslide</span>
+              <span class="layer-desc">CA Geological Survey seismic hazard zones, both types drawn together. Zoom <span class="zoom-req">10+</span>.</span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-noise" />
+            <label for="toggle-noise">
+              <span>Aviation noise</span>
+              <span class="layer-desc">BTS/DOT noise map, aircraft only. 24-hour average (LAeq), so no night-time penalty.</span>
+            </label>
+          </li>
+          <li>
             <input type="checkbox" id="toggle-wind" />
             <label for="toggle-wind">
               <span>Wind speed</span>
@@ -90,6 +111,9 @@
           </li>
         </ul>
         <div id="fire-legend" class="legend-box hidden"></div>
+        <div id="flood-legend" class="legend-box hidden"></div>
+        <div id="seismic-legend" class="legend-box hidden"></div>
+        <div id="noise-legend" class="legend-box hidden"></div>
         <div id="pollution-legend" class="legend-box hidden"></div>
         <div id="wind-legend" class="legend-box hidden"></div>
       </section>

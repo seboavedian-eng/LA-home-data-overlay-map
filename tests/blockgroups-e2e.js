@@ -128,6 +128,24 @@ const SCHOOL_DISTRICT = esriPolygon({ NAME: "Los Angeles Unified School District
   [-118.40, 33.90], [-118.40, 34.20], [-118.10, 34.20], [-118.10, 33.90],
 ]);
 
+// FEMA flood zones: an AE zone (the 1% floodplain, insurance required) over
+// block group A, and a plain X beside it.
+const FLOOD_AE = esriPolygon({ FLD_ZONE: "AE", ZONE_SUBTY: "", OBJECTID: 41 }, [
+  [-118.27, 34.03], [-118.27, 34.07], [-118.245, 34.07], [-118.245, 34.03],
+]);
+const FLOOD_X = esriPolygon({ FLD_ZONE: "X", ZONE_SUBTY: "0.2 PCT ANNUAL CHANCE FLOOD HAZARD", OBJECTID: 42 }, [
+  [-118.245, 34.03], [-118.245, 34.07], [-118.20, 34.07], [-118.20, 34.03],
+]);
+
+// CGS publishes liquefaction and landslide as two separate services; both
+// have to end up on the map.
+const LIQUEFACTION = esriPolygon({ OBJECTID: 51 }, [
+  [-118.27, 34.03], [-118.27, 34.05], [-118.24, 34.05], [-118.24, 34.03],
+]);
+const LANDSLIDE = esriPolygon({ OBJECTID: 52 }, [
+  [-118.24, 34.05], [-118.24, 34.07], [-118.21, 34.07], [-118.21, 34.05],
+]);
+
 const TRACT = esriPolygon({ GEOID: "06037201100", NAME: "Census Tract 2011" }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.22, 34.06], [-118.22, 34.04],
 ]);
@@ -197,6 +215,20 @@ const CENSUS_DATA = {
       medianHouseholdIncome: 85000,
       perCapitaIncome: 41000,
       avgHouseholdSize: 3.4,
+      // 600 of 1,000 units detached, 300 of 400 owner-occupied, 120 of 600
+      // workers at home, half the stock pre-1980.
+      structureTotal: 1000,
+      structureUnits: { "1, detached": 600, "1, attached": 100, "5 to 9": 300 },
+      tenureTotal: 400,
+      ownerOccupied: 300,
+      renterOccupied: 100,
+      workersTotal: 600,
+      workedFromHome: 120,
+      walkedToWork: 30,
+      transitToWork: 60,
+      medianYearBuilt: 1962,
+      yearBuiltTotal: 1000,
+      yearBuiltPre1980: 500,
       householdCount: 400,
       incomeBrackets: { "< $10k": 40, "$50-60k": 120, "$100-125k": 200, "$200k+": 40 },
     },
@@ -439,6 +471,44 @@ async function main() {
   await page.route("**://services3.arcgis.com/**", (route) => {
     schoolQueries.push(route.request().url());
     return route.fulfill(json({ ...esriFC([SCHOOL_ELEM, SCHOOL_MIDDLE, SCHOOL_HIGH, SCHOOL_CLOSED]), geometryType: "esriGeometryPoint" }));
+  });
+
+  let femaQueries = [];
+  await page.route("**://hazards.fema.gov/**", (route) => {
+    const url = route.request().url();
+    if (url.includes("/query")) {
+      femaQueries.push(url);
+      return route.fulfill(json(esriFC([FLOOD_AE, FLOOD_X])));
+    }
+    return route.fulfill(json({ layers: [{ id: 28, name: "Flood Hazard Zones", geometryType: "esriGeometryPolygon" }] }));
+  });
+
+  // Two CGS services, one per hazard type - the merge-all path.
+  let cgsQueries = [];
+  await page.route("**://gis.conservation.ca.gov/**", (route) => {
+    const url = route.request().url();
+    cgsQueries.push(url);
+    if (url.includes("/query")) {
+      return route.fulfill(json(esriFC([url.includes("Landslide") ? LANDSLIDE : LIQUEFACTION])));
+    }
+    return route.fulfill(json({ layers: [{ id: 0, name: "Zones", geometryType: "esriGeometryPolygon" }] }));
+  });
+
+  // BTS/DOT noise: a raster service, so the page asks it to draw tiles and
+  // to identify a pixel value at a point.
+  let noiseRequests = { root: 0, tiles: 0, identify: 0 };
+  await page.route("**://geo.dot.gov/**", (route) => {
+    const url = route.request().url();
+    if (url.includes("/export")) {
+      noiseRequests.tiles++;
+      return route.fulfill({ contentType: "image/png", body: BLANK_PNG });
+    }
+    if (url.includes("/identify")) {
+      noiseRequests.identify++;
+      return route.fulfill(json({ results: [{ attributes: { "Pixel Value": "58.4" } }] }));
+    }
+    noiseRequests.root++;
+    return route.fulfill(json({ mapName: "Noise_aviation_CONUS_2018", singleFusedMapCache: false }));
   });
 
   let tigerQueryCount = { zip: 0, tract: 0, bg: 0 };
@@ -1108,6 +1178,144 @@ async function main() {
         });
         return styled;
       })
+    );
+
+    // --- Housing stock, tenure and work, from the new ACS tables ---
+    const acsCard = await page.locator("#detail-panel").innerText();
+    step(
+      "card shows detached-house share, which density alone cannot tell you",
+      /detached houses/i.test(acsCard) && acsCard.includes("60.0%"),
+      acsCard.replace(/\n/g, " ").match(/Detached houses.{0,20}/i)
+    );
+    step(
+      "card shows owner-occupancy, computed over occupied units not population",
+      /owner-occupied/i.test(acsCard) && acsCard.includes("75.0%"),
+      acsCard.replace(/\n/g, " ").match(/Owner-occupied.{0,20}/i)
+    );
+    step(
+      "card shows median year built and the pre-1980 share",
+      acsCard.includes("1962") && acsCard.includes("50%"),
+      acsCard.replace(/\n/g, " ").match(/Median year built.{0,40}/i)
+    );
+    step(
+      "card shows work-from-home, walking and transit shares",
+      acsCard.includes("20.0%") && acsCard.includes("5.0%") && acsCard.includes("10.0%"),
+      acsCard.replace(/\n/g, " ").match(/Work from home.{0,60}/i)
+    );
+    const metricKeys = await page.evaluate(() =>
+      [...document.querySelectorAll("#filter-metric-0 option")].map((o) => o.value)
+    );
+    step(
+      "the new ACS measures are all available as filters",
+      ["detached", "owner", "wfh", "medianYearBuilt", "pre1980"].every((k) => metricKeys.includes(k)),
+      JSON.stringify(metricKeys)
+    );
+
+    // --- FEMA flood zones ---
+    await page.click("#toggle-flood");
+    await page.waitForTimeout(700);
+    const floodColors = await page.evaluate(() => {
+      const out = [];
+      BlockGroupApp.state.layers.flood.eachLayer((l) => out.push([l.feature.properties.FLD_ZONE, l.options.fillColor]));
+      return out;
+    });
+    step(
+      "AE draws as high risk and X as low, not the same colour",
+      floodColors.find((c) => c[0] === "AE")[1] === "#dc2626" &&
+        floodColors.find((c) => c[0] === "X")[1] !== "#dc2626",
+      JSON.stringify(floodColors)
+    );
+    step(
+      "a shaded X (0.2% chance) is told apart from a plain X by its subtype",
+      floodColors.find((c) => c[0] === "X")[1] === "#fbbf24",
+      JSON.stringify(floodColors)
+    );
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(400);
+    const floodCard = await page.locator("#detail-panel").innerText();
+    step(
+      "the card reports the FEMA zone under this block group",
+      /FEMA zone/i.test(floodCard) && /\bAE\b/.test(floodCard),
+      floodCard.replace(/\n/g, " ").match(/FEMA zone.{0,60}/i)
+    );
+    step(
+      "a 1%-floodplain zone is highlighted as a key figure, an X zone would not be",
+      await page.evaluate(() =>
+        [...document.querySelectorAll("#detail-panel .key-figure")].some((el) => el.textContent.trim() === "AE")
+      )
+    );
+
+    // --- CGS liquefaction + landslide, from two separate services ---
+    await page.click("#toggle-seismic");
+    await page.waitForTimeout(800);
+    const seismicKinds = await page.evaluate(() => {
+      const out = [];
+      BlockGroupApp.state.layers.seismic.eachLayer((l) =>
+        out.push([l.feature.properties.HAZARD_KIND, l.options.fillColor])
+      );
+      return out.sort();
+    });
+    step(
+      "both CGS services are drawn, not just the first that answered",
+      seismicKinds.length === 2 &&
+        seismicKinds.some((k) => k[0] === "liquefaction") &&
+        seismicKinds.some((k) => k[0] === "landslide"),
+      JSON.stringify(seismicKinds)
+    );
+    step(
+      "liquefaction and landslide are coloured differently",
+      seismicKinds[0][1] !== seismicKinds[1][1],
+      JSON.stringify(seismicKinds)
+    );
+
+    // --- Aviation noise: a raster service, drawn as tiles ---
+    await page.click("#toggle-noise");
+    await page.waitForTimeout(900);
+    step(
+      "the noise service is checked before its tiles are drawn",
+      noiseRequests.root > 0 && noiseRequests.tiles > 0,
+      JSON.stringify(noiseRequests)
+    );
+    const exportUrl = await page.evaluate(() => {
+      const img = document.querySelector('img[src*="/export"]');
+      return img ? img.src : null;
+    });
+    step(
+      "tiles are requested in Web Mercator with a transparent background",
+      exportUrl && exportUrl.includes("bboxSR=3857") && exportUrl.includes("transparent=true"),
+      exportUrl && exportUrl.slice(0, 120)
+    );
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(600);
+    const noiseCard = await page.locator("#detail-panel").innerText();
+    step(
+      "the card reports the modelled noise level in LAeq, not DNL",
+      /58 dB LAeq/.test(noiseCard),
+      noiseCard.replace(/\n/g, " ").match(/Aviation noise.{0,70}/i)
+    );
+    const noiseLegend = await page.locator("#noise-legend").innerText();
+    step(
+      "the noise legend warns that LAeq carries no night-time penalty",
+      /night/i.test(noiseLegend) && /LAeq/.test(noiseLegend),
+      noiseLegend.replace(/\n/g, " | ").slice(-120)
+    );
+
+    await page.click("#toggle-flood");
+    await page.click("#toggle-seismic");
+    await page.click("#toggle-noise");
+    await page.waitForTimeout(300);
+    step(
+      "turning the hazard layers off removes them",
+      (await page.evaluate(() => !BlockGroupApp.state.layers.flood && !BlockGroupApp.state.layers.seismic)) &&
+        (await page.locator('img[src*="/export"]').count()) === 0
     );
 
     // --- Schools: dots, zones, districts ---

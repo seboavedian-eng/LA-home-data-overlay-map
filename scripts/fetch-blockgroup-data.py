@@ -103,6 +103,62 @@ P2_TOTAL = "P2_001N"
 B15003_TOTAL = "B15003_001E"
 B15003_BACHELORS_PLUS = ["B15003_022E", "B15003_023E", "B15003_024E", "B15003_025E"]
 
+# --- Housing stock and commuting -------------------------------------------
+# B25024 Units in structure. The share that is "1, detached" is what tells a
+# dense block group of small lots apart from one holding an apartment tower -
+# a distinction population density alone cannot make.
+B25024_TOTAL = "B25024_001E"
+B25024_CATEGORIES = {
+    "B25024_002E": "1, detached",
+    "B25024_003E": "1, attached",
+    "B25024_004E": "2",
+    "B25024_005E": "3 or 4",
+    "B25024_006E": "5 to 9",
+    "B25024_007E": "10 to 19",
+    "B25024_008E": "20 to 49",
+    "B25024_009E": "50 or more",
+    "B25024_010E": "Mobile home",
+    "B25024_011E": "Boat, RV, van",
+}
+
+# B25003 Tenure. Owner-occupancy rate: the standard stability proxy, and the
+# thing that says whether a median household income describes owners or
+# renters.
+B25003_TOTAL = "B25003_001E"
+B25003_OWNER = "B25003_002E"
+B25003_RENTER = "B25003_003E"
+
+# B08301 Means of transportation to work. Nearly all of it is "drove alone"
+# in LA and therefore useless, with one exception: the worked-from-home line,
+# which swings widely across block groups and is the closest thing to an
+# occupation signal available at this geography. The walked line is the other
+# keeper - near zero almost everywhere, so anywhere above a few percent is a
+# genuinely walkable pocket.
+B08301_TOTAL = "B08301_001E"
+B08301_WFH = "B08301_021E"
+B08301_WALKED = "B08301_019E"
+B08301_TRANSIT = "B08301_010E"
+
+# B25035 median year structure built, and B25034's decade bins. LA thresholds
+# worth knowing: pre-1978 lead paint, pre-1980 asbestos, pre-1994 soft-story
+# (pre-Northridge).
+B25035_MEDIAN_YEAR = "B25035_001E"
+B25034_TOTAL = "B25034_001E"
+B25034_BINS = {
+    "B25034_002E": "2020 or later",
+    "B25034_003E": "2010 to 2019",
+    "B25034_004E": "2000 to 2009",
+    "B25034_005E": "1990 to 1999",
+    "B25034_006E": "1980 to 1989",
+    "B25034_007E": "1970 to 1979",
+    "B25034_008E": "1960 to 1969",
+    "B25034_009E": "1950 to 1959",
+    "B25034_010E": "1940 to 1949",
+    "B25034_011E": "1939 or earlier",
+}
+# Bins entirely before 1980, for the "old stock" share.
+B25034_PRE_1980 = ["B25034_007E", "B25034_008E", "B25034_009E", "B25034_010E", "B25034_011E"]
+
 # B25010: average household size of occupied housing units. The Census
 # Bureau's own figure, so it excludes people in group quarters on both sides
 # of the division - unlike dividing total population by household count.
@@ -357,6 +413,22 @@ def main():
         "B19013/B19301/B19001",
     )
 
+    print("\nHousing stock - units in structure (B25024):")
+    structure, structure_geo = fetch_table(acs, [B25024_TOTAL] + list(B25024_CATEGORIES.keys()), args.key, "B25024")
+
+    print("\nTenure - owner vs renter (B25003):")
+    tenure, tenure_geo = fetch_table(acs, [B25003_TOTAL, B25003_OWNER, B25003_RENTER], args.key, "B25003")
+
+    print("\nCommute mode, for the work-from-home share (B08301):")
+    commute, commute_geo = fetch_table(
+        acs, [B08301_TOTAL, B08301_WFH, B08301_WALKED, B08301_TRANSIT], args.key, "B08301"
+    )
+
+    print("\nYear structure built (B25035 median, B25034 decades):")
+    built, built_geo = fetch_table(
+        acs, [B25035_MEDIAN_YEAR, B25034_TOTAL] + list(B25034_BINS.keys()), args.key, "B25035/B25034"
+    )
+
     print("\nAverage household size (B25010):")
     hhsize, hhsize_geo = fetch_table(acs, [B25010_AVG_HH_SIZE], args.key, "B25010")
 
@@ -365,6 +437,19 @@ def main():
     # bachelor's-or-higher per age band instead of just for 25+ overall.
     print("\nProbing (not used yet): education by age bracket, B15001:")
     probe(acs, ["B15001_001E"], args.key, "B15001")
+
+    # Open availability questions. The tables above either came back at block
+    # group or fell back to tract, and the log above says which. These are the
+    # ones not fetched at all, probed so the answer is on the record rather
+    # than guessed at.
+    print("\nProbing (not used yet): commute TIME, B08303:")
+    probe(acs, ["B08303_001E"], args.key, "B08303")
+    print("\nProbing (not used yet): employment status, B23025:")
+    probe(acs, ["B23025_001E"], args.key, "B23025")
+    print("\nProbing (not used yet): household type with own children, B11003:")
+    probe(acs, ["B11003_001E"], args.key, "B11003")
+    print("\nProbing (not used yet): median home value, B25077:")
+    probe(acs, ["B25077_001E"], args.key, "B25077")
 
     if not age:
         print("\nCould not fetch B01001 - aborting, since population is the basis for everything else.", file=sys.stderr)
@@ -420,6 +505,35 @@ def main():
                 label: to_number(inc_row.get(code)) or 0 for code, label in B19001_BRACKETS.items()
             }
 
+        st_row = lookup(structure, structure_geo) if structure else None
+        if st_row:
+            rec["structureTotal"] = to_number(st_row.get(B25024_TOTAL))
+            rec["structureUnits"] = {
+                label: to_number(st_row.get(code)) or 0 for code, label in B25024_CATEGORIES.items()
+            }
+
+        ten_row = lookup(tenure, tenure_geo) if tenure else None
+        if ten_row:
+            rec["tenureTotal"] = to_number(ten_row.get(B25003_TOTAL))
+            rec["ownerOccupied"] = to_number(ten_row.get(B25003_OWNER))
+            rec["renterOccupied"] = to_number(ten_row.get(B25003_RENTER))
+
+        com_row = lookup(commute, commute_geo) if commute else None
+        if com_row:
+            rec["workersTotal"] = to_number(com_row.get(B08301_TOTAL))
+            rec["workedFromHome"] = to_number(com_row.get(B08301_WFH))
+            rec["walkedToWork"] = to_number(com_row.get(B08301_WALKED))
+            rec["transitToWork"] = to_number(com_row.get(B08301_TRANSIT))
+
+        built_row = lookup(built, built_geo) if built else None
+        if built_row:
+            rec["medianYearBuilt"] = to_number(built_row.get(B25035_MEDIAN_YEAR))
+            rec["yearBuiltTotal"] = to_number(built_row.get(B25034_TOTAL))
+            rec["yearBuiltPre1980"] = total(built_row, B25034_PRE_1980)
+            rec["yearBuiltBins"] = {
+                label: to_number(built_row.get(code)) or 0 for code, label in B25034_BINS.items()
+            }
+
         hh_row = lookup(hhsize, hhsize_geo) if hhsize else None
         if hh_row:
             rec["avgHouseholdSize"] = to_number(hh_row.get(B25010_AVG_HH_SIZE))
@@ -430,7 +544,7 @@ def main():
         "meta": {
             # Bumped when the record shape changes, so the page can tell a
             # stale data file from a missing one and say which it is.
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "ageBracketLabels": {str(k): v for k, v in B01001_BRACKETS.items()},
             "year": args.year,
             "decennialYear": 2020,
@@ -445,6 +559,10 @@ def main():
                 "education": edu_geo,
                 "income": income_geo,
                 "householdSize": hhsize_geo,
+                "structure": structure_geo,
+                "tenure": tenure_geo,
+                "commute": commute_geo,
+                "yearBuilt": built_geo,
             },
             "sources": {
                 "age": "ACS B01001 (Sex by Age)",
@@ -453,6 +571,10 @@ def main():
                 "education": "ACS B15003 (Educational Attainment, 25+)",
                 "income": "ACS B19013 / B19301 / B19001",
                 "householdSize": "ACS B25010 (Average Household Size of Occupied Housing Units)",
+                "structure": "ACS B25024 (Units in Structure)",
+                "tenure": "ACS B25003 (Tenure)",
+                "commute": "ACS B08301 (Means of Transportation to Work)",
+                "yearBuilt": "ACS B25035 / B25034 (Year Structure Built)",
             },
         },
         "blockGroups": block_groups,

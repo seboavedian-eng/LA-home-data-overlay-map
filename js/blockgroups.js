@@ -222,6 +222,41 @@ const BG_CONFIG = {
       ],
       outFields: "*",
     },
+    flood: {
+      label: "FEMA flood zones",
+      minZoom: 10,
+      simplifyDegrees: 0.0002,
+      servers: [
+        // The National Flood Hazard Layer. Layer 28 is the flood zone
+        // polygons; the same service also carries panels, cross-sections and
+        // base flood elevations, none of which belong on this map.
+        { url: "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer", layerId: 28 },
+        { url: "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer", layerId: 28 },
+      ],
+      outFields: "*",
+    },
+    seismic: {
+      label: "Liquefaction & landslide zones",
+      minZoom: 10,
+      simplifyDegrees: 0.0002,
+      // Both services are drawn, not just the first that answers: CGS
+      // publishes liquefaction and earthquake-induced landslide zones
+      // separately, and a hillside buyer wants both at once.
+      mergeAll: true,
+      servers: [
+        {
+          url: "https://gis.conservation.ca.gov/server/rest/services/CGS_Earthquake_Hazard_Zones/SHP_Liquefaction_Zones/MapServer",
+          layerId: 0,
+          hazard: "liquefaction",
+        },
+        {
+          url: "https://gis.conservation.ca.gov/server/rest/services/CGS_Earthquake_Hazard_Zones/SHP_Landslide_Zones/MapServer",
+          layerId: 0,
+          hazard: "landslide",
+        },
+      ],
+      outFields: "*",
+    },
     schoolDistricts: {
       label: "School district boundaries",
       minZoom: 8,
@@ -314,6 +349,43 @@ const BG_CONFIG = {
     other: "#6b7280",
   },
 
+  // FEMA flood zones. A/AE/V/VE are the 1%-annual-chance ("100-year")
+  // floodplain, where federally-backed mortgages require flood insurance.
+  // X (shaded) is the 0.2% chance zone; plain X is minimal risk.
+  FLOOD_CLASSES: [
+    { match: /^(V|VE)$/i, label: "V / VE - coastal high hazard", color: "#7f1d1d" },
+    { match: /^(A|AE|AH|AO|AR|A99)$/i, label: "A / AE - 1% annual chance (100-yr)", color: "#dc2626" },
+    { match: /^(X)$/i, shaded: true, label: "X (shaded) - 0.2% annual chance (500-yr)", color: "#fbbf24" },
+    { match: /^(X|AREA NOT INCLUDED)$/i, label: "X - minimal risk", color: "#93c5fd" },
+    { match: /^D$/i, label: "D - undetermined", color: "#9ca3af" },
+  ],
+
+  SEISMIC_COLORS: {
+    liquefaction: "#0e7490",
+    landslide: "#a16207",
+  },
+
+  // Aviation noise, BTS/DOT. Published as a 24-hour A-weighted average
+  // (LAeq), NOT as DNL - so it carries no 10 dB night-time penalty and is
+  // not directly comparable with HUD's 65 dB DNL limit.
+  NOISE: {
+    label: "Aviation noise",
+    minZoom: 9,
+    servers: [
+      "https://geo.dot.gov/server/rest/services/Hosted/Noise_aviation_CONUS_2018/MapServer",
+      "https://geo.dot.gov/server/rest/services/hosted/Noise_aviation_CONUS_2016/MapServer",
+      "https://maps.bts.dot.gov/services/rest/services/Noise/CONUS_road_and_aviation_noise/MapServer",
+    ],
+    // Bands the map's own legend uses, for the sidebar key.
+    BANDS: [
+      { max: 50, label: "Under 50 dB - quiet", color: "#f1f5f9" },
+      { max: 55, label: "50-55 dB", color: "#bfdbfe" },
+      { max: 60, label: "55-60 dB", color: "#fcd34d" },
+      { max: 65, label: "60-65 dB - likely over HUD's limit once the night penalty is applied", color: "#f97316" },
+      { max: Infinity, label: "65+ dB", color: "#b91c1c" },
+    ],
+  },
+
   // Fire Hazard Severity Zone classes. CAL FIRE only maps three, and only
   // inside a responsibility area - unmapped ground is genuinely unmapped
   // rather than "no hazard", which the legend says explicitly.
@@ -397,6 +469,7 @@ const BlockGroupApp = (() => {
   const enabled = {
     zip: false, tract: false, blockGroup: false,
     fire: false, pollution: false, wind: false,
+    flood: false, seismic: false, noise: false,
     schoolDistricts: false, schoolZones: false, schools: false,
   };
   const loadedBBox = {};    // key -> padded bbox covered by the current layer
@@ -575,6 +648,28 @@ const BlockGroupApp = (() => {
     const spec = BG_CONFIG.OVERLAYS[key];
     const problems = [];
 
+    // mergeAll: every server contributes, rather than the first that answers.
+    // Used where one logical layer is published as several services -
+    // liquefaction and landslide zones, for instance.
+    if (spec.mergeAll) {
+      const sources = [];
+      for (const candidate of spec.servers) {
+        try {
+          const sublayers = candidate.discover
+            ? await resolveOverlaySublayers(candidate.url, candidate.discover)
+            : [{ id: candidate.layerId, name: candidate.hazard || `layer ${candidate.layerId}` }];
+          sources.push({ url: candidate.url, sublayers, hazard: candidate.hazard });
+        } catch (err) {
+          problems.push(`${candidate.url}: ${err.message}`);
+        }
+      }
+      if (!sources.length) throw new Error(`no server answered. Tried - ${problems.join(" | ")}`);
+      if (problems.length) Utils.logStatus(key, "warn", `${spec.label}: ${problems.join(" | ")}`);
+      const merged = { multi: sources };
+      overlaySources[key] = merged;
+      return merged;
+    }
+
     for (const candidate of spec.servers) {
       try {
         let sublayers;
@@ -682,14 +777,19 @@ const BlockGroupApp = (() => {
 
   async function fetchOverlay(key, bbox) {
     const spec = BG_CONFIG.OVERLAYS[key];
-    const source = await resolveOverlaySource(key);
+    const resolved = await resolveOverlaySource(key);
+    const sources = resolved.multi || [resolved];
     const features = [];
     const failures = [];
 
+    for (const source of sources) {
     for (const sub of source.sublayers) {
       const stats = { requests: 0, split: false, stillTruncated: false };
       try {
         const got = await fetchOverlayFeatures(key, source, sub, bbox, 0, new Set(), stats);
+        // Where several services make up one layer, remember which one each
+        // feature came from - the styling depends on it.
+        if (source.hazard) got.forEach((f) => (f.properties.HAZARD_KIND = source.hazard));
         features.push(...got);
         Utils.logStatus(
           key,
@@ -702,6 +802,7 @@ const BlockGroupApp = (() => {
       } catch (err) {
         failures.push(`${sub.name}: ${err.message}`);
       }
+    }
     }
 
     // Every sublayer failing is a layer failure; some failing is worth saying
@@ -843,6 +944,183 @@ const BlockGroupApp = (() => {
       <table>
         <tr><td class="k">CalEnviroScreen score</td><td class="v">${score.toFixed(1)}th pct</td></tr>
         <tr><td class="k">Band</td><td class="v">${bucket ? bucket.label : "Unknown"}</td></tr>
+      </table>`;
+  }
+
+  // --- Flood (FEMA NFHL) --------------------------------------------------
+
+  function floodZoneOf(props) {
+    return Utils.pickField(props, ["FLD_ZONE", "ZONE", "FLOOD_ZONE", "SFHA_TF"]);
+  }
+
+  // "X" appears twice in the class list - once shaded (the 0.2% zone, flagged
+  // by ZONE_SUBTY containing "0.2 PCT") and once plain - so the subtype has
+  // to break the tie.
+  function floodClass(props) {
+    const zone = String(floodZoneOf(props) || "").trim().toUpperCase();
+    if (!zone) return null;
+    const subtype = String(Utils.pickField(props, ["ZONE_SUBTY", "SUBTYPE"]) || "").toUpperCase();
+    const shaded = /0\.2 PCT|SHADED/.test(subtype);
+    return (
+      BG_CONFIG.FLOOD_CLASSES.find((c) => c.match.test(zone) && (!!c.shaded === shaded || !c.shaded)) ||
+      BG_CONFIG.FLOOD_CLASSES.find((c) => c.match.test(zone)) ||
+      null
+    );
+  }
+
+  function floodStyle(feature) {
+    const cls = floodClass(feature.properties);
+    if (!cls) return { stroke: false, fillColor: "#cbd5e1", fillOpacity: 0.2 };
+    return { stroke: false, fillColor: cls.color, fillOpacity: 0.45 };
+  }
+
+  // Does this block group sit in the 1%-annual-chance floodplain? That is the
+  // zone where a federally-backed mortgage requires flood insurance, which is
+  // the only part of this most buyers need.
+  function inHighRiskFlood(props) {
+    const zone = String(floodZoneOf(props) || "").toUpperCase();
+    return /^(A|AE|AH|AO|AR|A99|V|VE)$/.test(zone.trim());
+  }
+
+  // Flood zone under the block group's centre, read from the polygons already
+  // on the map rather than by asking FEMA again.
+  function floodRows(feature) {
+    if (!enabled.flood || !layers.flood || !feature) return "";
+    const center = centroidOf(feature);
+    if (!center) return "";
+
+    let hit = null;
+    layers.flood.eachLayer((l) => {
+      if (!hit && l.feature.geometry && pointInGeometry(center.lat, center.lon, l.feature.geometry)) hit = l.feature;
+    });
+    if (!hit) return "";
+
+    const zone = floodZoneOf(hit.properties) || "?";
+    const cls = floodClass(hit.properties);
+    return `
+      <div class="section-label">Flood${infoIcon(
+        "FEMA National Flood Hazard Layer, read at the centre of this block group. Zones A and AE are the 1% annual chance " +
+          "(\"100-year\") floodplain, where a federally-backed mortgage requires flood insurance. A block group can straddle " +
+          "two zones, and the zone for a specific address is what the lender actually uses."
+      )}</div>
+      <table>
+        <tr><td class="k">FEMA zone</td><td class="v${inHighRiskFlood(hit.properties) ? " key-figure" : ""}">${zone}</td></tr>
+        <tr><td class="k">Meaning</td><td class="v">${cls ? cls.label.split(" - ").slice(1).join(" - ") || cls.label : "Unclassified"}</td></tr>
+      </table>`;
+  }
+
+  // --- Seismic hazard zones (CGS) -----------------------------------------
+
+  function seismicStyle(feature) {
+    const kind = feature.properties.HAZARD_KIND || "liquefaction";
+    const color = BG_CONFIG.SEISMIC_COLORS[kind] || "#64748b";
+    return { color, weight: 0.6, fillColor: color, fillOpacity: 0.35 };
+  }
+
+  // --- Aviation noise (BTS/DOT raster) ------------------------------------
+  // This one is a raster, not polygons, so it is drawn by asking the map
+  // service to render each tile. That is what an "export" endpoint is for,
+  // and it needs no plugin: a Leaflet tile layer whose URL is computed per
+  // tile from that tile's bounding box in Web Mercator.
+  let noiseServerUrl = null;
+
+  function esriExportTileLayer(url, options) {
+    const Layer = L.TileLayer.extend({
+      getTileUrl(coords) {
+        const size = this.getTileSize();
+        const nw = this._map.unproject(coords.scaleBy(size), coords.z);
+        const se = this._map.unproject(coords.add([1, 1]).scaleBy(size), coords.z);
+        const p1 = L.Projection.SphericalMercator.project(nw);
+        const p2 = L.Projection.SphericalMercator.project(se);
+        const params = new URLSearchParams({
+          bbox: `${p1.x},${p2.y},${p2.x},${p1.y}`,
+          bboxSR: "3857",
+          imageSR: "3857",
+          size: `${size.x},${size.y}`,
+          format: "png32",
+          transparent: "true",
+          f: "image",
+        });
+        return `${url}/export?${params.toString()}`;
+      },
+    });
+    return new Layer("", options);
+  }
+
+  async function addNoiseLayer() {
+    const candidates = noiseServerUrl ? [noiseServerUrl] : BG_CONFIG.NOISE.servers;
+    const problems = [];
+    for (const url of candidates) {
+      try {
+        // Read the service root first: a dead or renamed service fails here
+        // rather than silently drawing empty tiles.
+        await Utils.fetchJSON(`${url}?f=json`, { timeoutMs: 20000 });
+        noiseServerUrl = url;
+        const layer = esriExportTileLayer(url, { opacity: 0.55, zIndex: 350 });
+        Utils.logStatus("noise", "ok", `Aviation noise from ${url.split("/services/")[1] || url}.`);
+        return layer;
+      } catch (err) {
+        problems.push(`${url}: ${err.message}`);
+      }
+    }
+    throw new Error(problems.join(" | "));
+  }
+
+  // The dB value under a point, read from the same service with identify.
+  const noiseByGeoid = {};
+
+  async function lookupNoise(geoid, layer) {
+    if (!enabled.noise || noiseByGeoid[geoid] !== undefined || !noiseServerUrl) return;
+    const center = layer && layer.getBounds ? layer.getBounds().getCenter() : null;
+    if (!center) return;
+    noiseByGeoid[geoid] = null;
+    try {
+      const b = map.getBounds();
+      const params = new URLSearchParams({
+        geometry: `${center.lng},${center.lat}`,
+        geometryType: "esriGeometryPoint",
+        sr: "4326",
+        tolerance: "2",
+        mapExtent: `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`,
+        imageDisplay: "800,600,96",
+        returnGeometry: "false",
+        layers: "all",
+        f: "json",
+      });
+      const data = await Utils.fetchJSON(`${noiseServerUrl}/identify?${params.toString()}`, { timeoutMs: 20000 });
+      const hit = (data.results || [])[0];
+      const raw = hit ? Utils.pickField(hit.attributes || {}, ["Pixel Value", "PixelValue", "Value", "NOISE", "DB"]) : null;
+      const value = Number(raw);
+      noiseByGeoid[geoid] = Number.isFinite(value) ? value : null;
+    } catch (err) {
+      noiseByGeoid[geoid] = null;
+      Utils.logStatus("noise", "warn", `Could not read noise for ${geoid}: ${err.message}`);
+    }
+    if (selectedProps && geoidOf(selectedProps) === geoid) renderSelection();
+  }
+
+  function noiseBand(db) {
+    if (db === null || db === undefined) return null;
+    return BG_CONFIG.NOISE.BANDS.find((b) => db < b.max) || BG_CONFIG.NOISE.BANDS[BG_CONFIG.NOISE.BANDS.length - 1];
+  }
+
+  function noiseRows(props) {
+    if (!enabled.noise) return "";
+    const db = noiseByGeoid[geoidOf(props)];
+    if (db === undefined) return "";
+    if (db === null) {
+      return `<div class="section-label">Aviation noise</div><p class="src-note">No modelled aviation noise at this point (below the map's floor).</p>`;
+    }
+    const band = noiseBand(db);
+    return `
+      <div class="section-label">Aviation noise${infoIcon(
+        "BTS/DOT National Transportation Noise Map, aviation only. Published as a 24-hour A-weighted average (LAeq) - " +
+          "NOT as DNL, so it carries no 10 dB night-time penalty and is not directly comparable with HUD's 65 dB DNL limit. " +
+          "An airport with night operations feels worse than this number implies."
+      )}</div>
+      <table>
+        <tr><td class="k">Modelled level</td><td class="v">${db.toFixed(0)} dB LAeq</td></tr>
+        <tr><td class="k">Band</td><td class="v">${band ? band.label.split(" - ")[0] : "Unknown"}</td></tr>
       </table>`;
   }
 
@@ -1465,6 +1743,87 @@ const BlockGroupApp = (() => {
       `<td class="v key-figure">${value.toFixed(2)} people${published ? "" : " (est.)"}</td></tr>`;
   }
 
+  function shareOf(part, whole) {
+    return whole ? (part / whole) * 100 : null;
+  }
+
+  function detachedShare(record) {
+    if (!record || !record.structureUnits || !record.structureTotal) return null;
+    return shareOf(record.structureUnits["1, detached"] || 0, record.structureTotal);
+  }
+
+  function ownerShare(record) {
+    if (!record || !record.tenureTotal) return null;
+    return shareOf(record.ownerOccupied || 0, record.tenureTotal);
+  }
+
+  function wfhShare(record) {
+    if (!record || !record.workersTotal) return null;
+    return shareOf(record.workedFromHome || 0, record.workersTotal);
+  }
+
+  function pre1980Share(record) {
+    if (!record || !record.yearBuiltTotal) return null;
+    return shareOf(record.yearBuiltPre1980 || 0, record.yearBuiltTotal);
+  }
+
+  function housingRows(record) {
+    const detached = detachedShare(record);
+    const owner = ownerShare(record);
+    if (detached === null && owner === null && !record.medianYearBuilt) return "";
+
+    const rows = [];
+    if (detached !== null) {
+      rows.push(
+        `<tr><td class="k">Detached houses${infoIcon(
+          "Share of all housing units that are single detached houses (ACS B25024). This is what separates a dense block " +
+            "group of small lots from one holding an apartment tower - population density alone cannot tell them apart."
+        )}</td><td class="v">${detached.toFixed(1)}%</td></tr>`
+      );
+    }
+    if (owner !== null) {
+      rows.push(
+        `<tr><td class="k">Owner-occupied${infoIcon(
+          "Share of occupied homes lived in by their owner (ACS B25003). Worth reading next to the income figures: two " +
+            "block groups can show the same median household income while one is mostly owners and the other mostly renters."
+        )}</td><td class="v">${owner.toFixed(1)}%</td></tr>`
+      );
+    }
+    if (record.medianYearBuilt) {
+      const pre80 = pre1980Share(record);
+      rows.push(
+        `<tr><td class="k">Median year built${infoIcon(
+          "ACS B25035, the midpoint year for housing here. LA thresholds worth knowing: before 1978 lead paint is likely, " +
+            "before 1980 asbestos, before 1994 pre-Northridge soft-story risk. This describes the stock, not any one house - " +
+            "a remodelled 1948 home looks identical here to an untouched one."
+        )}</td><td class="v">${record.medianYearBuilt}</td></tr>`
+      );
+      if (pre80 !== null) {
+        rows.push(`<tr><td class="k">Built before 1980</td><td class="v">${pre80.toFixed(0)}%</td></tr>`);
+      }
+    }
+    return `<div class="section-label">Housing stock</div><table>${rows.join("")}</table>`;
+  }
+
+  function commuteRows(record) {
+    const wfh = wfhShare(record);
+    if (wfh === null) return "";
+    const walked = shareOf(record.walkedToWork || 0, record.workersTotal);
+    const transit = shareOf(record.transitToWork || 0, record.workersTotal);
+    return `
+      <div class="section-label">Work${infoIcon(
+        "ACS B08301, how residents get to work. Nearly everyone in LA drives, so the useful lines are these three. " +
+          "Work-from-home share is the closest thing to an occupation signal available at block group level, and it " +
+          "also predicts whether a neighbourhood is alive on a Tuesday afternoon. Walking above about 5% marks a " +
+          "genuinely walkable pocket - it is near zero almost everywhere else."
+      )}</div>
+      <table>
+        <tr><td class="k">Work from home</td><td class="v">${wfh.toFixed(1)}%</td></tr>
+        <tr><td class="k">Walk to work</td><td class="v">${walked === null ? "n/a" : `${walked.toFixed(1)}%`}</td></tr>
+        <tr><td class="k">Public transit</td><td class="v">${transit === null ? "n/a" : `${transit.toFixed(1)}%`}</td></tr>
+      </table>`;
+  }
+
   function ageBandCount(record, band) {
     if (!record.ageBrackets) return null;
     return band.brackets.reduce((sum, i) => sum + (record.ageBrackets[String(i)] || 0), 0);
@@ -1621,7 +1980,11 @@ const BlockGroupApp = (() => {
       ${incomeBracketBars(record)}
       ${compact ? "" : `<p class="src-note">Source: ACS B19013 / B19301${geoNote("income")}</p>`}
 
+      ${housingRows(record)}
+      ${commuteRows(record)}
       ${schoolRows(props)}
+      ${noiseRows(props)}
+      ${floodRows(feature)}
       ${enabled.pollution ? cesRows(props) : ""}
       ${enabled.wind ? windRows(feature) : ""}
 
@@ -1677,6 +2040,32 @@ const BlockGroupApp = (() => {
       label: "Average household size (people)",
       unit: "people",
       value: (r) => householdSize(r).value,
+    },
+    detached: {
+      label: "Detached houses (%)",
+      unit: "%",
+      value: (r) => detachedShare(r),
+    },
+    owner: {
+      label: "Owner-occupied (%)",
+      unit: "%",
+      value: (r) => ownerShare(r),
+    },
+    wfh: {
+      label: "Work from home (%)",
+      unit: "%",
+      value: (r) => wfhShare(r),
+    },
+    medianYearBuilt: {
+      label: "Median year built",
+      unit: "",
+      step: 5,
+      value: (r) => (r.medianYearBuilt != null ? r.medianYearBuilt : null),
+    },
+    pre1980: {
+      label: "Built before 1980 (%)",
+      unit: "%",
+      value: (r) => pre1980Share(r),
     },
   };
 
@@ -1960,6 +2349,7 @@ const BlockGroupApp = (() => {
 
     lookupZip(geoidOf(props), layer);
     lookupSchools(geoidOf(props), layer);
+    lookupNoise(geoidOf(props), layer);
   }
 
   // After a layer reload the polygons are new objects, so the highlight has
@@ -2004,6 +2394,34 @@ const BlockGroupApp = (() => {
         style: pollutionStyle,
         onEachFeature: (feature, layer) => {
           layer.bindTooltip(() => pollutionTooltip(feature.properties), { sticky: true });
+        },
+      });
+    }
+
+    if (key === "flood") {
+      return L.geoJSON(geojson, {
+        style: floodStyle,
+        onEachFeature: (feature, layer) => {
+          const cls = floodClass(feature.properties);
+          const zone = floodZoneOf(feature.properties) || "?";
+          layer.bindTooltip(
+            `Flood zone ${zone}<br><span style="opacity:.7">${cls ? cls.label : "unclassified"}</span>`,
+            { sticky: true }
+          );
+        },
+      });
+    }
+
+    if (key === "seismic") {
+      return L.geoJSON(geojson, {
+        style: seismicStyle,
+        onEachFeature: (feature, layer) => {
+          const kind = feature.properties.HAZARD_KIND || "hazard";
+          layer.bindTooltip(
+            `${kind.replace(/^./, (c) => c.toUpperCase())} zone<br>` +
+              `<span style="opacity:.7">CGS seismic hazard zone - site investigation required before building</span>`,
+            { sticky: true }
+          );
         },
       });
     }
@@ -2190,6 +2608,33 @@ const BlockGroupApp = (() => {
     }
   }
 
+  let noiseLayer = null;
+
+  async function onToggleNoise(checked) {
+    enabled.noise = checked;
+    if (!checked) {
+      if (noiseLayer) {
+        map.removeLayer(noiseLayer);
+        noiseLayer = null;
+      }
+      renderOverlayLegend("noise");
+      renderSelection();
+      return;
+    }
+    Utils.logStatus("noise", "info", "Loading aviation noise...");
+    try {
+      const layer = await addNoiseLayer();
+      if (!enabled.noise) return; // toggled off while the service was checked
+      noiseLayer = layer.addTo(map);
+      renderOverlayLegend("noise");
+      if (selectedProps && selectedLayer) lookupNoise(geoidOf(selectedProps), selectedLayer);
+    } catch (err) {
+      Utils.logStatus("noise", "error", `Aviation noise failed to load: ${err.message}`);
+      document.getElementById("toggle-noise").checked = false;
+      enabled.noise = false;
+    }
+  }
+
   async function onToggleWind(checked) {
     enabled.wind = checked;
     if (!checked) {
@@ -2213,6 +2658,7 @@ const BlockGroupApp = (() => {
 
   function onToggle(key, checked) {
     if (key === "wind") return onToggleWind(checked);
+    if (key === "noise") return onToggleNoise(checked);
     enabled[key] = checked;
     if (!checked) {
       if (layers[key]) {
@@ -2236,7 +2682,7 @@ const BlockGroupApp = (() => {
       return;
     }
     if (key === "blockGroup") loadCensusData();
-    if (BG_CONFIG.OVERLAYS[key] || key === "schools") renderOverlayLegend(key);
+    if (BG_CONFIG.OVERLAYS[key] || key === "schools" || key === "noise") renderOverlayLegend(key);
     refreshLayer(key, { force: true });
   }
 
@@ -2263,6 +2709,25 @@ const BlockGroupApp = (() => {
       rows = BG_CONFIG.POLLUTION_BUCKETS.map(
         (b) => `<div class="legend-row"><span class="swatch" style="background:${b.color}"></span>${b.label}</div>`
       );
+    } else if (key === "flood") {
+      rows = BG_CONFIG.FLOOD_CLASSES.map(
+        (c) => `<div class="legend-row"><span class="swatch" style="background:${c.color}"></span>${c.label}</div>`
+      );
+      rows.push('<div class="legend-note">A/AE/V/VE is the 1% annual chance floodplain - the zone where a federally-backed mortgage requires flood insurance.</div>');
+    } else if (key === "seismic") {
+      rows = Object.entries(BG_CONFIG.SEISMIC_COLORS).map(
+        ([name, color]) =>
+          `<div class="legend-row"><span class="swatch" style="background:${color}"></span>${name.replace(
+            /^./,
+            (c) => c.toUpperCase()
+          )} zone</div>`
+      );
+      rows.push('<div class="legend-note">CGS zones where a site investigation is required before building - not a prediction that ground will fail.</div>');
+    } else if (key === "noise") {
+      rows = BG_CONFIG.NOISE.BANDS.map(
+        (b) => `<div class="legend-row"><span class="swatch" style="background:${b.color}"></span>${b.label}</div>`
+      );
+      rows.push('<div class="legend-note">24-hour average (LAeq), not DNL: no night-time penalty, so it understates an airport that flies at night.</div>');
     } else if (key === "schools" || key === "schoolZones") {
       rows = Object.entries(BG_CONFIG.SCHOOL_LEVEL_COLORS)
         .filter(([name]) => name !== "other")
@@ -2701,6 +3166,9 @@ const BlockGroupApp = (() => {
       .getElementById("toggle-school-zones")
       .addEventListener("change", (e) => onToggle("schoolZones", e.target.checked));
     document.getElementById("toggle-schools").addEventListener("change", (e) => onToggle("schools", e.target.checked));
+    document.getElementById("toggle-flood").addEventListener("change", (e) => onToggle("flood", e.target.checked));
+    document.getElementById("toggle-seismic").addEventListener("change", (e) => onToggle("seismic", e.target.checked));
+    document.getElementById("toggle-noise").addEventListener("change", (e) => onToggle("noise", e.target.checked));
 
     // Switching ethnicity source re-renders whatever block group is open.
     document.querySelectorAll('input[name="eth-source"]').forEach((radio) => {
@@ -2721,6 +3189,8 @@ const BlockGroupApp = (() => {
         refreshLayer("blockGroup");
         refreshLayer("fire");
         refreshLayer("pollution");
+        refreshLayer("flood");
+        refreshLayer("seismic");
         refreshLayer("schoolDistricts");
         refreshLayer("schoolZones");
         refreshLayer("schools");
