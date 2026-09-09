@@ -1669,6 +1669,118 @@ const BlockGroupApp = (() => {
     );
   }
 
+  async function queryZonesAtPoint(lat, lon) {
+    const source = await resolveZoneSource();
+    const hits = [];
+    for (const sub of source.sublayers) {
+      const url = Utils.arcgisQueryUrl(source.url, sub.id, {
+        outFields: "*",
+        extraParams: {
+          geometry: `${lon},${lat}`,
+          geometryType: "esriGeometryPoint",
+          inSR: "4326",
+          spatialRel: "esriSpatialRelIntersects",
+          returnGeometry: "false",
+        },
+      });
+      const data = await Utils.fetchJSON(url, { timeoutMs: 20000 });
+      (data.features || []).forEach((f) => {
+        const name = zoneNameOf(f.attributes || {});
+        if (name) hits.push({ layer: sub.name, name });
+      });
+    }
+    return hits;
+  }
+
+  // --- The address card ----------------------------------------------------
+  // Deliberately separate from the block group card. A block group can
+  // straddle two attendance zones, so its card can only report the zone at
+  // its centre; a dropped pin has exact coordinates, and those are what
+  // actually decide which school a house is assigned to.
+  function renderAddressCard({ address, lat, lon, schools, district, status }) {
+    const box = document.getElementById("address-card");
+    if (!address) {
+      box.classList.add("hidden");
+      box.innerHTML = "";
+      return;
+    }
+    box.classList.remove("hidden");
+
+    let schoolHtml;
+    if (status === "loading") {
+      schoolHtml = '<p class="src-note">Looking up the assigned schools&hellip;</p>';
+    } else if (schools && schools.length) {
+      schoolHtml = `<table>${schools
+        .map(
+          (h) =>
+            `<tr><td class="k"><span class="school-dot" style="background:${
+              BG_CONFIG.SCHOOL_LEVEL_COLORS[zoneLevel(h.layer)] || BG_CONFIG.SCHOOL_LEVEL_COLORS.other
+            }"></span>${zoneLevel(h.layer).replace(/^./, (c) => c.toUpperCase())}</td>` +
+            `<td class="v">${h.name}</td></tr>`
+        )
+        .join("")}</table>
+        <p class="src-note">From LAUSD's published attendance boundaries, read at this exact point.
+        Magnets, charters, permits and Zones of Choice are not address-based, so confirm with
+        <a href="https://rsi.lausd.net/ResidentSchoolIdentifier/" target="_blank" rel="noopener">LAUSD's Resident School Identifier</a>.</p>`;
+    } else {
+      schoolHtml = `<p class="src-note">${
+        district ? `${district} does not publish attendance boundaries here` : "No published attendance boundary covers this point"
+      }, so no assigned school can be shown. Check the district's own school locator.</p>`;
+    }
+
+    box.innerHTML = `
+      <div class="detail-card">
+        <p class="card-zip key-figure">This address</p>
+        <h3>${address}</h3>
+        <p class="geoid">${lat.toFixed(5)}, ${lon.toFixed(5)}</p>
+        <div class="section-label">Assigned schools${infoIcon(
+          "The school each level assigns to this exact point, from the district's own attendance boundaries. " +
+            "This is the address-level answer - the block group card can only report the zone at the block " +
+            "group's centre, and a block group can straddle two zones."
+        )}</div>
+        ${schoolHtml}
+      </div>`;
+  }
+
+  async function describeAddress(address, lat, lon) {
+    renderAddressCard({ address, lat, lon, status: "loading" });
+    try {
+      const schools = await queryZonesAtPoint(lat, lon);
+      let district = null;
+      if (!schools.length) {
+        // Outside LAUSD, at least say whose district it is.
+        try {
+          const spec = BG_CONFIG.SCHOOL_DISTRICT_LOOKUP;
+          if (!districtSource) districtSource = await resolveOverlaySublayers(spec.url, spec.discover);
+          for (const sub of districtSource) {
+            const url = Utils.arcgisQueryUrl(spec.url, sub.id, {
+              outFields: "NAME,BASENAME",
+              extraParams: {
+                geometry: `${lon},${lat}`,
+                geometryType: "esriGeometryPoint",
+                inSR: "4326",
+                spatialRel: "esriSpatialRelIntersects",
+                returnGeometry: "false",
+              },
+            });
+            const data = await Utils.fetchJSON(url, { timeoutMs: 20000 });
+            const hit = (data.features || [])[0];
+            if (hit) {
+              district = Utils.pickField(hit.attributes || {}, ["NAME", "BASENAME"]);
+              break;
+            }
+          }
+        } catch (err) {
+          /* the district name is a nicety, not worth failing the card for */
+        }
+      }
+      renderAddressCard({ address, lat, lon, schools, district });
+    } catch (err) {
+      renderAddressCard({ address, lat, lon, schools: [], district: null });
+      Utils.logStatus("schoolZones", "warn", `Could not look up schools for this address: ${err.message}`);
+    }
+  }
+
   async function lookupSchools(geoid, layer) {
     if (schoolsByGeoid[geoid] !== undefined) return;
     const center = layer && layer.getBounds ? layer.getBounds().getCenter() : null;
@@ -1676,26 +1788,7 @@ const BlockGroupApp = (() => {
 
     schoolsByGeoid[geoid] = null; // in flight; stops a second click re-asking
     try {
-      const source = await resolveZoneSource();
-      const hits = [];
-      for (const sub of source.sublayers) {
-        const url = Utils.arcgisQueryUrl(source.url, sub.id, {
-          outFields: "*",
-          extraParams: {
-            geometry: `${center.lng},${center.lat}`,
-            geometryType: "esriGeometryPoint",
-            inSR: "4326",
-            spatialRel: "esriSpatialRelIntersects",
-            returnGeometry: "false",
-          },
-        });
-        const data = await Utils.fetchJSON(url, { timeoutMs: 20000 });
-        (data.features || []).forEach((f) => {
-          const name = zoneNameOf(f.attributes || {});
-          if (name) hits.push({ layer: sub.name, name });
-        });
-      }
-      schoolsByGeoid[geoid] = hits;
+      schoolsByGeoid[geoid] = await queryZonesAtPoint(center.lat, center.lng);
     } catch (err) {
       schoolsByGeoid[geoid] = [];
       Utils.logStatus("schoolZones", "warn", `Could not look up schools for ${geoid}: ${err.message}`);
@@ -3283,6 +3376,8 @@ const BlockGroupApp = (() => {
         lookupZip(wanted, L.geoJSON(feature));
       }
 
+      describeAddress(match.matchedAddress, lat, lon);
+
       const { tractLabel, bgLabel } = tractAndBlockGroup(feature.properties);
       status.className = "hint ok";
       status.textContent = `Tract ${tractLabel}, Block Group ${bgLabel}`;
@@ -3295,6 +3390,7 @@ const BlockGroupApp = (() => {
   function clearPin() {
     setPinArmed(false);
     clearRoute();
+    renderAddressCard({});
     if (searchMarker) {
       map.removeLayer(searchMarker);
       searchMarker = null;
@@ -3367,6 +3463,7 @@ const BlockGroupApp = (() => {
           `</div>`
       );
       document.getElementById("address-input").value = address;
+      describeAddress(address || `${coords}`, latlng.lat, latlng.lng);
       if (destination) routeFromPin();
       status.className = "hint ok";
       status.textContent = address || "Pin dropped - no street address at this point.";

@@ -450,3 +450,31 @@ html, body {
   font-size: 0.62rem;
   color: var(--muted);
 }
+
+/* --- The address card (pin / searched address), separate from the block
+   group card because it answers a different question --- */
+#address-card { margin-top: 10px; }
+#address-card .detail-card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 0.8rem;
+}
+#address-card h3 { margin: 0 0 2px; font-size: 0.85rem; font-weight: 600; }
+#address-card .geoid { font-size: 0.7rem; color: var(--muted); margin: 0 0 6px; }
+#address-card table { width: 100%; border-collapse: collapse; }
+#address-card td { padding: 2px 0; }
+#address-card td.k { color: var(--muted); }
+#address-card td.v { text-align: right; font-weight: 600; }
+#address-card .section-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 10px 0 5px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+#address-card .src-note { font-size: 0.68rem; color: var(--muted); line-height: 1.4; margin: 6px 0 0; }

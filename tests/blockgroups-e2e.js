@@ -1002,10 +1002,44 @@ async function main() {
       (await page.locator(".leaflet-marker-icon").count()) > 0
     );
 
+    // --- The address card: assigned schools at this exact point ---
+    // Separate from the block group card on purpose: a block group can
+    // straddle two attendance zones, so only the pin's own coordinates
+    // resolve the assignment.
+    await page.waitForTimeout(700);
+    const addressCard = await page.locator("#address-card").innerText();
+    step(
+      "picking an address raises a card for that address, not for its block group",
+      (await page.locator("#address-card").isVisible()) && /this address/i.test(addressCard),
+      addressCard.replace(/\n/g, " ").slice(0, 90)
+    );
+    step(
+      "the address card names the assigned school for each level",
+      addressCard.includes("Spring Street Elementary") &&
+        addressCard.includes("Civic Center Middle") &&
+        addressCard.includes("Downtown Senior High"),
+      addressCard.replace(/\n/g, " ").slice(0, 200)
+    );
+    step(
+      "it says magnets and permits are not address-based, and links to the district's own tool",
+      /magnets|zones of choice/i.test(addressCard) &&
+        (await page.locator('#address-card a[href*="rsi.lausd.net"]').count()) === 1,
+      addressCard.replace(/\n/g, " ").slice(-140)
+    );
+    step(
+      "the assignment is read at the address's own coordinates",
+      zoneQueries.some((u) => u.includes("34.0537") || u.includes("34.05")),
+      (zoneQueries[zoneQueries.length - 1] || "").slice(0, 110)
+    );
+
     // --- Clear-pin button ---
     step("clear-pin button appears once a pin exists", await page.locator("#clear-pin").isVisible());
     await page.click("#clear-pin");
     await page.waitForTimeout(300);
+    step(
+      "clearing the pin takes the address card with it",
+      !(await page.locator("#address-card").isVisible())
+    );
     step(
       "clear-pin removes the pin and empties the box",
       (await page.locator(".leaflet-marker-icon").count()) === 0 &&
