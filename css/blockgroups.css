@@ -415,3 +415,31 @@ html, body {
 /* A median resting on a couple of sales is not a market rate. */
 .detail-card td.v.thin-sample,
 #detail-panel td.v.thin-sample { color: var(--warn); font-weight: 600; }
+
+/* --- Year-by-year price table --- */
+/* Seven columns in a 300px popup: small type, tight padding, compact money. */
+.price-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.68rem;
+  margin-bottom: 4px;
+}
+.price-table th {
+  font-weight: 600;
+  color: var(--muted);
+  text-align: right;
+  padding: 2px 3px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.price-table th:first-child,
+.price-table td.yr { text-align: left; }
+.price-table td {
+  text-align: right;
+  padding: 2px 3px;
+  white-space: nowrap;
+}
+.price-table td.yr { color: var(--muted); font-weight: 600; }
+.price-table td.dim { color: var(--muted); }
+.price-table tbody tr:first-child td { font-weight: 600; }
+.price-table .info-icon { width: 11px; height: 11px; font-size: 8px; margin-left: 2px; }

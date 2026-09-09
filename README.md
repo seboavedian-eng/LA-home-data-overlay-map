@@ -279,15 +279,39 @@ family" assumption can be checked against your own file rather than taken on
 trust, plus the 5th/95th percentile of the block group medians so an
 implausible tail is visible immediately.
 
+**The card shows a year-by-year table**, not a single number: median, 10th and
+90th percentile, median $/ft² of building area, sales, and turnover (that
+year's sales as a share of the block group's single-family stock). Percentiles
+appear only where a year had at least five sales - a spread drawn from three
+is just the cheapest and dearest of three. The county-wide median for each
+year sits underneath, so you can see whether a block group moves with the
+market or against it.
+
+**The multi-year export is what makes a year-by-year table possible.** A roll
+carries one value per parcel - its most recent transfer - so a house that sold
+in 2021 and again in 2024 shows only the 2024 sale in the 2025 roll. But roll
+year N records the transfers known at that point, so the 2022 roll still
+carries that 2021 sale. Stacking the years recovers transactions a single roll
+would have overwritten. Each sale is taken from the **earliest** roll year that
+knows about it, which is the one closest to the price actually paid.
+
+The most recent year is always short: sales are recorded in the following
+year's roll, so 2025 sales will not appear until the 2026 roll exists.
+
 **Deduplication matters on the multi-year export.** A house that sold in 2023
 appears in the 2023, 2024 and 2025 rolls; one that sold in 2025 appears once.
 Counted as-is that inflates every count and quietly weights each median toward
 older, cheaper sales, so parcels are deduplicated on `AIN` with the newest
 roll year winning.
 
-Read the result as a *level* - which neighbourhoods are 800k and which are 2m
-- rather than as today's asking price: it lags the market by up to three years
-and misses appreciation since the sale.
+Read each year's figure as a *level* for that year rather than as today's
+asking price.
+
+**No `$/lot ft²`.** The county's roll export carries building square footage
+but no lot size, land area or acreage - the column simply is not there. Lot
+area lives only in the parcel *geometry* (the ~2 GB shapefile/geodatabase),
+where it is a field on each polygon. The script already looks for a lot column
+and will use it if a future export carries one.
 
 ### Optional: commute times
 

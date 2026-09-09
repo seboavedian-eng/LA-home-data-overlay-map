@@ -97,6 +97,9 @@ COLUMNS = {
     "year_built": ["Year Built", "YearBuilt", "Effective Year", "EffectiveYearBuilt"],
     "units": ["Number of Units", "Units", "UnitsCount"],
     "ain": ["AIN", "Assessor ID", "APN", "ParcelID"],
+    # Not present in the 2021-2025 export. Kept so a future roll that carries
+    # lot area is picked up without a code change.
+    "lot_sqft": ["Lot Size", "LotSizeSqFt", "Land Square Footage", "LandSqFt", "Shape__Area"],
     "roll_year": ["Roll Year", "RollYear", "TaxYear"],
 }
 
@@ -331,14 +334,43 @@ def transfer_year(row, cols):
     return int(base) if base and 1900 < base < 2100 else None
 
 
+def percentile(sorted_values, fraction):
+    """Nearest-rank percentile. Small samples, so no interpolation games."""
+    if not sorted_values:
+        return None
+    i = min(len(sorted_values) - 1, max(0, int(round(fraction * (len(sorted_values) - 1)))))
+    return sorted_values[i]
+
+
+def summarise(prices, ppsf, sfh_total, min_for_spread=5):
+    prices = sorted(prices)
+    row = {"n": len(prices), "median": round(statistics.median(prices))}
+    # A 10th and 90th percentile drawn from three sales is just the smallest
+    # and largest of three, dressed up as a distribution. Only report the
+    # spread once there are enough sales for it to mean anything.
+    if len(prices) >= min_for_spread:
+        row["p10"] = round(percentile(prices, 0.10))
+        row["p90"] = round(percentile(prices, 0.90))
+    if ppsf:
+        row["ppsf"] = round(statistics.median(sorted(ppsf)), 1)
+    if sfh_total:
+        row["turnover"] = round(100 * len(prices) / sfh_total, 2)
+    return row
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--csv", default=DEFAULT_CSV, help="Assessor roll CSV")
     parser.add_argument("--out", default=DEFAULT_OUT, help="Output JSON path")
-    parser.add_argument("--years", type=int, default=3, help="How many years back to accept a transfer")
-    parser.add_argument("--min-sales", type=int, default=3, help="Block groups with fewer sales are still written, but flagged")
+    parser.add_argument(
+        "--from-year",
+        type=int,
+        default=2021,
+        help="Earliest transfer year to report (default 2021, the earliest roll in the county's export)",
+    )
+    parser.add_argument("--min-sales", type=int, default=3, help="Pooled medians under this are flagged thin")
     args = parser.parse_args()
 
     if not os.path.exists(args.csv):
@@ -351,17 +383,24 @@ def main():
     block_groups = fetch_block_groups()
     index, shapes = build_index(block_groups)
 
-    cutoff = datetime.date.today().year - args.years
-    print(f"\nReading {args.csv} (keeping single-family sales from {cutoff} onwards)...")
+    print(f"\nReading {args.csv} (transfers from {args.from_year} onwards)...")
 
-    sales = {}
-    per_sqft = {}
-    years = {}
-    parcels = {}      # AIN -> (roll year, entry), so one row survives per parcel
-    unkeyed = []      # rows with no AIN at all: kept, but undeduplicated
-    duplicates = 0
-    read = kept = 0
+    # AIN -> block group, so a parcel is located once no matter how many roll
+    # years it appears in. This doubles as the denominator: every distinct
+    # single-family parcel seen, sold or not.
+    ain_geoid = {}
+    sfh_total = {}
+
+    # (AIN, recording date) -> one transaction. The multi-year export carries
+    # the same sale in several roll years, revalued about 2% each time, so the
+    # EARLIEST roll year is kept: it is closest to the sale and least trended.
+    transactions = {}
+
+    read = sfr_rows = 0
     unplaced = 0
+    stale = 0
+    use_code_kept = {}
+    use_code_dropped = {}
 
     with open(args.csv, newline="", encoding="utf-8-sig", errors="replace") as fh:
         reader = csv.DictReader(fh)
@@ -369,16 +408,15 @@ def main():
         cols = {}
         for key in ("lat", "lon", "use_code", "sale_date"):
             cols[key] = find_column(header, COLUMNS[key], key.replace("_", " "))
-        for key in ("use_type", "land_value", "improvement_value", "total_value", "base_year", "sqft", "year_built", "units", "ain", "roll_year"):
+        for key in (
+            "use_type", "land_value", "improvement_value", "total_value",
+            "base_year", "sqft", "year_built", "units", "ain", "roll_year", "lot_sqft",
+        ):
             try:
                 cols[key] = find_column(header, COLUMNS[key], key)
             except ParcelDataError:
                 cols[key] = None  # optional
-        # Land + improvements is the figure wanted. "Total Value" adds fixtures
-        # and personal property, which are zero on a house, so it is an
-        # acceptable stand-in. "Taxable Value" is not: the homeowners'
-        # exemption has already been subtracted from it, which would mark down
-        # every owner-occupied house by $7,000 and leave rentals untouched.
+
         if cols.get("land_value") and cols.get("improvement_value"):
             print("  Value basis: Land Value + Improvement Value")
         elif cols.get("total_value") and "taxable" not in cols["total_value"].lower():
@@ -395,137 +433,143 @@ def main():
                 f"  The file has: {', '.join(sorted(header))}\n"
                 "  Without one there is nothing to take a median of."
             )
+        if not cols.get("ain"):
+            raise ParcelDataError(
+                "found no parcel id column (AIN).\n"
+                "  Without it the same parcel cannot be recognised across roll years, and every count\n"
+                "  would be inflated several times over."
+            )
+        if not cols.get("lot_sqft"):
+            print("  Lot size: not in this export, so $/lot-sqft is omitted (see README).")
         print("  Matched columns: " + ", ".join(f"{k}={v}" for k, v in cols.items() if v))
-
-        use_code_kept = {}
-        use_code_dropped = {}
-        stale = 0
 
         for row in reader:
             read += 1
-            if read % 250000 == 0:
-                print(f"  {read:,} rows read, {kept:,} usable sales so far...")
+            if read % 500000 == 0:
+                print(f"    {read:,} rows read, {len(transactions):,} transactions, {len(ain_geoid):,} parcels located...")
 
             code = str(row.get(cols["use_code"], "") or "").strip()[:4]
             if not is_single_family(row, cols):
                 use_code_dropped[code] = use_code_dropped.get(code, 0) + 1
                 continue
+            sfr_rows += 1
+            use_code_kept[code] = use_code_kept.get(code, 0) + 1
+
+            ain = str(row.get(cols["ain"]) or "").strip()
+            if not ain:
+                continue
+
+            # Locate the parcel once, then reuse for every roll year it
+            # appears in - the expensive part is the point-in-polygon.
+            if ain in ain_geoid:
+                geoid = ain_geoid[ain]
+            else:
+                lat = to_float(row.get(cols["lat"]))
+                lon = to_float(row.get(cols["lon"]))
+                geoid = None
+                if lat is not None and lon is not None and 32 < lat < 36 and -120 < lon < -116:
+                    geoid = locate(lon, lat, index, shapes)
+                ain_geoid[ain] = geoid
+                if geoid:
+                    sfh_total[geoid] = sfh_total.get(geoid, 0) + 1
+                else:
+                    unplaced += 1
+            if geoid is None:
+                continue
+
             price = assessed_value(row, cols)
             if price is None or price < MIN_SALE_PRICE or price > MAX_SALE_PRICE:
                 continue
             year = transfer_year(row, cols)
-            if year is None or year < cutoff:
+            if year is None or year < args.from_year:
                 continue
 
-            # A recent deed carrying a decades-old value per square foot means
-            # the transfer was excluded from reassessment, so the value is not
-            # a price. Drop it rather than dragging the median down.
             sqft_value = to_float(row.get(cols["sqft"])) if cols.get("sqft") else None
             if sqft_value and sqft_value > 200:
                 ppsf = price / sqft_value
                 if ppsf < MIN_PRICE_PER_SQFT or ppsf > MAX_PRICE_PER_SQFT:
                     stale += 1
                     continue
-            use_code_kept[code] = use_code_kept.get(code, 0) + 1
-            lat = to_float(row.get(cols["lat"]))
-            lon = to_float(row.get(cols["lon"]))
-            if lat is None or lon is None or not (32 < lat < 36) or not (-120 < lon < -116):
-                continue
 
-            geoid = locate(lon, lat, index, shapes)
-            if geoid is None:
-                unplaced += 1
-                continue
+            roll = to_float(row.get(cols.get("roll_year"))) or 0
+            key = (ain, str(row.get(cols["sale_date"]) or "").strip())
+            existing = transactions.get(key)
+            if existing is None or roll < existing[0]:
+                transactions[key] = (roll, price, sqft_value, geoid, year)
 
-            kept += 1
-            built = to_float(row.get(cols["year_built"])) if cols.get("year_built") else None
-            entry = (price, sqft_value, built, geoid)
-
-            # A multi-year roll export carries the same parcel once per roll
-            # year - the same house, revalued about 2% a year. Counted as-is,
-            # a 2023 sale appears three times and a 2025 sale once, which
-            # both inflates every count and quietly weights the median toward
-            # older, cheaper sales. Keep one row per parcel: the newest.
-            ain = str(row.get(cols["ain"]) or "").strip() if cols.get("ain") else ""
-            if ain:
-                roll = to_float(row.get(cols.get("roll_year"))) or 0
-                previous = parcels.get(ain)
-                if previous is None:
-                    parcels[ain] = (roll, entry)
-                else:
-                    if roll > previous[0]:
-                        parcels[ain] = (roll, entry)
-                    duplicates += 1
-                continue
-
-            unkeyed.append(entry)
-
-    for _, entry in parcels.values():
-        price, sqft_value, built, geoid = entry
-        sales.setdefault(geoid, []).append(price)
-        if sqft_value and sqft_value > 200:
-            per_sqft.setdefault(geoid, []).append(price / sqft_value)
-        if built and 1800 < built < 2100:
-            years.setdefault(geoid, []).append(built)
-    for price, sqft_value, built, geoid in unkeyed:
-        sales.setdefault(geoid, []).append(price)
-        if sqft_value and sqft_value > 200:
-            per_sqft.setdefault(geoid, []).append(price / sqft_value)
-        if built and 1800 < built < 2100:
-            years.setdefault(geoid, []).append(built)
-
-    unique = len(parcels) + len(unkeyed)
-
-    # So the "01xx means single family" assumption can be checked against the
-    # file rather than taken on trust.
     def top_codes(counter):
         return ", ".join(f"{code or '(blank)'}: {n:,}" for code, n in sorted(counter.items(), key=lambda kv: -kv[1])[:6])
 
     print(f"\n  Use codes KEPT as single-family: {top_codes(use_code_kept) or 'none'}")
     print(f"  Use codes dropped (top few):     {top_codes(use_code_dropped) or 'none'}")
     if stale:
-        print(f"  {stale:,} recent deeds dropped as stale values (excluded transfers, no reassessment)")
+        print(f"  {stale:,} transfers dropped as stale values (excluded transfers, no reassessment)")
 
-    if not unique:
+    if not transactions:
         raise ParcelDataError(
-            f"read {read:,} rows but found no usable single-family parcels.\n"
-            "  The matched columns and the use codes seen are printed above - check them against the file.\n"
-            "  If the use code is not 01xx in this roll, adjust SFR_CODE_PREFIX."
+            f"read {read:,} rows and found {sfr_rows:,} single-family rows, but no usable transfers.\n"
+            "  The matched columns and use codes are printed above - check them against the file."
         )
 
+    # --- Aggregate: per block group, per year --------------------------------
+    by_bg = {}
+    county_year_prices = {}
+    for roll, price, sqft_value, geoid, year in transactions.values():
+        bucket = by_bg.setdefault(geoid, {})
+        entry = bucket.setdefault(year, {"prices": [], "ppsf": []})
+        entry["prices"].append(price)
+        if sqft_value and sqft_value > 200:
+            entry["ppsf"].append(price / sqft_value)
+        county_year_prices.setdefault(year, []).append(price)
+
     records = {}
-    for geoid, prices in sales.items():
-        record = {
-            "medianSalePrice": round(statistics.median(prices)),
-            "saleCount": len(prices),
-            "thin": len(prices) < args.min_sales,
+    for geoid, per_year in by_bg.items():
+        total_parcels = sfh_total.get(geoid, 0)
+        all_prices = []
+        all_ppsf = []
+        years_out = {}
+        for year, entry in sorted(per_year.items()):
+            years_out[str(year)] = summarise(entry["prices"], entry["ppsf"], total_parcels)
+            all_prices.extend(entry["prices"])
+            all_ppsf.extend(entry["ppsf"])
+
+        pooled = summarise(all_prices, all_ppsf, total_parcels)
+        records[geoid] = {
+            # Pooled across every year, kept under the old names so the map's
+            # filters and the card's headline number keep working.
+            "medianSalePrice": pooled["median"],
+            "saleCount": pooled["n"],
+            "thin": pooled["n"] < args.min_sales,
+            "sfhTotal": total_parcels,
+            "years": years_out,
         }
-        if geoid in per_sqft:
-            record["medianPricePerSqft"] = round(statistics.median(per_sqft[geoid]), 1)
-        if geoid in years:
-            record["medianYearBuiltSold"] = int(statistics.median(years[geoid]))
-        records[geoid] = record
+        if "ppsf" in pooled:
+            records[geoid]["medianPricePerSqft"] = pooled["ppsf"]
 
-    all_medians = sorted(r["medianSalePrice"] for r in records.values())
+    county_by_year = {
+        str(year): {"n": len(prices), "median": round(statistics.median(prices))}
+        for year, prices in sorted(county_year_prices.items())
+    }
 
-    def pct(p):
-        return all_medians[min(len(all_medians) - 1, int(len(all_medians) * p))]
     payload = {
         "meta": {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "source": "LA County Assessor parcel roll (assessed value at last transfer)",
-            "basis": "assessed-at-recent-transfer",
+            "basis": "assessed-at-transfer",
             "sourceFile": os.path.basename(args.csv),
-            "salesFrom": cutoff,
+            "salesFrom": args.from_year,
             "generated": datetime.date.today().isoformat(),
             "minSalePrice": MIN_SALE_PRICE,
+            "hasLotSize": bool(cols.get("lot_sqft")),
+            "countyByYear": county_by_year,
             "note": (
-                "Median assessed value of single-family parcels whose deed was "
-                f"recorded since {cutoff}. Proposition 13 resets a property's "
-                "assessed value to its purchase price on sale, so for a "
-                "recently-transferred house the two are approximately the same "
-                "figure. Long-held houses are excluded precisely because their "
-                "assessed value is decades stale."
+                "Per-year medians of assessed value for single-family parcels whose deed was "
+                f"recorded that year, from {args.from_year} on. Proposition 13 resets a "
+                "property's assessed value to its purchase price on sale, so for the year it "
+                "changed hands the two are approximately the same figure. The county's "
+                "multi-year roll export is what makes a year-by-year table possible at all: "
+                "each roll year records the transfers known at that point, so stacking them "
+                "recovers sales that a single roll would have overwritten."
             ),
         },
         "blockGroups": records,
@@ -535,29 +579,30 @@ def main():
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, separators=(",", ":"))
 
-    thin = sum(1 for r in records.values() if r["thin"])
+    medians = sorted(r["medianSalePrice"] for r in records.values())
+
+    def pct(p):
+        return medians[min(len(medians) - 1, int(len(medians) * p))]
+
     print(f"\nWrote {args.out} ({os.path.getsize(args.out) / 1024:.0f} KB)")
-    print(f"  {read:,} rows read, {kept:,} matching rows, {unique:,} distinct parcels transferred since {cutoff}")
-    if duplicates:
-        print(
-            f"  {duplicates:,} rows were repeat roll years for a parcel already seen - only its newest row counts"
-        )
-    if unkeyed:
-        print(f"  {len(unkeyed):,} rows had no parcel id and could not be deduplicated")
-    print(f"  {len(records):,} block groups have at least one sale")
-    print(f"  {thin:,} of those rest on fewer than {args.min_sales} sales and are flagged as thin")
+    print(f"  {read:,} rows read, {sfr_rows:,} single-family rows")
+    print(f"  {len(ain_geoid):,} distinct single-family parcels, {len(transactions):,} distinct transfers since {args.from_year}")
+    print(f"  {len(records):,} block groups have at least one transfer")
     if unplaced:
-        print(f"  {unplaced:,} sales fell outside every LA County block group (county edge, bad coordinates)")
+        print(f"  {unplaced:,} parcels fell outside every LA County block group (county edge, bad coordinates)")
+    print("\n  Transfers per year, county-wide (2025 is short because those sales land in the 2026 roll):")
+    for year, row in county_by_year.items():
+        print(f"    {year}: {row['n']:>7,} transfers, median ${row['median']:,}")
     print(
-        f"  median of the block group medians: ${pct(0.5):,}"
+        f"\n  Median of the block group medians: ${pct(0.5):,}"
         f"  (5th pct ${pct(0.05):,}, 95th pct ${pct(0.95):,})"
     )
-    print(f"  full range ${all_medians[0]:,} to ${all_medians[-1]:,} - check the tails look like real LA prices")
+    print(f"  Full range ${medians[0]:,} to ${medians[-1]:,} - check the tails look like real LA prices")
     print(
-        "\nNote: these are current-roll values, so a sale from a year or two ago reads a few"
-        "\npercent above what it actually sold for (Prop 13 trends a base value up ~2% a year)."
+        "\nNote: values are as assessed in the roll year nearest the sale, so they sit within"
+        "\na percent or two of the actual price (Prop 13 trends a base value up ~2% a year)."
     )
-    print("\nReload blockgroups.html - the card gains a Home prices section.")
+    print("\nReload blockgroups.html - the card gains a year-by-year Home prices table.")
 
 
 if __name__ == "__main__":

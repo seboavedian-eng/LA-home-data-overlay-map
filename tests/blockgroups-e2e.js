@@ -280,10 +280,24 @@ async function main() {
   fs.writeFileSync(
     parcelPath,
     JSON.stringify({
-      meta: { salesFrom: 2023, source: "LA County Assessor parcel roll (test fixture)" },
+      meta: {
+        salesFrom: 2021,
+        source: "LA County Assessor parcel roll (test fixture)",
+        countyByYear: { "2021": { n: 40000, median: 800000 }, "2024": { n: 30000, median: 950000 } },
+      },
       blockGroups: {
-        "060372011001": { medianSalePrice: 1250000, saleCount: 34, medianPricePerSqft: 780.5, thin: false },
-        "060372011003": { medianSalePrice: 640000, saleCount: 2, thin: true },
+        "060372011001": {
+          medianSalePrice: 1250000,
+          saleCount: 34,
+          medianPricePerSqft: 780.5,
+          thin: false,
+          sfhTotal: 210,
+          years: {
+            "2021": { n: 9, median: 1100000, p10: 890000, p90: 1400000, ppsf: 690.0, turnover: 4.29 },
+            "2024": { n: 3, median: 1310000, ppsf: 812.0, turnover: 1.43 },
+          },
+        },
+        "060372011003": { medianSalePrice: 640000, saleCount: 2, thin: true, sfhTotal: 60, years: {} },
       },
     })
   );
@@ -1101,9 +1115,8 @@ async function main() {
       [...document.querySelectorAll("#detail-panel .key-figure")].map((el) => el.textContent.trim())
     );
     step(
-      "ZIP, household size, education %, both income figures and the home price are highlighted",
-      keyFigures.length === 6 &&
-        keyFigures.includes("$1,250,000") &&
+      "ZIP, household size, education % and both income figures are highlighted",
+      keyFigures.length === 5 &&
         keyFigures[0].startsWith("ZIP") &&
         keyFigures.includes("3.40 people") &&
         keyFigures.includes("30.0%") &&
@@ -1221,18 +1234,45 @@ async function main() {
     // --- Home prices from the assessor roll ---
     const priceCard = await page.locator("#detail-panel").innerText();
     step(
-      "card shows the median single-family SALE price, not assessed value",
-      /home prices/i.test(priceCard) && priceCard.includes("$1,250,000"),
-      priceCard.replace(/\n/g, " ").match(/Home prices.{0,80}/i)
+      "card has a Home prices section for single-family homes",
+      /home prices/i.test(priceCard),
+      priceCard.replace(/\n/g, " ").match(/Home prices.{0,60}/i)
+    );
+    // The table is the point: one row per year, most recent first.
+    const priceTable = await page.evaluate(() =>
+      [...document.querySelectorAll("#detail-panel .price-table tbody tr")].map((tr) =>
+        [...tr.children].map((td) => td.textContent.trim())
+      )
     );
     step(
-      "card shows price per square foot and the sale count behind the median",
-      priceCard.includes("$781") && /34 sales/.test(priceCard),
-      priceCard.replace(/\n/g, " ").match(/Per square foot.{0,60}/i)
+      "the price table has one row per year, newest first",
+      priceTable.length === 2 && priceTable[0][0] === "2024" && priceTable[1][0] === "2021",
+      JSON.stringify(priceTable.map((r) => r[0]))
     );
     step(
-      "a healthy sample is not flagged as thin",
-      !(await page.evaluate(() => !!document.querySelector("#detail-panel .thin-sample")))
+      "each row carries median, 10th, 90th, $/sqft, sales and turnover",
+      priceTable[1][1] === "$1.10M" &&
+        priceTable[1][2] === "$890k" &&
+        priceTable[1][3] === "$1.40M" &&
+        priceTable[1][4] === "$690" &&
+        priceTable[1][5] === "9" &&
+        priceTable[1][6] === "4.3%",
+      JSON.stringify(priceTable[1])
+    );
+    step(
+      "a year with too few sales shows no fake spread and flags the count",
+      priceTable[0][2] === "-" && priceTable[0][3] === "-",
+      JSON.stringify(priceTable[0])
+    );
+    step(
+      "the block group's single-family total is shown, so turnover can be read",
+      priceCard.includes("210 single-family homes"),
+      priceCard.replace(/\n/g, " ").match(/\d+ single-family homes.{0,40}/i)
+    );
+    step(
+      "the county median for each year is shown for comparison",
+      priceCard.includes("2021 $800k") && priceCard.includes("2024 $950k"),
+      priceCard.replace(/\n/g, " ").match(/County-wide.{0,60}/i)
     );
     await page.evaluate(() => {
       BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
@@ -1242,10 +1282,9 @@ async function main() {
     await page.waitForTimeout(300);
     const thinCard = await page.locator("#detail-panel").innerText();
     step(
-      "a median resting on two sales is called out as thin, not shown as a market rate",
-      /2 sales - thin/.test(thinCard) &&
-        (await page.evaluate(() => !!document.querySelector("#detail-panel .thin-sample"))),
-      thinCard.replace(/\n/g, " ").match(/Based on.{0,40}/i)
+      "a block group with no year data still shows its price section without breaking",
+      /home prices/i.test(thinCard),
+      thinCard.replace(/\n/g, " ").match(/Home prices.{0,60}/i)
     );
     const priceMetrics = await page.evaluate(() =>
       [...document.querySelectorAll("#filter-metric-0 option")].map((o) => o.value)

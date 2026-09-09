@@ -957,6 +957,7 @@ const BlockGroupApp = (() => {
 
   // --- Home prices (LA County Assessor roll) ------------------------------
   let parcelData = null;
+  let parcelMeta = null;
   let parcelError = null;
 
   async function loadParcelData() {
@@ -966,6 +967,7 @@ const BlockGroupApp = (() => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       parcelData = data.blockGroups || {};
+      parcelMeta = data.meta || null;
       Utils.logStatus(
         "prices",
         "ok",
@@ -985,36 +987,84 @@ const BlockGroupApp = (() => {
     return parcelData ? parcelData[geoidOf(props)] || null : null;
   }
 
+  // Compact money, so a seven-column table fits a 300px popup: $1.25M, $780k.
+  function shortMoney(n) {
+    if (n === null || n === undefined || !Number.isFinite(n)) return "-";
+    if (n >= 1000000) return `$${(n / 1000000).toFixed(2)}M`;
+    if (n >= 1000) return `$${Math.round(n / 1000)}k`;
+    return `$${Math.round(n)}`;
+  }
+
   function priceRows(props) {
     const rec = parcelFor(props);
     if (!rec) return "";
-    const thin = rec.thin || rec.saleCount < 3;
+    const years = rec.years || {};
+    const yearKeys = Object.keys(years).sort((a, b) => Number(b) - Number(a));
+    const county = (parcelMeta && parcelMeta.countyByYear) || {};
+
+    const rows = yearKeys
+      .map((year) => {
+        const y = years[year];
+        const thin = y.n < 5;
+        return `<tr>
+          <td class="yr">${year}</td>
+          <td class="v">${shortMoney(y.median)}</td>
+          <td class="v dim">${shortMoney(y.p10)}</td>
+          <td class="v dim">${shortMoney(y.p90)}</td>
+          <td class="v">${y.ppsf ? `$${Math.round(y.ppsf)}` : "-"}</td>
+          <td class="v${thin ? " thin-sample" : ""}">${y.n}</td>
+          <td class="v dim">${y.turnover === undefined ? "-" : `${y.turnover.toFixed(1)}%`}</td>
+        </tr>`;
+      })
+      .join("");
+
+    const countyRow = yearKeys.length
+      ? `<p class="src-note">County-wide median that year: ${yearKeys
+          .map((y) => `${y} ${shortMoney(county[y] && county[y].median)}`)
+          .join(" &middot; ")}</p>`
+      : "";
+
     return `
       <div class="section-label">Home prices${infoIcon(
-        "Median value of single-family homes here that CHANGED HANDS in the last few years, from the LA County " +
-          "Assessor roll. The public roll carries no sale price, so this is assessed value - which works only " +
-          "because Proposition 13 resets a property's assessed value to its purchase price when it sells. For a " +
-          "recently-sold house the two are about the same number; for a long-held one the assessed value is decades " +
-          "stale, which is exactly why those are excluded. Condos and townhouses are excluded too, so this is " +
-          "comparable house to house."
+        "Single-family homes only, by the year their deed was recorded. The public roll carries no sale price, " +
+          "so these are assessed values - which works because Proposition 13 resets a property's assessed value to " +
+          "its purchase price when it sells. Each sale is taken from the roll year closest to it, so the figure sits " +
+          "within a percent or two of what was actually paid. Condos, townhouses and anything with more than one " +
+          "unit are excluded."
       )}</div>
-      <table>
-        <tr><td class="k">Median home price${infoIcon(
-          "Assessed at last sale, so it lags the market by up to three years and misses any appreciation since. " +
-            "Read it as a level - which neighbourhoods are 800k and which are 2m - rather than as today's asking price."
-        )}</td><td class="v key-figure">${Utils.fmtCurrency(rec.medianSalePrice)}</td></tr>
+      <table class="price-table">
+        <thead>
+          <tr>
+            <th>Year</th>
+            <th>Median</th>
+            <th>10th${infoIcon(
+              "The 10th and 90th percentiles of that year's sales - how spread out prices are. A wide gap means a " +
+                "mixed block group: small older houses selling alongside large or remodelled ones. Shown only where " +
+                "there were at least five sales, because a spread drawn from three sales is just the cheapest and " +
+                "dearest of three."
+            )}</th>
+            <th>90th</th>
+            <th>$/ft&sup2;${infoIcon(
+              "Median price divided by the building's floor area - the fairest way to compare a small house against " +
+                "a large one. Building area, not lot: this roll export carries no lot size."
+            )}</th>
+            <th>Sales</th>
+            <th>Turn${infoIcon(
+              "Sales that year as a share of every single-family home in this block group - roughly, how often a " +
+                "house here comes up for sale. Around 2-4% a year is normal; much lower means a street where nothing " +
+                "moves, much higher can mean new construction or an unsettled area."
+            )}</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p class="src-note">${rec.sfhTotal ? `${Utils.fmtNumber(rec.sfhTotal)} single-family homes in this block group.` : ""}
         ${
-          rec.medianPricePerSqft
-            ? `<tr><td class="k">Per square foot</td><td class="v">${Utils.fmtCurrency(rec.medianPricePerSqft)}</td></tr>`
+          parcelMeta && parcelMeta.salesFrom
+            ? ` Latest year is short: sales are recorded in the following year's roll.`
             : ""
-        }
-        <tr><td class="k">Based on${infoIcon(
-          "How many recent sales that median rests on. Three sales is a rumour, not a market rate - treat a thin " +
-            "block group's figure as a hint and look at its neighbours."
-        )}</td><td class="v${thin ? " thin-sample" : ""}">${rec.saleCount} sale${rec.saleCount === 1 ? "" : "s"}${
-      thin ? " - thin" : ""
-    }</td></tr>
-      </table>`;
+        }</p>
+      ${countyRow}`;
   }
 
   // --- Commute (OpenRouteService) -----------------------------------------

@@ -205,7 +205,7 @@ check(
 # cheaper sales.
 import csv as _csv
 import tempfile as _tempfile
-import json as _json
+import json
 
 tmp = _tempfile.mkdtemp()
 csv_path = os.path.join(tmp, "roll.csv")
@@ -232,15 +232,23 @@ def row(ain, roll, land, imp, lat=34.05, lon=-118.25, recorded="20240115", sqft=
 with open(csv_path, "w", newline="", encoding="utf-8") as fh:
     writer = _csv.DictWriter(fh, fieldnames=FIELDS)
     writer.writeheader()
-    # One house, three roll years, trending up. Only the newest should count.
-    writer.writerow(row("111", "2023", "500000", "500000"))
-    writer.writerow(row("111", "2024", "510000", "510000"))
-    writer.writerow(row("111", "2025", "520000", "520000"))
-    # A second house in the same block group, one roll year.
-    writer.writerow(row("222", "2025", "1000000", "1000000"))
+    # AIN 111 sold in 2022 and again in 2024 - the case a single roll year
+    # cannot see, because the later sale overwrites the earlier one. Stacked
+    # roll years recover both, and each sale's EARLIEST roll year is the one
+    # closest to the price actually paid.
+    writer.writerow(row("111", "2023", "400000", "400000", recorded="20220310"))   # 2022 sale
+    writer.writerow(row("111", "2024", "408000", "408000", recorded="20220310"))   # same sale, trended
+    writer.writerow(row("111", "2025", "600000", "600000", recorded="20240610"))   # 2024 resale
+    # Three more 2024 sales in the same block group, so the year has enough
+    # transactions for a 10th/90th percentile to be meaningful.
+    writer.writerow(row("222", "2025", "500000", "500000", recorded="20240115"))
+    writer.writerow(row("666", "2025", "700000", "700000", recorded="20240220"))
+    writer.writerow(row("777", "2025", "800000", "800000", recorded="20240320"))
+    writer.writerow(row("888", "2025", "900000", "900000", recorded="20240420"))
     # A condo: excluded by use code.
     writer.writerow(row("333", "2025", "400000", "400000", use="0500"))
-    # A long-held house: recorded in 1994, so not a recent transfer.
+    # A long-held house: recorded in 1994. It never sold in the window, but it
+    # still counts toward the block group's single-family total.
     writer.writerow(row("444", "2025", "60000", "40000", recorded="19940301"))
     # A house in the second block group.
     writer.writerow(row("555", "2025", "300000", "300000", lat=34.05, lon=-118.15))
@@ -252,35 +260,84 @@ fetch_parcel.fetch_block_groups = lambda: {
 }
 
 argv = sys.argv
-sys.argv = ["fetch-parcel-data.py", "--csv", csv_path, "--out", out_path, "--years", 3 and "3"]
+sys.argv = ["fetch-parcel-data.py", "--csv", csv_path, "--out", out_path, "--from-year", "2021"]
 try:
     fetch_parcel.main()
 finally:
     sys.argv = argv
 
 with open(out_path, encoding="utf-8") as fh:
-    result = _json.load(fh)
+    result = json.load(fh)
 
 bg1 = result["blockGroups"].get("060372011001", {})
 bg2 = result["blockGroups"].get("060372011002", {})
 
+years = bg1.get("years", {})
+
 check(
-    "a parcel repeated across roll years counts once, not three times",
-    bg1.get("saleCount") == 2,
-    f"saleCount={bg1.get('saleCount')} (two houses: AIN 111 and 222)",
+    "sales are broken out by the year the deed was recorded",
+    sorted(years) == ["2022", "2024"],
+    json.dumps(years, sort_keys=True) if False else str(sorted(years)),
 )
 check(
-    "the newest roll year's value is the one kept",
-    # AIN 111 -> 1,040,000 (2025 row), AIN 222 -> 2,000,000; median of the two.
-    bg1.get("medianSalePrice") == 1520000,
-    f"median={bg1.get('medianSalePrice')} - the 2025 row for AIN 111 is $1,040,000, not the 2023 row's $1,000,000",
+    "a house that sold twice contributes to BOTH years, not just its latest",
+    years.get("2022", {}).get("n") == 1 and years.get("2024", {}).get("n") == 5,
+    f"2022 n={years.get('2022', {}).get('n')}, 2024 n={years.get('2024', {}).get('n')}",
 )
-check("the condo is excluded", bg1.get("saleCount") != 3)
 check(
-    "a house last sold in 1994 is not treated as a recent transfer",
-    bg1.get("saleCount") == 2,
+    "the same sale repeated across roll years counts once, at its EARLIEST roll",
+    # AIN 111's 2022 sale appears in the 2023 and 2024 rolls; the 2023 roll is
+    # nearer the sale, so $800,000 rather than the trended $816,000.
+    years.get("2022", {}).get("median") == 800000,
+    f"2022 median={years.get('2022', {}).get('median')}",
 )
+check(
+    "each year gets its own median",
+    years.get("2024", {}).get("median") == 1400000,
+    f"2024 median={years.get('2024', {}).get('median')} of 1.0/1.2/1.4/1.6/1.8m",
+)
+check(
+    "a year with enough sales reports a 10th and 90th percentile",
+    years.get("2024", {}).get("p10") == 1000000 and years.get("2024", {}).get("p90") == 1800000,
+    f"p10={years.get('2024', {}).get('p10')}, p90={years.get('2024', {}).get('p90')}",
+)
+check(
+    "a year with too few sales reports no spread rather than a fake one",
+    "p10" not in years.get("2022", {}),
+    "one sale cannot have a 10th percentile",
+)
+check(
+    "every single-family parcel counts toward the total, sold or not",
+    # 111, 222, 444 (last sold 1994), 666, 777, 888 - the condo does not.
+    bg1.get("sfhTotal") == 6,
+    f"sfhTotal={bg1.get('sfhTotal')}",
+)
+check(
+    "turnover is sales that year over the block group's single-family stock",
+    abs(years.get("2024", {}).get("turnover", 0) - (5 / 6 * 100)) < 0.05,
+    f"turnover={years.get('2024', {}).get('turnover')}% (5 of 6 houses)",
+)
+check(
+    "price per square foot is a median of the year's transactions",
+    years.get("2024", {}).get("ppsf") == round(1400000 / 1500, 1),
+    f"ppsf={years.get('2024', {}).get('ppsf')}",
+)
+check("the condo is excluded", bg1.get("sfhTotal") == 6)
 check("the second block group is kept separate", bg2.get("saleCount") == 1, str(bg2))
+check(
+    "the pooled figures survive for the map's filters",
+    bg1.get("saleCount") == 6 and bg1.get("medianSalePrice"),
+    f"pooled n={bg1.get('saleCount')}, median={bg1.get('medianSalePrice')}",
+)
+check(
+    "county-wide medians per year are recorded for comparison",
+    result["meta"]["countyByYear"].get("2024", {}).get("n") == 6,
+    json.dumps(result["meta"]["countyByYear"]),
+)
+check(
+    "the file records that this export carries no lot size",
+    result["meta"]["hasLotSize"] is False,
+)
 check(
     "the payload records what the number actually is",
     "Proposition 13" in result["meta"]["note"],
