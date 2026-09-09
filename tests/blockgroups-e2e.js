@@ -596,6 +596,11 @@ async function main() {
     const url = route.request().url();
     tigerUrls.push(url);
     if (url.includes("/2/query")) {
+      // The real service answers a request naming a field it does not carry
+      // with a flat 400 - which is how the zip layer broke.
+      if (url.includes("ZCTA5CE20")) {
+        return route.fulfill(json({ error: { code: 400, message: "Failed to execute query.", details: [] } }));
+      }
       tigerQueryCount.zip++;
       return route.fulfill(json(esriFC([ZCTA])));
     }
@@ -680,6 +685,11 @@ async function main() {
     await page.check("#toggle-zip");
     await page.waitForFunction(() => document.getElementById("status-log").textContent.includes("Zip code borders: "), { timeout: 10000 });
     step("zip layer loads when toggled on", tigerQueryCount.zip > 0);
+    step(
+      "the zip query asks only for fields the service actually has",
+      !tigerUrls.some((u) => u.includes("/2/query") && u.includes("ZCTA5CE20")),
+      "ZCTA5CE20 belongs to the shapefile, not this service, and a 400 kills the whole layer"
+    );
 
     // --- Tract toggle ---
     await page.check("#toggle-tract");
@@ -1350,11 +1360,19 @@ async function main() {
       });
     });
     await page.waitForTimeout(300);
+    // Block group 3's fixture has no `years` - the shape an older parcel file
+    // has. Headers over an empty table would read as "no sales here".
     const thinCard = await page.locator("#detail-panel").innerText();
     step(
-      "a block group with no year data still shows its price section without breaking",
-      /home prices/i.test(thinCard),
-      thinCard.replace(/\n/g, " ").match(/Home prices.{0,60}/i)
+      "a parcel file with no year data falls back to the pooled figure and says why",
+      /home prices/i.test(thinCard) &&
+        thinCard.includes("$640,000") &&
+        /predates the year-by-year table/i.test(thinCard),
+      thinCard.replace(/\n/g, " ").match(/Home prices.{0,140}/i)
+    );
+    step(
+      "and it does not render an empty table",
+      (await page.locator("#detail-panel .price-table").count()) === 0
     );
     const priceMetrics = await page.evaluate(() =>
       [...document.querySelectorAll("#filter-metric-0 option")].map((o) => o.value)

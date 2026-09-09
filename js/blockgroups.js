@@ -94,7 +94,12 @@ const BG_CONFIG = {
   // Only the attributes actually used. Requesting "*" pulls every TIGERweb
   // field for thousands of polygons, which is dead weight over the wire.
   OUT_FIELDS: {
-    zip: "GEOID,ZCTA5CE20,BASENAME,NAME",
+    // BASENAME carries the five-digit code on TIGERweb's ZCTA layer. Do NOT
+    // add ZCTA5CE20 here: that field belongs to the TIGER/Line shapefile, not
+    // this service, and ArcGIS answers a request for a field it does not have
+    // with a flat 400 "Failed to execute query" - which is precisely how the
+    // zip layer broke when these field lists were introduced.
+    zip: "GEOID,BASENAME,NAME",
     tract: "GEOID,NAME,BASENAME",
     blockGroup: "GEOID,NAME,BASENAME,TRACT,BLKGRP,AREALAND",
     default: "*",
@@ -598,11 +603,18 @@ const BlockGroupApp = (() => {
 
   async function fetchBoundaries(key, bbox) {
     const layerId = await resolveLayerId(key);
-    const url = Utils.arcgisQueryUrl(BG_CONFIG.TIGERWEB, layerId, {
-      bbox,
-      outFields: BG_CONFIG.OUT_FIELDS[key] || BG_CONFIG.OUT_FIELDS.default,
-    });
-    return Utils.fetchEsriAsGeoJSON(url, { timeoutMs: 40000 });
+    const build = (fields) => Utils.arcgisQueryUrl(BG_CONFIG.TIGERWEB, layerId, { bbox, outFields: fields });
+    const wanted = BG_CONFIG.OUT_FIELDS[key] || BG_CONFIG.OUT_FIELDS.default;
+    try {
+      return await Utils.fetchEsriAsGeoJSON(build(wanted), { timeoutMs: 40000 });
+    } catch (err) {
+      // Naming fields keeps these responses small, but a field that has been
+      // renamed between TIGERweb vintages fails the whole layer. One retry
+      // for everything costs a bigger response and keeps the map working.
+      if (wanted === "*") throw err;
+      Utils.logStatus(key, "warn", `Trimmed field list rejected (${err.message}); retrying with all fields.`);
+      return Utils.fetchEsriAsGeoJSON(build("*"), { timeoutMs: 40000 });
+    }
   }
 
   // --- Hazard / environment overlays --------------------------------------
@@ -1011,6 +1023,22 @@ const BlockGroupApp = (() => {
     if (!rec) return "";
     const years = rec.years || {};
     const yearKeys = Object.keys(years).sort((a, b) => Number(b) - Number(a));
+
+    // A parcel file generated before the year-by-year rewrite carries a single
+    // pooled median and no `years` at all. Showing an empty table under a full
+    // set of headers reads as "no sales here", which is wrong and alarming -
+    // say what is actually missing instead.
+    if (!yearKeys.length) {
+      return `
+        <div class="section-label">Home prices</div>
+        <table>
+          <tr><td class="k">Median home price</td><td class="v key-figure">${Utils.fmtCurrency(rec.medianSalePrice)}</td></tr>
+          <tr><td class="k">Based on</td><td class="v">${rec.saleCount || 0} sale${rec.saleCount === 1 ? "" : "s"}</td></tr>
+        </table>
+        <p class="src-note">This parcel file predates the year-by-year table. Re-run
+          <code>${fetchCommand().replace("fetch-blockgroup-data.py", "fetch-parcel-data.py")}</code>
+          to get medians, percentiles and turnover per year.</p>`;
+    }
     const county = (parcelMeta && parcelMeta.countyByYear) || {};
 
     const rows = yearKeys
@@ -1360,13 +1388,21 @@ const BlockGroupApp = (() => {
     return esriExportTileLayer(url, { opacity: 0.55, pane: "rasterOverlay" });
   }
 
+  // Candidates are consumed as they are tried, so this has to be refilled at
+  // the start of each attempt. Without that, turning the layer off and on
+  // again found an empty list and reported a failure with no reason at all -
+  // the "Aviation noise failed to load:" with nothing after the colon.
   let noiseCandidates = null;
 
+  function resetNoiseCandidates() {
+    noiseCandidates = null;
+  }
+
   async function addNoiseLayer() {
-    if (!noiseCandidates) {
-      noiseCandidates = noiseServerUrl
-        ? [noiseServerUrl]
-        : BG_CONFIG.NOISE.servers.concat(await discoverNoiseServices(BG_CONFIG.NOISE.discoverFrom));
+    if (!noiseCandidates || !noiseCandidates.length) {
+      noiseCandidates = BG_CONFIG.NOISE.servers.concat(
+        await discoverNoiseServices(BG_CONFIG.NOISE.discoverFrom)
+      );
     }
     const problems = [];
 
@@ -1385,7 +1421,7 @@ const BlockGroupApp = (() => {
         problems.push(`${url}: ${err.message}`);
       }
     }
-    throw new Error(problems.join(" | "));
+    throw new Error(problems.length ? problems.join(" | ") : "no aviation noise service is configured");
   }
 
   // If the tiles themselves fail - a cached service missing this area, an
@@ -3111,6 +3147,7 @@ const BlockGroupApp = (() => {
 
   async function onToggleNoise(checked) {
     enabled.noise = checked;
+    if (checked) resetNoiseCandidates(); // start each attempt from the full list
     if (!checked) {
       if (noiseLayer) {
         map.removeLayer(noiseLayer);
