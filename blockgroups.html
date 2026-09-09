@@ -94,6 +94,35 @@
         <div id="wind-legend" class="legend-box hidden"></div>
       </section>
 
+      <section id="schools-section">
+        <h2>Schools</h2>
+        <ul class="toggle-list">
+          <li>
+            <input type="checkbox" id="toggle-schools" />
+            <label for="toggle-schools">
+              <span>School locations</span>
+              <span class="layer-desc">CA Dept of Education 2024-25 public schools, coloured by level. Zoom <span class="zoom-req">11+</span>.</span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-school-zones" />
+            <label for="toggle-school-zones">
+              <span>Attendance zones</span>
+              <span class="layer-desc">LAUSD's own elementary / middle / high boundaries &mdash; which school an address is assigned to. Zoom <span class="zoom-req">10+</span>.</span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-school-districts" />
+            <label for="toggle-school-districts">
+              <span>District boundaries</span>
+              <span class="layer-desc">Elementary, secondary and unified districts county-wide (Census TIGERweb).</span>
+            </label>
+          </li>
+        </ul>
+        <div id="schools-legend" class="legend-box hidden"></div>
+        <div id="schoolZones-legend" class="legend-box hidden"></div>
+      </section>
+
       <section id="density-section">
         <h2>Population density</h2>
         <ul class="toggle-list">

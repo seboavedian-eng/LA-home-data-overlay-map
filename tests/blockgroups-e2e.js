@@ -85,6 +85,49 @@ const CES_TRACT = esriPolygon(
   [[-118.26, 34.04], [-118.26, 34.06], [-118.20, 34.06], [-118.20, 34.04]]
 );
 
+// School points. Grade spans are deliberately written the way CDE writes
+// them, so the level classifier is exercised on real-shaped input.
+function esriPoint(attributes, x, y) {
+  return { attributes, geometry: { x, y } };
+}
+const SCHOOL_ELEM = esriPoint(
+  { SchoolName: "Spring Street Elementary", District: "Los Angeles Unified", GSoffered: "K-5", StatusType: "Active", City: "Los Angeles" },
+  -118.255,
+  34.05
+);
+const SCHOOL_MIDDLE = esriPoint(
+  { SchoolName: "Civic Center Middle", District: "Los Angeles Unified", GSoffered: "6-8", StatusType: "Active", City: "Los Angeles" },
+  -118.245,
+  34.05
+);
+const SCHOOL_HIGH = esriPoint(
+  { SchoolName: "Downtown Senior High", District: "Los Angeles Unified", GSoffered: "9-12", StatusType: "Active", City: "Los Angeles" },
+  -118.235,
+  34.05
+);
+// Closed sites stay in the published file; drawing them puts dots on
+// buildings that are not schools any more.
+const SCHOOL_CLOSED = esriPoint(
+  { SchoolName: "Old Closed Elementary", GSoffered: "K-5", StatusType: "Closed" },
+  -118.225,
+  34.05
+);
+
+// LAUSD attendance zones: one per level, all covering block group A.
+const ZONE_ELEM = esriPolygon({ SCHOOL: "Spring Street Elementary" }, [
+  [-118.27, 34.03], [-118.27, 34.07], [-118.23, 34.07], [-118.23, 34.03],
+]);
+const ZONE_MIDDLE = esriPolygon({ SCHOOL: "Civic Center Middle" }, [
+  [-118.28, 34.02], [-118.28, 34.08], [-118.22, 34.08], [-118.22, 34.02],
+]);
+const ZONE_HIGH = esriPolygon({ SCHOOL: "Downtown Senior High" }, [
+  [-118.29, 34.01], [-118.29, 34.09], [-118.21, 34.09], [-118.21, 34.01],
+]);
+
+const SCHOOL_DISTRICT = esriPolygon({ NAME: "Los Angeles Unified School District", BASENAME: "Los Angeles Unified" }, [
+  [-118.40, 33.90], [-118.40, 34.20], [-118.10, 34.20], [-118.10, 33.90],
+]);
+
 const TRACT = esriPolygon({ GEOID: "06037201100", NAME: "Census Tract 2011" }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.22, 34.06], [-118.22, 34.04],
 ]);
@@ -366,10 +409,44 @@ async function main() {
     return route.fulfill(json(esriFC([CES_TRACT])));
   });
 
+  // LA City GeoHub: LAUSD attendance boundaries, one sublayer per level,
+  // plus a "Key Codes" lookup table that must never be drawn.
+  let zoneQueries = [];
+  await page.route("**://maps.lacity.org/**", (route) => {
+    const url = route.request().url();
+    if (url.includes("/query")) {
+      zoneQueries.push(url);
+      if (url.includes("/4/query")) return route.fulfill(json(esriFC([ZONE_ELEM])));
+      if (url.includes("/5/query")) return route.fulfill(json(esriFC([ZONE_MIDDLE])));
+      if (url.includes("/6/query")) return route.fulfill(json(esriFC([ZONE_HIGH])));
+      return route.fulfill(json(esriFC([])));
+    }
+    return route.fulfill(
+      json({
+        layers: [
+          { id: 0, name: "Schools (LAUSD)", geometryType: "esriGeometryPoint" },
+          { id: 4, name: "LAUSD Attendance Boundary (Elementary Schools)", geometryType: "esriGeometryPolygon" },
+          { id: 5, name: "LAUSD Attendance Boundary (Middle Schools)", geometryType: "esriGeometryPolygon" },
+          { id: 6, name: "LAUSD Attendance Boundary (High Schools)", geometryType: "esriGeometryPolygon" },
+          { id: 7, name: "LAUSD Attendance Boundary Key Codes (Elementary Schools)", geometryType: "esriGeometryPolygon" },
+        ],
+      })
+    );
+  });
+
+  // CA Dept of Education school sites.
+  let schoolQueries = [];
+  await page.route("**://services3.arcgis.com/**", (route) => {
+    schoolQueries.push(route.request().url());
+    return route.fulfill(json({ ...esriFC([SCHOOL_ELEM, SCHOOL_MIDDLE, SCHOOL_HIGH, SCHOOL_CLOSED]), geometryType: "esriGeometryPoint" }));
+  });
+
   let tigerQueryCount = { zip: 0, tract: 0, bg: 0 };
   let decoyQueryCount = 0;
+  const tigerUrls = [];
   await page.route("**://tigerweb.geo.census.gov/**", (route) => {
     const url = route.request().url();
+    tigerUrls.push(url);
     if (url.includes("/2/query")) {
       tigerQueryCount.zip++;
       return route.fulfill(json(esriFC([ZCTA])));
@@ -381,6 +458,10 @@ async function main() {
     if (url.includes("/10/query")) {
       tigerQueryCount.bg++;
       return route.fulfill(json(esriFC([BG_A, BG_B, BG_C])));
+    }
+    // School districts live on the same TIGERweb service as the boundaries.
+    if (url.includes("/13/query") || url.includes("/14/query") || url.includes("/16/query")) {
+      return route.fulfill(json(esriFC([SCHOOL_DISTRICT])));
     }
     // Empty layers standing in for TIGERweb's tribal/label layers, which
     // query successfully but return nothing in most of LA County.
@@ -400,6 +481,10 @@ async function main() {
           { id: 9, name: "Census Tracts Labels", geometryType: "esriGeometryPoint" },
           { id: 11, name: "Census Block Groups Labels", geometryType: "esriGeometryPoint" },
           { id: 2, name: "2020 Census ZIP Code Tabulation Areas", geometryType: "esriGeometryPolygon" },
+          { id: 13, name: "Elementary School Districts", geometryType: "esriGeometryPolygon" },
+          { id: 14, name: "Unified School Districts", geometryType: "esriGeometryPolygon" },
+          { id: 15, name: "Unified School Districts Labels", geometryType: "esriGeometryPoint" },
+          { id: 16, name: "Secondary School Districts", geometryType: "esriGeometryPolygon" },
           { id: 8, name: "Census Tracts", geometryType: "esriGeometryPolygon" },
           { id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" },
         ],
@@ -1023,6 +1108,118 @@ async function main() {
         });
         return styled;
       })
+    );
+
+    // --- Schools: dots, zones, districts ---
+    await page.click("#toggle-schools");
+    await page.waitForTimeout(700);
+    const schoolDots = await page.evaluate(() => {
+      const out = [];
+      BlockGroupApp.state.layers.schools.eachLayer((l) =>
+        out.push({
+          name: l.feature.properties.SchoolName,
+          color: l.options.fillColor,
+        })
+      );
+      return out;
+    });
+    step(
+      "closed school sites are not drawn",
+      schoolDots.length === 3 && !schoolDots.some((d) => /Closed/.test(d.name)),
+      JSON.stringify(schoolDots.map((d) => d.name))
+    );
+    step(
+      "school dots are colour-coded elementary / middle / high",
+      schoolDots.find((d) => /Elementary/.test(d.name)).color === "#2a7fbf" &&
+        schoolDots.find((d) => /Middle/.test(d.name)).color === "#7b3fa0" &&
+        schoolDots.find((d) => /High/.test(d.name)).color === "#c2410c",
+      JSON.stringify(schoolDots)
+    );
+    step(
+      "a K-5 span is read as elementary and a 9-12 span as high, not both",
+      schoolDots.find((d) => /Elementary/.test(d.name)).color !==
+        schoolDots.find((d) => /High/.test(d.name)).color
+    );
+    const schoolsLegend = await page.locator("#schools-legend").innerText();
+    step(
+      "the school legend names the three levels",
+      /elementary/i.test(schoolsLegend) && /middle/i.test(schoolsLegend) && /high/i.test(schoolsLegend),
+      schoolsLegend.replace(/\n/g, " | ")
+    );
+
+    // Attendance zones: the layer, and the names they put on the card.
+    await page.click("#toggle-school-zones");
+    await page.waitForTimeout(800);
+    step(
+      "attendance zones load one polygon per level",
+      (await page.evaluate(() => BlockGroupApp.state.layers.schoolZones.getLayers().length)) === 3
+    );
+    step(
+      "the 'Key Codes' lookup layer is never queried as a boundary",
+      !zoneQueries.some((u) => u.includes("/7/query")),
+      JSON.stringify(zoneQueries.map((u) => u.match(/\/(\d+)\/query/)[1]))
+    );
+
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(600);
+    const schoolCard = await page.locator("#detail-panel").innerText();
+    step(
+      "the card names the assigned elementary, middle and high school",
+      schoolCard.includes("Spring Street Elementary") &&
+        schoolCard.includes("Civic Center Middle") &&
+        schoolCard.includes("Downtown Senior High"),
+      schoolCard.slice(schoolCard.toUpperCase().indexOf("SCHOOLS")).replace(/\n/g, " ").slice(0, 160)
+    );
+    step(
+      "each school on the card carries its level's colour dot",
+      (await page.evaluate(() =>
+        [...document.querySelectorAll("#detail-panel .school-dot")].map((el) => el.style.background)
+      )).length === 3
+    );
+
+    // District boundaries come from TIGERweb - the same service the tract and
+    // block group layers already use.
+    await page.click("#toggle-school-districts");
+    await page.waitForTimeout(700);
+    step(
+      "district boundaries load from TIGERweb's school district sublayers",
+      (await page.evaluate(() => BlockGroupApp.state.layers.schoolDistricts.getLayers().length)) >= 1
+    );
+    step(
+      "the district label sublayer is never queried",
+      !tigerUrls.some((u) => u.includes("/15/query")),
+      JSON.stringify(tigerUrls.filter((u) => /\/1[3-6]\/query/.test(u)).map((u) => u.match(/\/(\d+)\/query/)[1]))
+    );
+
+    await page.click("#toggle-schools");
+    await page.click("#toggle-school-zones");
+    await page.click("#toggle-school-districts");
+    await page.waitForTimeout(300);
+
+    // --- Income filters step in $5k ---
+    await page.selectOption("#filter-metric-0", "medianIncome");
+    await page.waitForTimeout(150);
+    step(
+      "the median income filter steps in $5,000",
+      (await page.getAttribute("#filter-value-0", "step")) === "5000",
+      await page.getAttribute("#filter-value-0", "step")
+    );
+    await page.selectOption("#filter-metric-0", "perCapitaIncome");
+    await page.waitForTimeout(150);
+    step(
+      "per-capita income steps in $5,000 too",
+      (await page.getAttribute("#filter-value-0", "step")) === "5000"
+    );
+    await page.selectOption("#filter-metric-0", "bachelors");
+    await page.waitForTimeout(150);
+    step(
+      "a percentage filter is not forced onto a $5,000 step",
+      (await page.getAttribute("#filter-value-0", "step")) === "any",
+      await page.getAttribute("#filter-value-0", "step")
     );
 
     // --- Fire hazard zones (CAL FIRE FHSZ) ---

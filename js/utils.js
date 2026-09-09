@@ -331,6 +331,7 @@ const Utils = (() => {
     discoverLayerId,
     arcgisQueryUrl,
     bboxToEnvelopeParam,
+    pointInRing,
     pickField,
     fmtNumber,
     fmtCurrency,

@@ -222,6 +222,96 @@ const BG_CONFIG = {
       ],
       outFields: "*",
     },
+    schoolDistricts: {
+      label: "School district boundaries",
+      minZoom: 8,
+      simplifyDegrees: 0.0005,
+      servers: [
+        // TIGERweb again - the same host the tract and block group layers
+        // come from, which keeps this to one more query against a server
+        // already known to work. It carries elementary, secondary and
+        // unified districts as separate sublayers; all three are merged,
+        // because a given address can sit in an elementary district AND a
+        // secondary district at once.
+        {
+          url: "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Current/MapServer",
+          discover: {
+            nameHint: "school district",
+            match: /school district/i,
+            exclude: /label/i,
+            polygonsOnly: true,
+            fallbackId: 14,
+          },
+        },
+        // CA Dept of Education's own composite, which carries district-level
+        // attributes TIGERweb does not.
+        {
+          url: "https://services3.arcgis.com/fdvHcZVgB2QSRNkL/arcgis/rest/services/CaliforniaSchoolDistrictAreas2425/FeatureServer",
+          layerId: 0,
+        },
+        {
+          url: "https://services.gis.ca.gov/arcgis/rest/services/Boundaries/CA_School_Districts/MapServer",
+          discover: { nameHint: "school district", match: /school district|unified|elementary|secondary/i, exclude: /label/i, polygonsOnly: true, fallbackId: 0 },
+        },
+      ],
+      outFields: "*",
+    },
+    schoolZones: {
+      label: "School attendance zones (LAUSD)",
+      minZoom: 10,
+      simplifyDegrees: 0.0002,
+      servers: [
+        // LA City's GeoHub publishes LAUSD's own attendance boundaries, split
+        // by level. This is the layer that answers "which school does this
+        // address go to" - district boundaries cannot.
+        {
+          url: "https://maps.lacity.org/lahub/rest/services/LAUSD_Schools/MapServer",
+          discover: {
+            nameHint: "attendance boundary",
+            match: /attendance boundary/i,
+            // "Key Codes" layers are lookup tables of boundary ids, not
+            // boundaries.
+            exclude: /key code|label/i,
+            polygonsOnly: true,
+            fallbackId: 4,
+          },
+        },
+      ],
+      outFields: "*",
+    },
+  },
+
+  // School points. A FeatureServer of points rather than polygons, so it gets
+  // its own small pipeline rather than riding the overlay one.
+  SCHOOL_POINTS: {
+    label: "Schools",
+    minZoom: 11,
+    servers: [
+      // CA Dept of Education, official 2024-25 public school sites. Proven
+      // reachable with CORS from a browser.
+      "https://services3.arcgis.com/fdvHcZVgB2QSRNkL/arcgis/rest/services/SchoolSites2425/FeatureServer/0",
+      // LA City GeoHub's copy of LAUSD schools, as a fallback.
+      "https://maps.lacity.org/lahub/rest/services/LAUSD_Schools/MapServer/0",
+    ],
+    // Field names differ between those two, so everything is read by
+    // candidate list rather than by exact key.
+    FIELDS: {
+      name: ["SchoolName", "School", "NAME", "SCHOOL_NAME", "Name"],
+      district: ["District", "DistrictName", "DIST_NAME", "LEA_NAME"],
+      grades: ["GSoffered", "GradeSpan", "GS_offered", "Grades", "GRADE_SPAN", "GRADES"],
+      level: ["SOCType", "SchoolType", "Type", "LEVEL", "SCHOOL_LEVEL", "GradeLevel"],
+      status: ["StatusType", "Status"],
+      charter: ["Charter", "CharterSchool"],
+      city: ["City", "CITY"],
+    },
+  },
+
+  // One colour per level, used for the dots, the legend and the card.
+  SCHOOL_LEVEL_COLORS: {
+    elementary: "#2a7fbf",
+    middle: "#7b3fa0",
+    high: "#c2410c",
+    other: "#6b7280",
   },
 
   // Fire Hazard Severity Zone classes. CAL FIRE only maps three, and only
@@ -304,7 +394,11 @@ const BlockGroupApp = (() => {
   let map;
   const layers = {};        // key -> L.geoJSON currently on the map
   const layerIds = {};      // key -> resolved TIGERweb layer id
-  const enabled = { zip: false, tract: false, blockGroup: false, fire: false, pollution: false, wind: false };
+  const enabled = {
+    zip: false, tract: false, blockGroup: false,
+    fire: false, pollution: false, wind: false,
+    schoolDistricts: false, schoolZones: false, schools: false,
+  };
   const loadedBBox = {};    // key -> padded bbox covered by the current layer
   let censusData = null;    // { meta, blockGroups } from the local snapshot
   let censusDataError = null;
@@ -750,6 +844,214 @@ const BlockGroupApp = (() => {
         <tr><td class="k">CalEnviroScreen score</td><td class="v">${score.toFixed(1)}th pct</td></tr>
         <tr><td class="k">Band</td><td class="v">${bucket ? bucket.label : "Unknown"}</td></tr>
       </table>`;
+  }
+
+  // --- Schools ------------------------------------------------------------
+  // Three related but separate things, which is why they are three toggles:
+  //   districts  - who runs the schools (county-wide, always available)
+  //   zones      - which school an address is assigned to (LAUSD only, but
+  //                that is most of the county's population)
+  //   points     - where the schools actually are
+  let schoolPointsUrl = null;
+
+  function schoolLevel(props) {
+    const F = BG_CONFIG.SCHOOL_POINTS.FIELDS;
+    const text = [Utils.pickField(props, F.level), Utils.pickField(props, F.grades), Utils.pickField(props, F.name)]
+      .filter((v) => v !== undefined && v !== null)
+      .join(" ")
+      .toLowerCase();
+
+    // Order matters: "senior high" contains "high", and a K-12 span contains
+    // both, so the most specific test has to run first.
+    if (/high school|senior high|\b9-12\b|\b9\u201312\b/.test(text)) return "high";
+    if (/middle|junior high|intermediate|\b6-8\b|\b7-8\b/.test(text)) return "middle";
+    if (/elementary|primary|\bk-5\b|\bk-6\b|\bk-8\b|kindergarten/.test(text)) return "elementary";
+
+    // Fall back to reading the grade span numerically: the highest grade
+    // offered decides the level.
+    const span = String(Utils.pickField(props, F.grades) || "");
+    const nums = span.match(/\d+/g);
+    if (nums && nums.length) {
+      const top = Math.max(...nums.map(Number));
+      if (top >= 9) return "high";
+      if (top >= 6) return "middle";
+      return "elementary";
+    }
+    return "other";
+  }
+
+  function schoolMarker(feature, latlng) {
+    const level = schoolLevel(feature.properties);
+    return L.circleMarker(latlng, {
+      radius: 5,
+      color: "#ffffff",
+      weight: 1.5,
+      fillColor: BG_CONFIG.SCHOOL_LEVEL_COLORS[level] || BG_CONFIG.SCHOOL_LEVEL_COLORS.other,
+      fillOpacity: 0.95,
+    });
+  }
+
+  function schoolPopup(props) {
+    const F = BG_CONFIG.SCHOOL_POINTS.FIELDS;
+    const name = Utils.pickField(props, F.name) || "School";
+    const rows = [
+      ["District", Utils.pickField(props, F.district)],
+      ["Grades", Utils.pickField(props, F.grades)],
+      ["Level", schoolLevel(props)],
+      ["City", Utils.pickField(props, F.city)],
+    ]
+      .filter(([, v]) => v !== undefined && v !== null && v !== "")
+      .map(([k, v]) => `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`)
+      .join("");
+    return `<div class="school-popup"><strong>${name}</strong><table>${rows}</table>
+      <a href="${Utils.greatSchoolsSearchUrl(name)}" target="_blank" rel="noopener">GreatSchools rating &rarr;</a></div>`;
+  }
+
+  async function fetchSchoolPoints(bbox) {
+    const spec = BG_CONFIG.SCHOOL_POINTS;
+    const candidates = schoolPointsUrl ? [schoolPointsUrl] : spec.servers;
+    const problems = [];
+
+    for (const url of candidates) {
+      try {
+        const gj = await Utils.fetchEsriAsGeoJSON(
+          Utils.arcgisQueryUrl(url, null, { bbox, outFields: "*" }),
+          { timeoutMs: 30000 }
+        );
+        schoolPointsUrl = url;
+        // Closed and merged schools are still in the file; drawing them puts
+        // dots on buildings that are not schools any more.
+        const open = gj.features.filter((f) => {
+          const status = Utils.pickField(f.properties, spec.FIELDS.status);
+          return status === undefined || /active|open/i.test(String(status));
+        });
+        Utils.logStatus("schools", "info", `Schools: ${open.length} open sites from ${url.split("/services/")[1] || url}.`);
+        return { type: "FeatureCollection", features: open };
+      } catch (err) {
+        problems.push(`${url}: ${err.message}`);
+      }
+    }
+    throw new Error(problems.join(" | "));
+  }
+
+  // --- Which schools serve this block group -------------------------------
+  // The attendance zone that contains the block group's centre is the answer.
+  // Zones are only in memory when that layer is on, so when it is off the
+  // same question is asked of the server directly - one small point query,
+  // cached per block group.
+  const schoolsByGeoid = {};
+
+  function pointInGeometry(lat, lon, geometry) {
+    const rings =
+      geometry.type === "Polygon"
+        ? [geometry.coordinates]
+        : geometry.type === "MultiPolygon"
+        ? geometry.coordinates
+        : [];
+    return rings.some((polygon) => {
+      if (!Utils.pointInRing([lon, lat], polygon[0])) return false;
+      // A hit inside a hole is not a hit.
+      return !polygon.slice(1).some((hole) => Utils.pointInRing([lon, lat], hole));
+    });
+  }
+
+  function zoneNameOf(props) {
+    return (
+      Utils.pickField(props, ["SCHOOL", "School", "SchoolName", "NAME", "Name", "LABEL"]) || null
+    );
+  }
+
+  function zonesFromLoadedLayer(lat, lon) {
+    if (!layers.schoolZones) return null;
+    const hits = [];
+    layers.schoolZones.eachLayer((l) => {
+      if (l.feature && l.feature.geometry && pointInGeometry(lat, lon, l.feature.geometry)) {
+        hits.push({ layer: l.feature.properties.SOURCE_LAYER || "", name: zoneNameOf(l.feature.properties) });
+      }
+    });
+    return hits;
+  }
+
+  async function lookupSchools(geoid, layer) {
+    if (schoolsByGeoid[geoid] !== undefined) return;
+    const center = layer && layer.getBounds ? layer.getBounds().getCenter() : null;
+    if (!center) return;
+
+    const fromLoaded = zonesFromLoadedLayer(center.lat, center.lng);
+    if (fromLoaded && fromLoaded.length) {
+      schoolsByGeoid[geoid] = fromLoaded;
+      if (selectedProps && geoidOf(selectedProps) === geoid) renderSelection();
+      return;
+    }
+
+    schoolsByGeoid[geoid] = null; // in flight; stops a second click re-asking
+    try {
+      const source = await resolveOverlaySource("schoolZones");
+      const hits = [];
+      for (const sub of source.sublayers) {
+        const url = Utils.arcgisQueryUrl(source.url, sub.id, {
+          outFields: "*",
+          extraParams: {
+            geometry: `${center.lng},${center.lat}`,
+            geometryType: "esriGeometryPoint",
+            inSR: "4326",
+            spatialRel: "esriSpatialRelIntersects",
+            returnGeometry: "false",
+          },
+        });
+        const data = await Utils.fetchJSON(url, { timeoutMs: 20000 });
+        (data.features || []).forEach((f) => {
+          const name = zoneNameOf(f.attributes || {});
+          if (name) hits.push({ layer: sub.name, name });
+        });
+      }
+      schoolsByGeoid[geoid] = hits;
+    } catch (err) {
+      schoolsByGeoid[geoid] = [];
+      Utils.logStatus("schoolZones", "warn", `Could not look up schools for ${geoid}: ${err.message}`);
+    }
+    if (selectedProps && geoidOf(selectedProps) === geoid) renderSelection();
+  }
+
+  // A zone sublayer is named e.g. "LAUSD Attendance Boundary (Middle
+  // Schools)", which is where the level comes from.
+  function zoneLevel(layerName) {
+    const t = String(layerName).toLowerCase();
+    if (t.includes("high")) return "high";
+    if (t.includes("middle")) return "middle";
+    if (t.includes("elementary")) return "elementary";
+    return "other";
+  }
+
+  function schoolRows(props) {
+    const geoid = geoidOf(props);
+    const hits = schoolsByGeoid[geoid];
+    if (hits === undefined) return "";
+    if (hits === null) {
+      return `<div class="section-label">Schools</div><p class="src-note">Looking up assigned schools&hellip;</p>`;
+    }
+    if (!hits.length) {
+      return `<div class="section-label">Schools${infoIcon(
+        "Assigned-school boundaries are published by each district, and only LAUSD's are wired up here. " +
+          "Outside LAUSD - Long Beach, Pasadena, Glendale, Santa Monica-Malibu and the rest - no boundary is shown rather than a guess."
+      )}</div><p class="src-note">No published attendance boundary covers this block group.</p>`;
+    }
+
+    const rows = hits
+      .map(
+        (h) =>
+          `<tr><td class="k"><span class="school-dot" style="background:${
+            BG_CONFIG.SCHOOL_LEVEL_COLORS[zoneLevel(h.layer)] || BG_CONFIG.SCHOOL_LEVEL_COLORS.other
+          }"></span>${zoneLevel(h.layer).replace(/^./, (c) => c.toUpperCase())}</td>` +
+          `<td class="v">${h.name}</td></tr>`
+      )
+      .join("");
+
+    return `<div class="section-label">Schools${infoIcon(
+      "The school whose attendance boundary contains the centre of this block group (LAUSD's own boundaries). " +
+        "A large block group can straddle two zones, and magnet, charter and permit options are not attendance-based at all - " +
+        "so treat this as the default assignment, not a guarantee."
+    )}</div><table>${rows}</table>`;
   }
 
   // --- Wind (Global Wind Atlas 3) -----------------------------------------
@@ -1319,6 +1621,7 @@ const BlockGroupApp = (() => {
       ${incomeBracketBars(record)}
       ${compact ? "" : `<p class="src-note">Source: ACS B19013 / B19301${geoNote("income")}</p>`}
 
+      ${schoolRows(props)}
       ${enabled.pollution ? cesRows(props) : ""}
       ${enabled.wind ? windRows(feature) : ""}
 
@@ -1354,11 +1657,15 @@ const BlockGroupApp = (() => {
     medianIncome: {
       label: "Median household income ($)",
       unit: "$",
+      // Dollar filters step in $5k: the arrows and the scroll wheel move by a
+      // meaningful amount instead of $1 at a time.
+      step: 5000,
       value: (r) => (r.medianHouseholdIncome != null ? r.medianHouseholdIncome : null),
     },
     perCapitaIncome: {
       label: "Per-capita income ($)",
       unit: "$",
+      step: 5000,
       value: (r) => (r.perCapitaIncome != null ? r.perCapitaIncome : null),
     },
     population: {
@@ -1512,6 +1819,11 @@ const BlockGroupApp = (() => {
     }
   }
 
+  function stepFor(metricKey) {
+    const m = metricFor(metricKey);
+    return m && m.step ? m.step : "any";
+  }
+
   function renderFilterRows() {
     const wrap = document.getElementById("filter-rows");
     const options = [
@@ -1537,7 +1849,7 @@ const BlockGroupApp = (() => {
           <option value="above" ${f.op === "above" ? "selected" : ""}>above</option>
           <option value="below" ${f.op === "below" ? "selected" : ""}>below</option>
         </select>
-        <input type="number" id="filter-value-${i}" value="${f.value}" step="any" />
+        <input type="number" id="filter-value-${i}" value="${f.value}" step="${stepFor(f.metric)}" min="0" />
       </div>`
       )
       .join("");
@@ -1549,6 +1861,15 @@ const BlockGroupApp = (() => {
       });
       document.getElementById(`filter-metric-${i}`).addEventListener("change", (e) => {
         f.metric = e.target.value;
+        // The step belongs to the metric, so it has to follow a change of
+        // metric without redrawing (and losing focus on) the whole row.
+        const box = document.getElementById(`filter-value-${i}`);
+        const step = stepFor(f.metric);
+        box.step = step;
+        if (step !== "any" && box.value !== "") {
+          box.value = Math.round(Number(box.value) / step) * step;
+          f.value = box.value;
+        }
         applyFilters();
       });
       document.getElementById(`filter-op-${i}`).addEventListener("change", (e) => {
@@ -1638,6 +1959,7 @@ const BlockGroupApp = (() => {
     document.getElementById("detail-panel").innerHTML = detailHTML(props, record, { feature: layer.feature });
 
     lookupZip(geoidOf(props), layer);
+    lookupSchools(geoidOf(props), layer);
   }
 
   // After a layer reload the polygons are new objects, so the highlight has
@@ -1686,6 +2008,48 @@ const BlockGroupApp = (() => {
       });
     }
 
+    if (key === "schoolDistricts") {
+      return L.geoJSON(geojson, {
+        style: { color: "#6d28d9", weight: 2, fill: false, opacity: 0.85, dashArray: "6 3" },
+        onEachFeature: (feature, layer) => {
+          const name =
+            Utils.pickField(feature.properties, ["NAME", "BASENAME", "DistrictName", "District", "LEA_NAME"]) ||
+            "School district";
+          layer.bindTooltip(`${name}<br><span style="opacity:.7">${feature.properties.SOURCE_LAYER || ""}</span>`, {
+            sticky: true,
+          });
+        },
+      });
+    }
+
+    if (key === "schoolZones") {
+      return L.geoJSON(geojson, {
+        style: (feature) => {
+          const level = zoneLevel(feature.properties.SOURCE_LAYER || "");
+          const color = BG_CONFIG.SCHOOL_LEVEL_COLORS[level] || BG_CONFIG.SCHOOL_LEVEL_COLORS.other;
+          return { color, weight: 1.4, fillColor: color, fillOpacity: 0.08 };
+        },
+        onEachFeature: (feature, layer) => {
+          const name = zoneNameOf(feature.properties) || "Attendance zone";
+          layer.bindTooltip(`${name}<br><span style="opacity:.7">${feature.properties.SOURCE_LAYER || ""}</span>`, {
+            sticky: true,
+          });
+        },
+      });
+    }
+
+    if (key === "schools") {
+      return L.geoJSON(geojson, {
+        pointToLayer: schoolMarker,
+        onEachFeature: (feature, layer) => {
+          layer.bindTooltip(
+            Utils.pickField(feature.properties, BG_CONFIG.SCHOOL_POINTS.FIELDS.name) || "School"
+          );
+          layer.bindPopup(schoolPopup(feature.properties));
+        },
+      });
+    }
+
     if (key === "blockGroup") {
       return L.geoJSON(geojson, {
         style: (feature) => styleForBlockGroup(feature),
@@ -1711,12 +2075,14 @@ const BlockGroupApp = (() => {
   }
 
   function labelFor(key) {
+    if (key === "schools") return BG_CONFIG.SCHOOL_POINTS.label;
     const overlay = BG_CONFIG.OVERLAYS[key];
     if (overlay) return overlay.label;
     return { zip: "Zip code borders", tract: "Census tract borders", blockGroup: "Block group borders" }[key];
   }
 
   function minZoomFor(key) {
+    if (key === "schools") return BG_CONFIG.SCHOOL_POINTS.minZoom;
     const overlay = BG_CONFIG.OVERLAYS[key];
     return overlay ? overlay.minZoom : BG_CONFIG.MIN_ZOOM[key];
   }
@@ -1764,9 +2130,12 @@ const BlockGroupApp = (() => {
     const label = labelFor(key);
     Utils.logStatus(key, "info", `Loading ${label}...`);
     try {
-      const geojson = BG_CONFIG.OVERLAYS[key]
-        ? await fetchOverlay(key, bbox)
-        : await fetchBoundaries(key, bbox);
+      const geojson =
+        key === "schools"
+          ? await fetchSchoolPoints(bbox)
+          : BG_CONFIG.OVERLAYS[key]
+          ? await fetchOverlay(key, bbox)
+          : await fetchBoundaries(key, bbox);
       if (!enabled[key]) return; // toggled off while the request was in flight
 
       if (layers[key]) map.removeLayer(layers[key]);
@@ -1774,6 +2143,7 @@ const BlockGroupApp = (() => {
       // Hazard and pollution are area fills: they belong under the boundary
       // lines and the block group polygons, not on top of them.
       if (BG_CONFIG.OVERLAYS[key] && layers[key].bringToBack) layers[key].bringToBack();
+      if (key === "schools" && layers[key].bringToFront) layers[key].bringToFront();
       loadedBBox[key] = bbox;
       if (key === "pollution") renderSelection(); // the open card gains its CES rows
 
@@ -1858,7 +2228,7 @@ const BlockGroupApp = (() => {
         document.getElementById("detail-panel").innerHTML =
           '<p class="hint">Turn on <strong>Block Group Borders</strong>, zoom in, and click a block group.</p>';
       }
-      if (BG_CONFIG.OVERLAYS[key]) {
+      if (BG_CONFIG.OVERLAYS[key] || key === "schools") {
         renderOverlayLegend(key);
         if (key === "pollution") renderSelection();
       }
@@ -1866,7 +2236,7 @@ const BlockGroupApp = (() => {
       return;
     }
     if (key === "blockGroup") loadCensusData();
-    if (BG_CONFIG.OVERLAYS[key]) renderOverlayLegend(key);
+    if (BG_CONFIG.OVERLAYS[key] || key === "schools") renderOverlayLegend(key);
     refreshLayer(key, { force: true });
   }
 
@@ -1893,6 +2263,19 @@ const BlockGroupApp = (() => {
       rows = BG_CONFIG.POLLUTION_BUCKETS.map(
         (b) => `<div class="legend-row"><span class="swatch" style="background:${b.color}"></span>${b.label}</div>`
       );
+    } else if (key === "schools" || key === "schoolZones") {
+      rows = Object.entries(BG_CONFIG.SCHOOL_LEVEL_COLORS)
+        .filter(([name]) => name !== "other")
+        .map(
+          ([name, color]) =>
+            `<div class="legend-row"><span class="swatch" style="background:${color}"></span>${name.replace(
+              /^./,
+              (c) => c.toUpperCase()
+            )}</div>`
+        );
+      if (key === "schoolZones") {
+        rows.push('<div class="legend-note">LAUSD only. Other districts publish their own boundaries; none is shown rather than a guess.</div>');
+      }
     } else {
       rows = BG_CONFIG.WIND_BUCKETS.map(
         (b) => `<div class="legend-row"><span class="swatch" style="background:${b.color}"></span>${b.label}</div>`
@@ -2311,6 +2694,13 @@ const BlockGroupApp = (() => {
     document.getElementById("toggle-fire").addEventListener("change", (e) => onToggle("fire", e.target.checked));
     document.getElementById("toggle-pollution").addEventListener("change", (e) => onToggle("pollution", e.target.checked));
     document.getElementById("toggle-wind").addEventListener("change", (e) => onToggle("wind", e.target.checked));
+    document
+      .getElementById("toggle-school-districts")
+      .addEventListener("change", (e) => onToggle("schoolDistricts", e.target.checked));
+    document
+      .getElementById("toggle-school-zones")
+      .addEventListener("change", (e) => onToggle("schoolZones", e.target.checked));
+    document.getElementById("toggle-schools").addEventListener("change", (e) => onToggle("schools", e.target.checked));
 
     // Switching ethnicity source re-renders whatever block group is open.
     document.querySelectorAll('input[name="eth-source"]').forEach((radio) => {
@@ -2331,6 +2721,9 @@ const BlockGroupApp = (() => {
         refreshLayer("blockGroup");
         refreshLayer("fire");
         refreshLayer("pollution");
+        refreshLayer("schoolDistricts");
+        refreshLayer("schoolZones");
+        refreshLayer("schools");
       }, 400);
       updateZoomHint();
     });
