@@ -91,6 +91,11 @@ const BG_CONFIG = {
 
   MIN_ZOOM: { tract: 11, blockGroup: 12 },
 
+  // Server-side generalisation per layer, in degrees. Zip covers the entire
+  // county in one request and is drawn as an outline, so it can be coarse;
+  // block groups are small and clicked on, so they stay finer.
+  SIMPLIFY_DEGREES: { zip: 0.0008, tract: 0.0004, blockGroup: 0.0002 },
+
   // Only the attributes actually used. Requesting "*" pulls every TIGERweb
   // field for thousands of polygons, which is dead weight over the wire.
   OUT_FIELDS: {
@@ -349,35 +354,47 @@ const BG_CONFIG = {
     landslide: "#a16207",
   },
 
-  // Aviation noise, BTS/DOT. Published as a 24-hour A-weighted average
+  // BTS/DOT transportation noise. Published as a 24-hour A-weighted average
   // (LAeq), NOT as DNL - so it carries no 10 dB night-time penalty and is
   // not directly comparable with HUD's 65 dB DNL limit.
+  //
+  // BTS publishes these as tile caches named by year, region and mode:
+  // NTAD_Noise_2020_CONUS_aviation, NTAD_Noise_2018_CONUS_aviation_road,
+  // NTAD_Noise_2020_Alaska_aviation, and so on. Matching loosely on "noise"
+  // and "aviation" picks up Alaska and the combined aviation+road services,
+  // which is how road noise appeared under an aviation toggle.
   NOISE: {
-    label: "Aviation noise",
-    minZoom: 9,
-    servers: [
-      "https://geo.dot.gov/server/rest/services/Hosted/Noise_aviation_CONUS_2018/MapServer",
-      "https://geo.dot.gov/server/rest/services/hosted/Noise_aviation_CONUS_2016/MapServer",
-      "https://maps.bts.dot.gov/services/rest/services/Noise/CONUS_road_and_aviation_noise/MapServer",
-    ],
-    // BTS also publishes the 2022 map as cached tile services. Rather than
-    // guess their exact names, ask the folder what it holds and take whatever
-    // matches - the names change between vintages, the folder does not.
-    discoverFrom: {
-      folder: "https://tiles.arcgis.com/tiles/xOi1kZaI0eWDREZv/arcgis/rest/services",
-      match: /noise.*(aviation|air)/i,
+    folder: "https://tiles.arcgis.com/tiles/xOi1kZaI0eWDREZv/arcgis/rest/services",
+    region: /conus/i,          // Alaska, Hawaii and Puerto Rico are separate services
+    modes: {
+      aviation: {
+        label: "Aviation noise",
+        minZoom: 8,
+        // Aviation ALONE: a service whose name also says road or rail mixes
+        // highway noise into what is meant to be an aircraft layer.
+        include: /aviation/i,
+        exclude: /road|rail/i,
+        servers: ["https://geo.dot.gov/server/rest/services/Hosted/Noise_aviation_CONUS_2018/MapServer"],
+      },
+      surface: {
+        label: "Road & rail noise",
+        minZoom: 8,
+        include: /road|rail|highway/i,
+        exclude: null,
+        servers: [],
+      },
     },
-    // Bands the map's own legend uses, for the sidebar key.
-    BANDS: [
-      { max: 50, label: "Under 50 dB - quiet", color: "#f1f5f9" },
-      { max: 55, label: "50-55 dB", color: "#bfdbfe" },
-      { max: 60, label: "55-60 dB", color: "#fcd34d" },
-      { max: 65, label: "60-65 dB - likely over HUD's limit once the night penalty is applied", color: "#f97316" },
-      { max: Infinity, label: "65+ dB", color: "#b91c1c" },
+    // Used only if a service will not hand over its own legend.
+    FALLBACK_BANDS: [
+      { max: 45, label: "Under 45 dB", color: "#d9f0a3" },
+      { max: 55, label: "45-55 dB", color: "#fee391" },
+      { max: 65, label: "55-65 dB", color: "#fe9929" },
+      { max: 75, label: "65-75 dB", color: "#e31a1c" },
+      { max: Infinity, label: "75+ dB", color: "#c51b8a" },
     ],
   },
 
-  // Fire Hazard Severity Zone classes. CAL FIRE only maps three, and only
+  // Fire Hazard Severity Zone classes.  // Fire Hazard Severity Zone classes. CAL FIRE only maps three, and only
   // inside a responsibility area - unmapped ground is genuinely unmapped
   // rather than "no hazard", which the legend says explicitly.
   FIRE_CLASS_COLORS: {
@@ -468,7 +485,7 @@ const BlockGroupApp = (() => {
   const enabled = {
     zip: false, tract: false, blockGroup: false,
     fire: false, pollution: false, wind: false,
-    flood: false, seismic: false, noise: false,
+    flood: false, seismic: false, noise: false, noiseSurface: false,
     schools: false,
   };
   const loadedBBox = {};    // key -> padded bbox covered by the current layer
@@ -603,7 +620,17 @@ const BlockGroupApp = (() => {
 
   async function fetchBoundaries(key, bbox) {
     const layerId = await resolveLayerId(key);
-    const build = (fields) => Utils.arcgisQueryUrl(BG_CONFIG.TIGERWEB, layerId, { bbox, outFields: fields });
+    const simplify = BG_CONFIG.SIMPLIFY_DEGREES[key];
+    const build = (fields) =>
+      Utils.arcgisQueryUrl(BG_CONFIG.TIGERWEB, layerId, {
+        bbox,
+        outFields: fields,
+        // Boundary geometry from TIGERweb is far finer than any screen can
+        // show. The zip layer covers the whole county in one request, so
+        // full-resolution rings there are megabytes of coastline detail
+        // nobody can see - which is why it took forever.
+        extraParams: simplify ? { maxAllowableOffset: String(simplify) } : {},
+      });
     const wanted = BG_CONFIG.OUT_FIELDS[key] || BG_CONFIG.OUT_FIELDS.default;
     try {
       return await Utils.fetchEsriAsGeoJSON(build(wanted), { timeoutMs: 40000 });
@@ -1304,160 +1331,157 @@ const BlockGroupApp = (() => {
     return { color, weight: 0.6, fillColor: color, fillOpacity: 0.35 };
   }
 
-  // --- Aviation noise (BTS/DOT raster) ------------------------------------
-  // This one is a raster, not polygons, so it is drawn by asking the map
-  // service to render each tile. That is what an "export" endpoint is for,
-  // and it needs no plugin: a Leaflet tile layer whose URL is computed per
-  // tile from that tile's bounding box in Web Mercator.
-  let noiseServerUrl = null;
-  let noiseLayer = null;
+  // --- Transportation noise (BTS/DOT tile caches) -------------------------
+  // Two independent layers over one mechanism: aircraft, and road+rail. Each
+  // is a raster tile cache, so nothing is drawn by us - the service's own
+  // tiles and its own legend are used, which is the only way the colours on
+  // the map and the colours in the sidebar can be guaranteed to agree.
+  const noise = {
+    aviation: { url: null, layer: null, candidates: null, legend: null, drew: false },
+    surface: { url: null, layer: null, candidates: null, legend: null, drew: false },
+  };
 
-  function esriExportTileLayer(url, options) {
-    const Layer = L.TileLayer.extend({
-      // A tile that 404s or errors leaves a hole and says nothing, so make it
-      // say something.
-      onAdd(map) {
-        L.TileLayer.prototype.onAdd.call(this, map);
-        let reported = false;
-        this.on("tileerror", () => {
-          if (reported) return;
-          reported = true;
-          tryNextNoiseSource("This service will not render tiles through export.");
-        });
-      },
-      getTileUrl(coords) {
-        const size = this.getTileSize();
-        const nw = this._map.unproject(coords.scaleBy(size), coords.z);
-        const se = this._map.unproject(coords.add([1, 1]).scaleBy(size), coords.z);
-        const p1 = L.Projection.SphericalMercator.project(nw);
-        const p2 = L.Projection.SphericalMercator.project(se);
-        const params = new URLSearchParams({
-          bbox: `${p1.x},${p2.y},${p2.x},${p1.y}`,
-          bboxSR: "3857",
-          imageSR: "3857",
-          size: `${size.x},${size.y}`,
-          dpi: "96",
-          format: "png32",
-          transparent: "true",
-          f: "image",
-        });
-        return `${url}/export?${params.toString()}`;
-      },
-    });
-    return new Layer("", options);
+  function noiseYear(name) {
+    const m = String(name).match(/(19|20)\d{2}/);
+    return m ? Number(m[0]) : 0;
   }
 
-  // Ask a hosted folder what services it carries, so a renamed vintage is
-  // found rather than guessed at.
-  async function discoverNoiseServices(spec) {
+  // Ask the folder what it holds, then keep only this region and this mode,
+  // newest vintage first.
+  async function discoverNoiseServices(modeKey) {
+    const cfg = BG_CONFIG.NOISE;
+    const mode = cfg.modes[modeKey];
     try {
-      const data = await Utils.fetchJSON(`${spec.folder}?f=json`, { timeoutMs: 20000 });
-      return (data.services || [])
-        .filter((svc) => spec.match.test(svc.name || ""))
-        .map((svc) => `${spec.folder}/${(svc.name || "").split("/").pop()}/MapServer`);
+      const data = await Utils.fetchJSON(`${cfg.folder}?f=json`, { timeoutMs: 20000 });
+      const matches = (data.services || [])
+        .map((svc) => (svc.name || "").split("/").pop())
+        .filter((name) => {
+          if (!/noise/i.test(name)) return false;
+          if (cfg.region && !cfg.region.test(name)) return false;
+          if (!mode.include.test(name)) return false;
+          if (mode.exclude && mode.exclude.test(name)) return false;
+          return true;
+        })
+        .sort((a, b) => noiseYear(b) - noiseYear(a));
+      if (matches.length) {
+        Utils.logStatus(modeKey, "info", `${mode.label}: found ${matches.join(", ")}.`);
+      }
+      return matches.map((name) => `${cfg.folder}/${name}/MapServer`);
     } catch (err) {
       return [];
     }
   }
 
-  // An ArcGIS map service is drawn one of two ways and they are not
-  // interchangeable. A dynamic service renders on demand through /export; a
-  // CACHED service has pre-rendered tiles and refuses /export outright, which
-  // is what "noise tiles are not drawing" was - a perfectly good export URL
-  // against a service that does not do export. The service's own metadata
-  // says which it is, and we already fetch it.
-  function noiseLayerFor(url, root) {
-    const cached = !!(root && (root.singleFusedMapCache || (root.tileInfo && root.tileInfo.lods)));
-    if (cached) {
-      Utils.logStatus("noise", "info", "Service is tile-cached, so its tiles are read directly.");
-      const layer = L.tileLayer(`${url}/tile/{z}/{y}/{x}`, {
-        opacity: 0.55,
-        pane: "rasterOverlay",
-        maxZoom: BG_CONFIG.MAX_ZOOM,
-        maxNativeZoom: 16,
+  // A tile cache only holds the zoom levels it was built with. Reading the
+  // top level out of the service's own metadata and setting maxNativeZoom to
+  // it makes Leaflet upscale beyond that instead of requesting tiles that
+  // were never generated - which is what broke the layer on zoom in.
+  function topCachedZoom(root) {
+    const lods = (root && root.tileInfo && root.tileInfo.lods) || [];
+    const levels = lods.map((l) => l.level).filter((n) => Number.isFinite(n));
+    return levels.length ? Math.max(...levels) : 13;
+  }
+
+  // The service's own legend, so the sidebar cannot disagree with the map.
+  async function fetchNoiseLegend(url) {
+    try {
+      const data = await Utils.fetchJSON(`${url}/legend?f=json`, { timeoutMs: 20000 });
+      const rows = [];
+      (data.layers || []).forEach((layer) => {
+        (layer.legend || []).forEach((item) => {
+          if (item.label === undefined) return;
+          rows.push({ label: item.label, image: item.imageData ? `data:${item.contentType};base64,${item.imageData}` : null });
+        });
       });
-      let reported = false;
-      layer.on("tileerror", () => {
-        if (reported) return;
-        reported = true;
-        tryNextNoiseSource("This service's tile cache has no tiles here.");
-      });
-      return layer;
+      return rows.length ? rows : null;
+    } catch (err) {
+      return null;
     }
-    Utils.logStatus("noise", "info", "Service renders on demand, so tiles are requested through export.");
-    return esriExportTileLayer(url, { opacity: 0.55, pane: "rasterOverlay" });
   }
 
-  // Candidates are consumed as they are tried, so this has to be refilled at
-  // the start of each attempt. Without that, turning the layer off and on
-  // again found an empty list and reported a failure with no reason at all -
-  // the "Aviation noise failed to load:" with nothing after the colon.
-  let noiseCandidates = null;
-
-  function resetNoiseCandidates() {
-    noiseCandidates = null;
-  }
-
-  async function addNoiseLayer() {
-    if (!noiseCandidates || !noiseCandidates.length) {
-      noiseCandidates = BG_CONFIG.NOISE.servers.concat(
-        await discoverNoiseServices(BG_CONFIG.NOISE.discoverFrom)
-      );
+  async function addNoiseLayer(modeKey) {
+    const state = noise[modeKey];
+    const mode = BG_CONFIG.NOISE.modes[modeKey];
+    if (!state.candidates || !state.candidates.length) {
+      state.candidates = mode.servers.concat(await discoverNoiseServices(modeKey));
     }
     const problems = [];
 
-    while (noiseCandidates.length) {
-      const url = noiseCandidates.shift();
+    while (state.candidates.length) {
+      const url = state.candidates.shift();
       try {
-        // Read the service root first: it proves the service is reachable AND
-        // says whether it is cached or dynamic.
         const root = await Utils.fetchJSON(`${url}?f=json`, { timeoutMs: 20000 });
         if (root && root.error) throw new Error(root.error.message || "service error");
-        noiseServerUrl = url;
-        const layer = noiseLayerFor(url, root);
-        Utils.logStatus("noise", "ok", `Aviation noise from ${url.split("/services/")[1] || url}.`);
+        const cached = !!(root.singleFusedMapCache || (root.tileInfo && root.tileInfo.lods));
+        const maxNative = topCachedZoom(root);
+
+        const layer = cached
+          ? L.tileLayer(`${url}/tile/{z}/{y}/{x}`, {
+              opacity: 0.55,
+              pane: "rasterOverlay",
+              maxZoom: BG_CONFIG.MAX_ZOOM,
+              maxNativeZoom: maxNative,
+            })
+          : esriExportTileLayer(url, { opacity: 0.55, pane: "rasterOverlay" });
+
+        state.drew = false;
+        layer.on("load", () => {
+          state.drew = true;
+        });
+        let escalated = false;
+        layer.on("tileerror", () => {
+          // Only give up on a service that never managed to draw anything. A
+          // single missing tile in a service that is otherwise working is not
+          // a reason to throw it away and cycle through every alternative.
+          if (escalated || state.drew) return;
+          escalated = true;
+          tryNextNoiseSource(modeKey, "That service has no tiles for this area.");
+        });
+
+        state.url = url;
+        Utils.logStatus(
+          modeKey,
+          "ok",
+          `${mode.label} from ${url.split("/services/")[1] || url} (cached to zoom ${maxNative}; beyond that it is upscaled).`
+        );
+        state.legend = await fetchNoiseLegend(url);
         return layer;
       } catch (err) {
         problems.push(`${url}: ${err.message}`);
       }
     }
-    throw new Error(problems.length ? problems.join(" | ") : "no aviation noise service is configured");
+    throw new Error(problems.length ? problems.join(" | ") : "no matching noise service was found");
   }
 
-  // If the tiles themselves fail - a cached service missing this area, an
-  // export refused - move to the next service rather than leaving an empty
-  // map and a cheerful "loaded" in the log.
-  async function tryNextNoiseSource(reason) {
-    Utils.logStatus("noise", "warn", `${reason} Trying the next noise service...`);
-    if (noiseLayer) {
-      map.removeLayer(noiseLayer);
-      noiseLayer = null;
+  async function tryNextNoiseSource(modeKey, reason) {
+    const state = noise[modeKey];
+    Utils.logStatus(modeKey, "warn", `${reason} Trying the next one...`);
+    if (state.layer) {
+      map.removeLayer(state.layer);
+      state.layer = null;
     }
-    noiseServerUrl = null;
-    if (!noiseCandidates || !noiseCandidates.length) {
-      Utils.logStatus("noise", "error", "No aviation noise service could draw here.");
-      document.getElementById("toggle-noise").checked = false;
-      enabled.noise = false;
-      renderOverlayLegend("noise");
+    state.url = null;
+    if (!state.candidates || !state.candidates.length) {
+      Utils.logStatus(modeKey, "error", `No ${BG_CONFIG.NOISE.modes[modeKey].label.toLowerCase()} service could draw here.`);
+      document.getElementById(`toggle-${modeKey === "aviation" ? "noise" : "noise-surface"}`).checked = false;
+      enabled[modeKey === "aviation" ? "noise" : "noiseSurface"] = false;
+      renderOverlayLegend(modeKey === "aviation" ? "noise" : "noiseSurface");
       return;
     }
     try {
-      const layer = await addNoiseLayer();
-      if (!enabled.noise) return;
-      noiseLayer = layer.addTo(map);
+      const layer = await addNoiseLayer(modeKey);
+      state.layer = layer.addTo(map);
+      renderOverlayLegend(modeKey === "aviation" ? "noise" : "noiseSurface");
     } catch (err) {
-      Utils.logStatus("noise", "error", `Aviation noise failed: ${err.message}`);
-      document.getElementById("toggle-noise").checked = false;
-      enabled.noise = false;
-      renderOverlayLegend("noise");
+      Utils.logStatus(modeKey, "error", `${BG_CONFIG.NOISE.modes[modeKey].label} failed: ${err.message}`);
     }
   }
 
-  // The dB value under a point, read from the same service with identify.
+  // The dB value under a point, read from the aviation service with identify.
   const noiseByGeoid = {};
 
   async function lookupNoise(geoid, layer) {
-    if (!enabled.noise || noiseByGeoid[geoid] !== undefined || !noiseServerUrl) return;
+    if (!enabled.noise || noiseByGeoid[geoid] !== undefined || !noise.aviation.url) return;
     const center = layer && layer.getBounds ? layer.getBounds().getCenter() : null;
     if (!center) return;
     noiseByGeoid[geoid] = null;
@@ -1474,21 +1498,23 @@ const BlockGroupApp = (() => {
         layers: "all",
         f: "json",
       });
-      const data = await Utils.fetchJSON(`${noiseServerUrl}/identify?${params.toString()}`, { timeoutMs: 20000 });
+      const data = await Utils.fetchJSON(`${noise.aviation.url}/identify?${params.toString()}`, { timeoutMs: 20000 });
       const hit = (data.results || [])[0];
       const raw = hit ? Utils.pickField(hit.attributes || {}, ["Pixel Value", "PixelValue", "Value", "NOISE", "DB"]) : null;
       const value = Number(raw);
       noiseByGeoid[geoid] = Number.isFinite(value) ? value : null;
     } catch (err) {
       noiseByGeoid[geoid] = null;
-      Utils.logStatus("noise", "warn", `Could not read noise for ${geoid}: ${err.message}`);
     }
     if (selectedProps && geoidOf(selectedProps) === geoid) renderSelection();
   }
 
   function noiseBand(db) {
     if (db === null || db === undefined) return null;
-    return BG_CONFIG.NOISE.BANDS.find((b) => db < b.max) || BG_CONFIG.NOISE.BANDS[BG_CONFIG.NOISE.BANDS.length - 1];
+    return (
+      BG_CONFIG.NOISE.FALLBACK_BANDS.find((b) => db < b.max) ||
+      BG_CONFIG.NOISE.FALLBACK_BANDS[BG_CONFIG.NOISE.FALLBACK_BANDS.length - 1]
+    );
   }
 
   function noiseRows(props) {
@@ -1501,17 +1527,17 @@ const BlockGroupApp = (() => {
     const band = noiseBand(db);
     return `
       <div class="section-label">Aviation noise${infoIcon(
-        "BTS/DOT National Transportation Noise Map, aviation only. Published as a 24-hour A-weighted average (LAeq) - " +
+        "BTS/DOT National Transportation Noise Map, aircraft only. Published as a 24-hour A-weighted average (LAeq) - " +
           "NOT as DNL, so it carries no 10 dB night-time penalty and is not directly comparable with HUD's 65 dB DNL limit. " +
           "An airport with night operations feels worse than this number implies."
       )}</div>
       <table>
         <tr><td class="k">Modelled level</td><td class="v">${db.toFixed(0)} dB LAeq</td></tr>
-        <tr><td class="k">Band</td><td class="v">${band ? band.label.split(" - ")[0] : "Unknown"}</td></tr>
+        <tr><td class="k">Band</td><td class="v">${band ? band.label : "Unknown"}</td></tr>
       </table>`;
   }
 
-  // --- Schools ------------------------------------------------------------
+  // --- Schools ------------------------------------------------------------  // --- Schools ------------------------------------------------------------
   // Three related but separate things, which is why they are three toggles:
   //   districts  - who runs the schools (county-wide, always available)
   //   zones      - which school an address is assigned to (LAUSD only, but
@@ -3145,29 +3171,36 @@ const BlockGroupApp = (() => {
     }
   }
 
-  async function onToggleNoise(checked) {
-    enabled.noise = checked;
-    if (checked) resetNoiseCandidates(); // start each attempt from the full list
+  async function onToggleNoise(modeKey, checked) {
+    const stateKey = modeKey === "aviation" ? "noise" : "noiseSurface";
+    const state = noise[modeKey];
+    enabled[stateKey] = checked;
+
     if (!checked) {
-      if (noiseLayer) {
-        map.removeLayer(noiseLayer);
-        noiseLayer = null;
+      if (state.layer) {
+        map.removeLayer(state.layer);
+        state.layer = null;
       }
-      renderOverlayLegend("noise");
+      state.candidates = null; // next attempt starts from the full list again
+      renderOverlayLegend(stateKey);
       renderSelection();
       return;
     }
-    Utils.logStatus("noise", "info", "Loading aviation noise...");
+
+    state.candidates = null;
+    Utils.logStatus(modeKey, "info", `Loading ${BG_CONFIG.NOISE.modes[modeKey].label.toLowerCase()}...`);
     try {
-      const layer = await addNoiseLayer();
-      if (!enabled.noise) return; // toggled off while the service was checked
-      noiseLayer = layer.addTo(map);
-      renderOverlayLegend("noise");
-      if (selectedProps && selectedLayer) lookupNoise(geoidOf(selectedProps), selectedLayer);
+      const layer = await addNoiseLayer(modeKey);
+      if (!enabled[stateKey]) return; // toggled off while the service was checked
+      state.layer = layer.addTo(map);
+      renderOverlayLegend(stateKey);
+      if (modeKey === "aviation" && selectedProps && selectedLayer) {
+        lookupNoise(geoidOf(selectedProps), selectedLayer);
+      }
     } catch (err) {
-      Utils.logStatus("noise", "error", `Aviation noise failed to load: ${err.message}`);
-      document.getElementById("toggle-noise").checked = false;
-      enabled.noise = false;
+      Utils.logStatus(modeKey, "error", `${BG_CONFIG.NOISE.modes[modeKey].label} failed to load: ${err.message}`);
+      document.getElementById(modeKey === "aviation" ? "toggle-noise" : "toggle-noise-surface").checked = false;
+      enabled[stateKey] = false;
     }
   }
 
@@ -3193,7 +3226,8 @@ const BlockGroupApp = (() => {
 
   function onToggle(key, checked) {
     if (key === "wind") return onToggleWind(checked);
-    if (key === "noise") return onToggleNoise(checked);
+    if (key === "noise") return onToggleNoise("aviation", checked);
+    if (key === "noiseSurface") return onToggleNoise("surface", checked);
     enabled[key] = checked;
     if (!checked) {
       if (layers[key]) {
@@ -3218,7 +3252,7 @@ const BlockGroupApp = (() => {
       return;
     }
     if (key === "blockGroup") loadCensusData();
-    if (BG_CONFIG.OVERLAYS[key] || key === "schools" || key === "noise") renderOverlayLegend(key);
+    if (BG_CONFIG.OVERLAYS[key] || key === "schools" || key === "noise" || key === "noiseSurface") renderOverlayLegend(key);
     refreshLayer(key, { force: true });
   }
 
@@ -3259,11 +3293,21 @@ const BlockGroupApp = (() => {
           )} zone</div>`
       );
       rows.push('<div class="legend-note">CGS zones where a site investigation is required before building - not a prediction that ground will fail.</div>');
-    } else if (key === "noise") {
-      rows = BG_CONFIG.NOISE.BANDS.map(
-        (b) => `<div class="legend-row"><span class="swatch" style="background:${b.color}"></span>${b.label}</div>`
+    } else if (key === "noise" || key === "noiseSurface") {
+      // The service hands over its own legend, so the sidebar cannot disagree
+      // with what is actually painted on the map.
+      const state = noise[key === "noise" ? "aviation" : "surface"];
+      rows = (state.legend || BG_CONFIG.NOISE.FALLBACK_BANDS.map((b) => ({ label: b.label, color: b.color }))).map(
+        (row) =>
+          `<div class="legend-row">${
+            row.image
+              ? `<img class="swatch" src="${row.image}" alt="" />`
+              : `<span class="swatch" style="background:${row.color}"></span>`
+          }${row.label}</div>`
       );
-      rows.push('<div class="legend-note">24-hour average (LAeq), not DNL: no night-time penalty, so it understates an airport that flies at night.</div>');
+      rows.push(
+        '<div class="legend-note">24-hour average (LAeq), not DNL: no night-time penalty, so it understates an airport that flies at night.</div>'
+      );
     } else if (key === "schools") {
       rows = Object.entries(BG_CONFIG.SCHOOL_LEVEL_COLORS)
         .filter(([name]) => name !== "other")
@@ -3714,6 +3758,9 @@ const BlockGroupApp = (() => {
     document.getElementById("toggle-flood").addEventListener("change", (e) => onToggle("flood", e.target.checked));
     document.getElementById("toggle-seismic").addEventListener("change", (e) => onToggle("seismic", e.target.checked));
     document.getElementById("toggle-noise").addEventListener("change", (e) => onToggle("noise", e.target.checked));
+    document
+      .getElementById("toggle-noise-surface")
+      .addEventListener("change", (e) => onToggle("noiseSurface", e.target.checked));
 
     // Switching ethnicity source re-renders whatever block group is open.
     document.querySelectorAll('input[name="eth-source"]').forEach((radio) => {

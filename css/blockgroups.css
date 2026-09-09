@@ -478,3 +478,14 @@ html, body {
   padding-top: 8px;
 }
 #address-card .src-note { font-size: 0.68rem; color: var(--muted); line-height: 1.4; margin: 6px 0 0; }
+
+/* Legend swatches served by the map service itself, so the sidebar always
+   matches what is painted. */
+.legend-box img.swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  flex: none;
+  object-fit: cover;
+}

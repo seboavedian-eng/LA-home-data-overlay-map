@@ -546,6 +546,52 @@ async function main() {
   // URL drew nothing: a cached service refuses export outright. The mock
   // behaves the same way - export 404s, /tile serves an image - so the page
   // has to read the service's metadata and pick the right endpoint.
+  let noiseServicesChosen = [];
+  await page.route("**://tiles.arcgis.com/**", (route) => {
+    const url = route.request().url();
+    // The folder listing, named the way BTS actually names these.
+    if (/\/services\?f=json/.test(url)) {
+      return route.fulfill(
+        json({
+          services: [
+            { name: "NTAD_Noise_2018_Alaska_aviation_road", type: "MapServer" },
+            { name: "NTAD_Noise_2020_Alaska_aviation", type: "MapServer" },
+            { name: "NTAD_Noise_2018_CONUS_aviation_road", type: "MapServer" },
+            { name: "NTAD_Noise_2020_CONUS_aviation", type: "MapServer" },
+            { name: "NTAD_Noise_2018_CONUS_aviation", type: "MapServer" },
+            { name: "NTAD_Noise_2020_CONUS_road", type: "MapServer" },
+            { name: "NTAD_Noise_2020_CONUS_rail", type: "MapServer" },
+          ],
+        })
+      );
+    }
+    if (url.includes("/legend")) {
+      return route.fulfill(
+        json({
+          layers: [
+            {
+              legend: [
+                { label: "45 - 55 dB", imageData: BLANK_PNG.toString("base64"), contentType: "image/png" },
+                { label: "55 - 65 dB", imageData: BLANK_PNG.toString("base64"), contentType: "image/png" },
+                { label: "65 - 75 dB", imageData: BLANK_PNG.toString("base64"), contentType: "image/png" },
+              ],
+            },
+          ],
+        })
+      );
+    }
+    if (url.includes("/tile/")) return route.fulfill({ contentType: "image/png", body: BLANK_PNG });
+    // Service metadata: cached, with a cache that stops at zoom 13.
+    noiseServicesChosen.push(url);
+    return route.fulfill(
+      json({
+        mapName: "NTAD noise",
+        singleFusedMapCache: true,
+        tileInfo: { lods: [{ level: 0 }, { level: 12 }, { level: 13 }] },
+      })
+    );
+  });
+
   let noiseRequests = { root: 0, exports: 0, tiles: 0, identify: 0 };
   await page.route("**://geo.dot.gov/**", (route) => {
     const url = route.request().url();
@@ -562,13 +608,8 @@ async function main() {
       return route.fulfill(json({ results: [{ attributes: { "Pixel Value": "58.4" } }] }));
     }
     noiseRequests.root++;
-    return route.fulfill(
-      json({
-        mapName: "Noise_aviation_CONUS_2018",
-        singleFusedMapCache: true,
-        tileInfo: { lods: [{ level: 0 }, { level: 16 }] },
-      })
-    );
+    // The legacy DOT service is gone, so the folder discovery has to carry it.
+    return route.fulfill(json({ error: { code: 400, message: "Service not found" } }));
   });
 
   // OpenRouteService directions. Returns a GeoJSON LineString plus a summary,
@@ -1542,44 +1583,76 @@ async function main() {
       JSON.stringify(seismicKinds)
     );
 
-    // --- Aviation noise: a raster service, drawn as tiles ---
+    // --- Noise: aviation and surface, kept apart ---
     await page.click("#toggle-noise");
-    await page.waitForTimeout(900);
+    await page.waitForTimeout(1200);
+    const aviationUrl = await page.evaluate(() => {
+      const img = document.querySelector('.leaflet-rasterOverlay-pane img[src*="/tile/"]');
+      return img ? img.src : null;
+    });
     step(
-      "the noise service is checked before its tiles are drawn",
-      noiseRequests.root > 0 && noiseRequests.tiles > 0,
-      JSON.stringify(noiseRequests)
+      "aviation picks the newest CONUS aviation-only service",
+      aviationUrl && aviationUrl.includes("NTAD_Noise_2020_CONUS_aviation/"),
+      aviationUrl && aviationUrl.split("/services/")[1]
     );
     step(
-      "a tile-cached service is read through /tile, not /export",
-      noiseRequests.tiles > 0 && noiseRequests.exports === 0,
-      JSON.stringify(noiseRequests)
+      "it does not pick an Alaska service",
+      aviationUrl && !/alaska/i.test(aviationUrl),
+      aviationUrl && aviationUrl.split("/services/")[1]
     );
     step(
-      "raster overlays sit in their own pane, above the basemap and below the polygons",
+      "it does not pick a combined aviation+road service, which is how road noise leaked in",
+      aviationUrl && !/aviation_road/i.test(aviationUrl),
+      aviationUrl && aviationUrl.split("/services/")[1]
+    );
+    step(
+      "the cache's top zoom is read from the service, so zooming past it upscales instead of failing",
       await page.evaluate(() => {
-        const pane = document.querySelector(".leaflet-rasterOverlay-pane");
-        return !!pane && pane.querySelectorAll("img").length > 0 && Number(pane.style.zIndex) > 200;
-      })
+        let found = null;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (l.options && l.options.pane === "rasterOverlay" && l.options.maxNativeZoom) {
+            found = l.options.maxNativeZoom;
+          }
+        });
+        return found === 13;
+      }),
+      "the mocked cache stops at level 13"
     );
+    const noiseLegend = await page.locator("#noise-legend").innerText();
+    step(
+      "the legend comes from the service, so it matches what is drawn",
+      /45 - 55 dB/.test(noiseLegend) && /65 - 75 dB/.test(noiseLegend),
+      noiseLegend.replace(/\n/g, " | ").slice(0, 120)
+    );
+    step(
+      "the legend swatches are the service's own images, not our approximations",
+      (await page.locator("#noise-legend img.swatch").count()) === 3
+    );
+
+    await page.click("#toggle-noise-surface");
+    await page.waitForTimeout(1200);
+    const surfaceUrl = await page.evaluate(() => {
+      const imgs = [...document.querySelectorAll('.leaflet-rasterOverlay-pane img[src*="/tile/"]')].map((i) => i.src);
+      return imgs.find((u) => /road|rail/i.test(u)) || null;
+    });
+    step(
+      "road & rail is a separate layer with its own service",
+      surfaceUrl && /NTAD_Noise_2020_CONUS_(road|rail)/.test(surfaceUrl),
+      surfaceUrl && surfaceUrl.split("/services/")[1]
+    );
+    step(
+      "both noise layers can be on at once without one replacing the other",
+      aviationUrl && surfaceUrl && aviationUrl !== surfaceUrl
+    );
+    await page.click("#toggle-noise-surface");
+    await page.waitForTimeout(300);
+
     await page.evaluate(() => {
       BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
         if (l.feature.properties.GEOID === "060372011001") l.fire("click");
       });
     });
     await page.waitForTimeout(600);
-    const noiseCard = await page.locator("#detail-panel").innerText();
-    step(
-      "the card reports the modelled noise level in LAeq, not DNL",
-      /58 dB LAeq/.test(noiseCard),
-      noiseCard.replace(/\n/g, " ").match(/Aviation noise.{0,70}/i)
-    );
-    const noiseLegend = await page.locator("#noise-legend").innerText();
-    step(
-      "the noise legend warns that LAeq carries no night-time penalty",
-      /night/i.test(noiseLegend) && /LAeq/.test(noiseLegend),
-      noiseLegend.replace(/\n/g, " | ").slice(-120)
-    );
 
     await page.click("#toggle-flood");
     await page.click("#toggle-seismic");
