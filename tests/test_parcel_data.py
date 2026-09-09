@@ -31,22 +31,94 @@ def check(name, ok, detail=""):
 
 
 # --- Single-family detection ------------------------------------------------
-cols = {"use_code": "PropertyUseCode", "specific_use": "SpecificUseType"}
-check(
-    "use code 0100 counts as single family",
-    fetch_parcel.is_single_family({"PropertyUseCode": "0100", "SpecificUseType": ""}, cols),
-)
+# Column names as the 2025 roll writes them: spaced, not CamelCase.
+cols = {
+    "use_code": "Property Use Code",
+    "use_type": "Property Use Type",
+    "units": "Number of Units",
+    "land_value": "Land Value",
+    "improvement_value": "Improvement Value",
+    "total_value": "Taxable Value",
+    "sale_date": "Recording Date",
+    "base_year": "Improvement Base Year",
+    "sqft": "Square Footage",
+}
+
+
+def parcel(**kw):
+    row = {
+        "Property Use Code": "0100",
+        "Property Use Type": "Single Family Residence",
+        "Number of Units": "1",
+        "Land Value": "600000",
+        "Improvement Value": "400000",
+        "Recording Date": "20240115",
+    }
+    row.update(kw)
+    return row
+
+
+check("use code 0100 counts as single family", fetch_parcel.is_single_family(parcel(), cols))
 check(
     "a condo use code does not",
-    not fetch_parcel.is_single_family({"PropertyUseCode": "0500", "SpecificUseType": "Condominium"}, cols),
+    not fetch_parcel.is_single_family(
+        parcel(**{"Property Use Code": "0500", "Property Use Type": "Condominium"}), cols
+    ),
 )
 check(
-    "the text field alone is enough when the code is missing",
-    fetch_parcel.is_single_family({"PropertyUseCode": "", "SpecificUseType": "Single Family Residence"}, cols),
+    "the text column alone is enough when the code is blank",
+    fetch_parcel.is_single_family(parcel(**{"Property Use Code": ""}), cols),
 )
 check(
     "an apartment building is excluded",
-    not fetch_parcel.is_single_family({"PropertyUseCode": "0300", "SpecificUseType": "Five or more units"}, cols),
+    not fetch_parcel.is_single_family(
+        parcel(**{"Property Use Code": "0300", "Property Use Type": "Five or more units"}), cols
+    ),
+)
+check(
+    "a parcel with several units is not single family even if coded 01xx",
+    not fetch_parcel.is_single_family(parcel(**{"Number of Units": "3"}), cols),
+    "duplexes and lots with a second house are not the thing being priced",
+)
+check(
+    "a missing unit count does not disqualify a parcel",
+    fetch_parcel.is_single_family(parcel(**{"Number of Units": ""}), cols),
+)
+
+# --- The Prop 13 reconstruction ---------------------------------------------
+# The public roll carries no sale price. Assessed value is land + improvements,
+# and it approximates the purchase price only for a recently-transferred house.
+check(
+    "assessed value is land plus improvements",
+    fetch_parcel.assessed_value(parcel(), cols) == 1000000,
+    str(fetch_parcel.assessed_value(parcel(), cols)),
+)
+check(
+    "taxable value is used only when land and improvements are missing",
+    fetch_parcel.assessed_value(
+        {"Taxable Value": "993000"}, {"total_value": "Taxable Value"}
+    ) == 993000,
+    "taxable value has the homeowners' exemption already subtracted, so it is the fallback",
+)
+check(
+    "the transfer year comes from the recording date",
+    fetch_parcel.transfer_year(parcel(), cols) == 2024,
+    str(fetch_parcel.transfer_year(parcel(), cols)),
+)
+check(
+    "with no recording date it falls back to the base year",
+    fetch_parcel.transfer_year(
+        parcel(**{"Recording Date": "", "Improvement Base Year": "2022"}), cols
+    ) == 2022,
+)
+check(
+    "a parcel with neither is skipped rather than assumed recent",
+    fetch_parcel.transfer_year(parcel(**{"Recording Date": ""}), cols) is None,
+)
+check(
+    "the price-per-sqft band is wide enough for LA but excludes stale values",
+    fetch_parcel.MIN_PRICE_PER_SQFT <= 100 and fetch_parcel.MAX_PRICE_PER_SQFT >= 2000,
+    f"${fetch_parcel.MIN_PRICE_PER_SQFT}-${fetch_parcel.MAX_PRICE_PER_SQFT}/sqft",
 )
 
 # --- Recording dates --------------------------------------------------------
@@ -69,20 +141,26 @@ check(
 # --- Column matching --------------------------------------------------------
 header = ["AIN", "CENTER_LAT", "CENTER_LON", "PropertyUseCode", "SalePrice", "RecordingDate"]
 check(
-    "columns are found by exact name",
+    "older CamelCase rolls still match",
     fetch_parcel.find_column(header, fetch_parcel.COLUMNS["lat"], "lat") == "CENTER_LAT",
 )
 check(
     "matching is case-insensitive, as exports vary",
     fetch_parcel.find_column(["center_lat"], fetch_parcel.COLUMNS["lat"], "lat") == "center_lat",
 )
+check(
+    "the 2025 roll's spaced column names are matched",
+    fetch_parcel.find_column(["Location Latitude"], fetch_parcel.COLUMNS["lat"], "lat") == "Location Latitude"
+    and fetch_parcel.find_column(["Property Use Code"], fetch_parcel.COLUMNS["use_code"], "use code") == "Property Use Code"
+    and fetch_parcel.find_column(["Recording Date"], fetch_parcel.COLUMNS["sale_date"], "date") == "Recording Date",
+)
 try:
-    fetch_parcel.find_column(["Foo", "Bar"], fetch_parcel.COLUMNS["sale_price"], "sale price")
+    fetch_parcel.find_column(["Foo", "Bar"], fetch_parcel.COLUMNS["use_code"], "use code")
     check("a missing column is reported with the file's real headers", False)
 except fetch_parcel.ParcelDataError as err:
     check(
         "a missing column is reported with the file's real headers",
-        "Foo" in str(err) and "SalePrice" in str(err),
+        "Foo" in str(err) and "Property Use Code" in str(err),
         str(err).split("\n")[0],
     )
 

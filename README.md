@@ -252,15 +252,33 @@ python3 scripts/fetch-parcel-data.py
 It pulls LA County block group outlines from TIGERweb, bins each parcel by its
 `CENTER_LAT`/`CENTER_LON`, and writes `js/data/parcels-la-county.json`.
 
-**It uses recorded sale price, not assessed value, and that is the whole
-point.** Under Proposition 13 an assessed value reflects how long the owner
-has held the house rather than what it is worth - two identical neighbours can
-differ tenfold. Only sales in the last three years count (`--years` to
-change), single-family use codes only, and anything under $50,000 is dropped
-as a family transfer or correction rather than a market sale. Each block group
-also reports **how many sales its median rests on**, and a median built on
-fewer than three is flagged as thin on the card - three sales is a rumour, not
-a market rate.
+**The public roll has no sale price column** - it carries assessed values, a
+recording date and a base year, and no sale amount. Proposition 13 is what
+makes the number recoverable anyway:
+
+> A change of ownership resets a property's assessed value to its purchase
+> price, and from then on it may rise only about 2% a year.
+
+So for a house that changed hands *recently*, assessed value ≈ what it sold
+for. The same rule that makes assessed value useless for a long-held house
+makes it a good proxy for a freshly-sold one - which is why only parcels
+transferred in the last three years count (`--years` to change).
+
+Four guards keep the number honest: single-family use codes only (`01xx`, or
+the text column, and never more than one unit); nothing under $50,000, which
+is a transfer rather than a sale; a price-per-square-foot plausibility band,
+because an *excluded* transfer (inter-spousal, some parent-child) records a
+new deed without triggering reassessment and shows up as a 2024 recording
+carrying a 1970s value; and each block group reports **how many sales its
+median rests on**, with fewer than three flagged as thin on the card.
+
+The run prints the use codes it kept and dropped, so the "01xx means single
+family" assumption can be checked against your own file rather than taken on
+trust.
+
+Read the result as a *level* - which neighbourhoods are 800k and which are 2m
+- rather than as today's asking price: it lags the market by up to three years
+and misses appreciation since the sale.
 
 ### Optional: commute times
 

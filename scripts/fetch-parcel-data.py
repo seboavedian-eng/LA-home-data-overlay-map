@@ -18,10 +18,30 @@ assessed value near nothing, and two identical neighbours can differ tenfold
 purely by how long each owner has been there. Mapping raw assessed value
 produces a map of tenure, not of prices.
 
-This script therefore uses RECORDED SALE PRICE, restricted to sales in the
-last few years, which is the one figure in the roll that reflects the market.
-Block groups with too few recent sales report their count so a median resting
-on three houses is visible as such rather than passing for a real number.
+THE PUBLIC ROLL HAS NO SALE PRICE COLUMN
+----------------------------------------
+It carries assessed values, a recording date and a base year - and no sale
+amount. So the market figure has to be reconstructed, and Proposition 13 is
+what makes that possible:
+
+    A change of ownership resets a property's base year value to its full
+    cash value - in practice, the purchase price - and from then on that
+    value may rise only about 2% a year.
+
+So for a parcel that changed hands RECENTLY, the assessed value IS
+approximately the price it sold for. The same rule that makes assessed value
+useless for a long-held house makes it a good proxy for a freshly-sold one.
+
+This script therefore takes assessed value (land + improvements) for parcels
+whose deed was recorded in the last few years, which is as close to recent
+sale price as the free data goes. Two guards keep stale values out: a price
+floor, and a plausibility band on price per square foot - an excluded
+transfer (inter-spousal, some parent-child) records a new deed without
+triggering reassessment, and shows up as a 2024 recording carrying a 1970s
+value.
+
+Block groups report the number of sales behind their median, so one resting
+on three houses is visible as such rather than passing for a market rate.
 
 WHAT YOU NEED
 -------------
@@ -62,29 +82,37 @@ DEFAULT_OUT = os.path.join("js", "data", "parcels-la-county.json")
 # every field is looked up by candidate list and the script prints what it
 # matched.
 COLUMNS = {
-    "lat": ["CENTER_LAT", "center_lat", "LATITUDE", "LAT"],
-    "lon": ["CENTER_LON", "center_lon", "LONGITUDE", "LON"],
-    "use_code": ["PropertyUseCode", "UseCode", "PROPERTYUSECODE", "USECODE"],
-    "general_use": ["GeneralUseType", "GENERALUSETYPE"],
-    "specific_use": ["SpecificUseType", "SPECIFICUSETYPE"],
-    "sale_price": ["SalePrice", "SALEPRICE", "Sale_Price", "LastSalePrice"],
-    "sale_date": ["RecordingDate", "RECORDINGDATE", "SaleDate", "LastSaleDate", "RecordDate"],
-    "sqft": ["SQFTmain", "SqFtMain", "SQFTMAIN", "BuildingSqFt", "MainSqFt"],
-    "year_built": ["YearBuilt", "YEARBUILT", "EffectiveYearBuilt"],
-    "roll_total": ["Roll_TotalValue", "TotalValue", "ROLL_TOTALVALUE"],
+    "lat": ["Location Latitude", "CENTER_LAT", "center_lat", "LATITUDE", "LAT"],
+    "lon": ["Location Longitude", "CENTER_LON", "center_lon", "LONGITUDE", "LON"],
+    "use_code": ["Property Use Code", "PropertyUseCode", "UseCode", "PROPERTYUSECODE", "USECODE"],
+    "use_type": ["Property Use Type", "SpecificUseType", "GeneralUseType", "Classification"],
+    "land_value": ["Land Value", "LandValue", "Roll_LandValue"],
+    "improvement_value": ["Improvement Value", "ImprovementValue", "Roll_ImpValue"],
+    "total_value": ["Total Value", "TotalValue", "Roll_TotalValue", "Taxable Value", "TaxableValue"],
+    "sale_date": ["Recording Date", "RecordingDate", "RECORDINGDATE", "SaleDate", "LastSaleDate"],
+    "base_year": ["Improvement Base Year", "Land Base Year", "ImpBaseYear", "LandBaseYear"],
+    "sqft": ["Square Footage", "SQFTmain", "SqFtMain", "BuildingSqFt", "MainSqFt"],
+    "year_built": ["Year Built", "YearBuilt", "Effective Year", "EffectiveYearBuilt"],
+    "units": ["Number of Units", "Units", "UnitsCount"],
 }
 
 # LA County use codes: the leading "01" is single-family residence. The text
-# fields are checked too, because some exports carry only those.
+# column is checked too, because some exports carry only that.
 SFR_CODE_PREFIX = "01"
 SFR_TEXT = "single family"
 
-# A sale below this is a transfer, not a market transaction: family
-# quitclaims, corrections and $1 grants are all over the roll.
+# Below this, a "sale" is a transfer rather than a market transaction: family
+# quitclaims, corrections and $1 grants are all over the roll. It also catches
+# the excluded transfers described above, which keep their old base value.
 MIN_SALE_PRICE = 50000
-# Above this, it is almost always a bulk or portfolio transfer recorded
-# against one parcel.
+# Above this it is almost always a bulk or portfolio transfer recorded against
+# one parcel.
 MAX_SALE_PRICE = 50000000
+# A recently-transferred house should price somewhere in this range per square
+# foot. Outside it, the parcel almost certainly kept an old base year value
+# through an excluded transfer, so its "price" is decades stale.
+MIN_PRICE_PER_SQFT = 100
+MAX_PRICE_PER_SQFT = 3000
 
 
 class ParcelDataError(Exception):
@@ -265,10 +293,38 @@ def sale_year(value):
 
 def is_single_family(row, cols):
     code = str(row.get(cols["use_code"], "") or "").strip()
-    if code.startswith(SFR_CODE_PREFIX):
-        return True
-    specific = str(row.get(cols.get("specific_use"), "") or "").lower()
-    return SFR_TEXT in specific
+    text = str(row.get(cols.get("use_type"), "") or "").lower()
+    if not (code.startswith(SFR_CODE_PREFIX) or SFR_TEXT in text):
+        return False
+    # A single-family parcel holds one unit. Where the roll says otherwise -
+    # a duplex miscoded, or a lot with a second house on it - it is not the
+    # thing being priced here.
+    units = to_float(row.get(cols.get("units"))) if cols.get("units") else None
+    return units is None or units <= 1
+
+
+def assessed_value(row, cols):
+    """
+    Land + improvements: the property's full assessed value.
+
+    Not "Taxable Value", which has exemptions already subtracted - the
+    homeowners' exemption alone knocks $7,000 off and would bias every
+    owner-occupied house downwards.
+    """
+    land = to_float(row.get(cols["land_value"])) if cols.get("land_value") else None
+    imp = to_float(row.get(cols["improvement_value"])) if cols.get("improvement_value") else None
+    if land is not None or imp is not None:
+        return (land or 0) + (imp or 0)
+    return to_float(row.get(cols["total_value"])) if cols.get("total_value") else None
+
+
+def transfer_year(row, cols):
+    """When this parcel's current value was set - by deed, else by base year."""
+    year = sale_year(row.get(cols["sale_date"])) if cols.get("sale_date") else None
+    if year:
+        return year
+    base = to_float(row.get(cols.get("base_year"))) if cols.get("base_year") else None
+    return int(base) if base and 1900 < base < 2100 else None
 
 
 def main():
@@ -277,7 +333,7 @@ def main():
     )
     parser.add_argument("--csv", default=DEFAULT_CSV, help="Assessor roll CSV")
     parser.add_argument("--out", default=DEFAULT_OUT, help="Output JSON path")
-    parser.add_argument("--years", type=int, default=3, help="How many years of sales to keep")
+    parser.add_argument("--years", type=int, default=3, help="How many years back to accept a transfer")
     parser.add_argument("--min-sales", type=int, default=3, help="Block groups with fewer sales are still written, but flagged")
     args = parser.parse_args()
 
@@ -304,28 +360,51 @@ def main():
         reader = csv.DictReader(fh)
         header = reader.fieldnames or []
         cols = {}
-        for key in ("lat", "lon", "use_code", "sale_price", "sale_date"):
+        for key in ("lat", "lon", "use_code", "sale_date"):
             cols[key] = find_column(header, COLUMNS[key], key.replace("_", " "))
-        for key in ("specific_use", "sqft", "year_built"):
+        for key in ("use_type", "land_value", "improvement_value", "total_value", "base_year", "sqft", "year_built", "units"):
             try:
                 cols[key] = find_column(header, COLUMNS[key], key)
             except ParcelDataError:
                 cols[key] = None  # optional
+        if not (cols.get("land_value") or cols.get("improvement_value") or cols.get("total_value")):
+            raise ParcelDataError(
+                "found no value column at all (land, improvement or total).\n"
+                f"  The file has: {', '.join(sorted(header))}\n"
+                "  Without one there is nothing to take a median of."
+            )
         print("  Matched columns: " + ", ".join(f"{k}={v}" for k, v in cols.items() if v))
+
+        use_code_kept = {}
+        use_code_dropped = {}
+        stale = 0
 
         for row in reader:
             read += 1
             if read % 250000 == 0:
                 print(f"  {read:,} rows read, {kept:,} usable sales so far...")
 
+            code = str(row.get(cols["use_code"], "") or "").strip()[:4]
             if not is_single_family(row, cols):
+                use_code_dropped[code] = use_code_dropped.get(code, 0) + 1
                 continue
-            price = to_float(row.get(cols["sale_price"]))
+            price = assessed_value(row, cols)
             if price is None or price < MIN_SALE_PRICE or price > MAX_SALE_PRICE:
                 continue
-            year = sale_year(row.get(cols["sale_date"]))
+            year = transfer_year(row, cols)
             if year is None or year < cutoff:
                 continue
+
+            # A recent deed carrying a decades-old value per square foot means
+            # the transfer was excluded from reassessment, so the value is not
+            # a price. Drop it rather than dragging the median down.
+            sqft_value = to_float(row.get(cols["sqft"])) if cols.get("sqft") else None
+            if sqft_value and sqft_value > 200:
+                ppsf = price / sqft_value
+                if ppsf < MIN_PRICE_PER_SQFT or ppsf > MAX_PRICE_PER_SQFT:
+                    stale += 1
+                    continue
+            use_code_kept[code] = use_code_kept.get(code, 0) + 1
             lat = to_float(row.get(cols["lat"]))
             lon = to_float(row.get(cols["lon"]))
             if lat is None or lon is None or not (32 < lat < 36) or not (-120 < lon < -116):
@@ -338,18 +417,27 @@ def main():
 
             kept += 1
             sales.setdefault(geoid, []).append(price)
-            sqft = to_float(row.get(cols["sqft"])) if cols.get("sqft") else None
-            if sqft and sqft > 200:
-                per_sqft.setdefault(geoid, []).append(price / sqft)
+            if sqft_value and sqft_value > 200:
+                per_sqft.setdefault(geoid, []).append(price / sqft_value)
             built = to_float(row.get(cols["year_built"])) if cols.get("year_built") else None
             if built and 1800 < built < 2100:
                 years.setdefault(geoid, []).append(built)
 
+    # So the "01xx means single family" assumption can be checked against the
+    # file rather than taken on trust.
+    def top_codes(counter):
+        return ", ".join(f"{code or '(blank)'}: {n:,}" for code, n in sorted(counter.items(), key=lambda kv: -kv[1])[:6])
+
+    print(f"\n  Use codes KEPT as single-family: {top_codes(use_code_kept) or 'none'}")
+    print(f"  Use codes dropped (top few):     {top_codes(use_code_dropped) or 'none'}")
+    if stale:
+        print(f"  {stale:,} recent deeds dropped as stale values (excluded transfers, no reassessment)")
+
     if not kept:
         raise ParcelDataError(
-            f"read {read:,} rows but found no usable single-family sales.\n"
-            "  Most likely the use-code or sale-price column is named something this script does not know.\n"
-            "  The matched columns are printed above - check them against the file and update COLUMNS."
+            f"read {read:,} rows but found no usable single-family parcels.\n"
+            "  The matched columns and the use codes seen are printed above - check them against the file.\n"
+            "  If the use code is not 01xx in this roll, adjust SFR_CODE_PREFIX."
         )
 
     records = {}
@@ -369,16 +457,19 @@ def main():
     payload = {
         "meta": {
             "schemaVersion": 1,
-            "source": "LA County Assessor parcel roll (recorded sale prices)",
+            "source": "LA County Assessor parcel roll (assessed value at last transfer)",
+            "basis": "assessed-at-recent-transfer",
             "sourceFile": os.path.basename(args.csv),
             "salesFrom": cutoff,
             "generated": datetime.date.today().isoformat(),
             "minSalePrice": MIN_SALE_PRICE,
             "note": (
-                "Median RECORDED SALE PRICE of single-family parcels sold since "
-                f"{cutoff}. Not assessed value: under Proposition 13 an assessed "
-                "value reflects how long the owner has held the house, not what it "
-                "is worth."
+                "Median assessed value of single-family parcels whose deed was "
+                f"recorded since {cutoff}. Proposition 13 resets a property's "
+                "assessed value to its purchase price on sale, so for a "
+                "recently-transferred house the two are approximately the same "
+                "figure. Long-held houses are excluded precisely because their "
+                "assessed value is decades stale."
             ),
         },
         "blockGroups": records,
@@ -390,7 +481,7 @@ def main():
 
     thin = sum(1 for r in records.values() if r["thin"])
     print(f"\nWrote {args.out} ({os.path.getsize(args.out) / 1024:.0f} KB)")
-    print(f"  {read:,} rows read, {kept:,} single-family sales kept since {cutoff}")
+    print(f"  {read:,} rows read, {kept:,} single-family parcels transferred since {cutoff}")
     print(f"  {len(records):,} block groups have at least one sale")
     print(f"  {thin:,} of those rest on fewer than {args.min_sales} sales and are flagged as thin")
     if unplaced:

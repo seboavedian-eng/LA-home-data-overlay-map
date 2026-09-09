@@ -991,13 +991,18 @@ const BlockGroupApp = (() => {
     const thin = rec.thin || rec.saleCount < 3;
     return `
       <div class="section-label">Home prices${infoIcon(
-        "Median RECORDED SALE PRICE of single-family parcels sold here in the last few years, from the LA County " +
-          "Assessor roll. Deliberately not assessed value: under Proposition 13 an assessed value reflects how long " +
-          "the owner has held the house, not what it is worth, so two identical neighbours can differ tenfold. " +
-          "Condos and townhouses are excluded, so this is comparable house to house."
+        "Median value of single-family homes here that CHANGED HANDS in the last few years, from the LA County " +
+          "Assessor roll. The public roll carries no sale price, so this is assessed value - which works only " +
+          "because Proposition 13 resets a property's assessed value to its purchase price when it sells. For a " +
+          "recently-sold house the two are about the same number; for a long-held one the assessed value is decades " +
+          "stale, which is exactly why those are excluded. Condos and townhouses are excluded too, so this is " +
+          "comparable house to house."
       )}</div>
       <table>
-        <tr><td class="k">Median sale price</td><td class="v key-figure">${Utils.fmtCurrency(rec.medianSalePrice)}</td></tr>
+        <tr><td class="k">Median home price${infoIcon(
+          "Assessed at last sale, so it lags the market by up to three years and misses any appreciation since. " +
+            "Read it as a level - which neighbourhoods are 800k and which are 2m - rather than as today's asking price."
+        )}</td><td class="v key-figure">${Utils.fmtCurrency(rec.medianSalePrice)}</td></tr>
         ${
           rec.medianPricePerSqft
             ? `<tr><td class="k">Per square foot</td><td class="v">${Utils.fmtCurrency(rec.medianPricePerSqft)}</td></tr>`
@@ -2239,7 +2244,7 @@ const BlockGroupApp = (() => {
       value: (r) => householdSize(r).value,
     },
     medianSalePrice: {
-      label: "Median home sale price ($)",
+      label: "Median home price ($, at last sale)",
       unit: "$",
       step: 25000,
       value: (r, f, props) => {
