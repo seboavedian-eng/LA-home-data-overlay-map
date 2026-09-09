@@ -367,6 +367,21 @@ def main():
                 cols[key] = find_column(header, COLUMNS[key], key)
             except ParcelDataError:
                 cols[key] = None  # optional
+        # Land + improvements is the figure wanted. "Total Value" adds fixtures
+        # and personal property, which are zero on a house, so it is an
+        # acceptable stand-in. "Taxable Value" is not: the homeowners'
+        # exemption has already been subtracted from it, which would mark down
+        # every owner-occupied house by $7,000 and leave rentals untouched.
+        if cols.get("land_value") and cols.get("improvement_value"):
+            print("  Value basis: Land Value + Improvement Value")
+        elif cols.get("total_value") and "taxable" not in cols["total_value"].lower():
+            print(f"  Value basis: {cols['total_value']} (land and improvement columns not present)")
+        elif cols.get("total_value"):
+            print(
+                f"  Value basis: {cols['total_value']} - WARNING: exemptions are already subtracted from this\n"
+                "    column, so owner-occupied homes read about $7,000 low. Prefer a roll export that\n"
+                "    carries Land Value and Improvement Value."
+            )
         if not (cols.get("land_value") or cols.get("improvement_value") or cols.get("total_value")):
             raise ParcelDataError(
                 "found no value column at all (land, improvement or total).\n"
@@ -489,6 +504,10 @@ def main():
     print(
         f"  median of the block group medians: ${all_medians[len(all_medians) // 2]:,}"
         f" (range ${all_medians[0]:,} to ${all_medians[-1]:,})"
+    )
+    print(
+        "\nNote: these are current-roll values, so a sale from a year or two ago reads a few"
+        "\npercent above what it actually sold for (Prop 13 trends a base value up ~2% a year)."
     )
     print("\nReload blockgroups.html - the card gains a Home prices section.")
 
