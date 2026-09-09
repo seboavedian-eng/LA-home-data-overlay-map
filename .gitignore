@@ -4,3 +4,5 @@ tests/screenshot-*.png
 __pycache__/
 
 census-api-key.txt
+raw-data/
+ors-api-key.txt
