@@ -279,6 +279,13 @@ family" assumption can be checked against your own file rather than taken on
 trust, plus the 5th/95th percentile of the block group medians so an
 implausible tail is visible immediately.
 
+**Click any sales count** to see the individual transfers behind it: address,
+recording date, floor area, year built, and the assessed land and improvement
+values with the exemption that nets them to the total. Those rows live in a
+second file, `js/data/parcel-sales-la-county.json`, which the page fetches
+only when a count is first clicked - it is far larger than the summary and
+most sessions never open it.
+
 **The card shows a year-by-year table**, not a single number: median, 10th and
 90th percentile, median $/ft² of building area, sales, and turnover (that
 year's sales as a share of the block group's single-family stock). Percentiles

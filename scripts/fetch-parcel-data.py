@@ -79,6 +79,10 @@ COUNTY = "037"
 
 DEFAULT_CSV = os.path.join("raw-data", "assessor-roll-2025.csv")
 DEFAULT_OUT = os.path.join("js", "data", "parcels-la-county.json")
+# The per-sale detail behind each count. Kept in its own file because it is
+# two orders of magnitude larger than the summary, and the page only needs it
+# if someone actually clicks a number.
+DEFAULT_SALES_OUT = os.path.join("js", "data", "parcel-sales-la-county.json")
 
 # Column names differ between roll years and between the portal's exports, so
 # every field is looked up by candidate list and the script prints what it
@@ -101,6 +105,10 @@ COLUMNS = {
     # lot area is picked up without a code change.
     "lot_sqft": ["Lot Size", "LotSizeSqFt", "Land Square Footage", "LandSqFt", "Shape__Area"],
     "roll_year": ["Roll Year", "RollYear", "TaxYear"],
+    # For the per-sale detail table.
+    "address": ["Property Location", "PropertyLocation", "Situs Address", "SitusAddress", "Address"],
+    "exemption": ["Total Exemption", "TotalExemption", "Home Owners Exemption"],
+    "total_only": ["Total Value", "TotalValue"],
 }
 
 # LA County use codes: the leading "01" is single-family residence. The text
@@ -364,6 +372,7 @@ def main():
     )
     parser.add_argument("--csv", default=DEFAULT_CSV, help="Assessor roll CSV")
     parser.add_argument("--out", default=DEFAULT_OUT, help="Output JSON path")
+    parser.add_argument("--sales-out", default=DEFAULT_SALES_OUT, help="Per-sale detail JSON path")
     parser.add_argument(
         "--from-year",
         type=int,
@@ -411,6 +420,7 @@ def main():
         for key in (
             "use_type", "land_value", "improvement_value", "total_value",
             "base_year", "sqft", "year_built", "units", "ain", "roll_year", "lot_sqft",
+            "address", "exemption", "total_only",
         ):
             try:
                 cols[key] = find_column(header, COLUMNS[key], key)
@@ -492,10 +502,21 @@ def main():
                     continue
 
             roll = to_float(row.get(cols.get("roll_year"))) or 0
-            key = (ain, str(row.get(cols["sale_date"]) or "").strip())
+            recorded = str(row.get(cols["sale_date"]) or "").strip()
+            key = (ain, recorded)
             existing = transactions.get(key)
             if existing is None or roll < existing[0]:
-                transactions[key] = (roll, price, sqft_value, geoid, year)
+                detail = {
+                    "address": str(row.get(cols["address"]) or "").strip() if cols.get("address") else "",
+                    "recorded": recorded,
+                    "sqft": sqft_value,
+                    "land": to_float(row.get(cols["land_value"])) if cols.get("land_value") else None,
+                    "improvement": to_float(row.get(cols["improvement_value"])) if cols.get("improvement_value") else None,
+                    "exemption": to_float(row.get(cols["exemption"])) if cols.get("exemption") else None,
+                    "total": to_float(row.get(cols["total_only"])) if cols.get("total_only") else None,
+                    "yearBuilt": to_float(row.get(cols["year_built"])) if cols.get("year_built") else None,
+                }
+                transactions[key] = (roll, price, sqft_value, geoid, year, detail)
 
     def top_codes(counter):
         return ", ".join(f"{code or '(blank)'}: {n:,}" for code, n in sorted(counter.items(), key=lambda kv: -kv[1])[:6])
@@ -514,7 +535,24 @@ def main():
     # --- Aggregate: per block group, per year --------------------------------
     by_bg = {}
     county_year_prices = {}
-    for roll, price, sqft_value, geoid, year in transactions.values():
+    sales_rows = {}
+    for roll, price, sqft_value, geoid, year, detail in transactions.values():
+        # Rows are arrays, not objects: repeating seven key names across a
+        # quarter of a million sales triples the file for no information.
+        # The order is declared in the file's meta.
+        sales_rows.setdefault(geoid, {}).setdefault(str(year), []).append(
+            [
+                detail["address"],
+                detail["recorded"],
+                detail["sqft"],
+                detail["land"],
+                detail["improvement"],
+                detail["exemption"],
+                detail["total"] if detail["total"] is not None else round(price),
+                detail["yearBuilt"],
+            ]
+        )
+
         bucket = by_bg.setdefault(geoid, {})
         entry = bucket.setdefault(year, {"prices": [], "ppsf": []})
         entry["prices"].append(price)
@@ -579,12 +617,31 @@ def main():
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, separators=(",", ":"))
 
+    sales_payload = {
+        "meta": {
+            "schemaVersion": 1,
+            "columns": ["address", "recorded", "sqft", "land", "improvement", "exemption", "total", "yearBuilt"],
+            "source": payload["meta"]["source"],
+            "generated": payload["meta"]["generated"],
+            "note": (
+                "One row per single-family transfer, behind the counts in the summary file. "
+                "Values are the assessed land and improvement figures set at that transfer; "
+                "exemption is what is subtracted from them to reach the taxable value, so "
+                "land + improvement - exemption is what the county taxes."
+            ),
+        },
+        "byBlockGroup": sales_rows,
+    }
+    with open(args.sales_out, "w", encoding="utf-8") as fh:
+        json.dump(sales_payload, fh, separators=(",", ":"))
+
     medians = sorted(r["medianSalePrice"] for r in records.values())
 
     def pct(p):
         return medians[min(len(medians) - 1, int(len(medians) * p))]
 
     print(f"\nWrote {args.out} ({os.path.getsize(args.out) / 1024:.0f} KB)")
+    print(f"Wrote {args.sales_out} ({os.path.getsize(args.sales_out) / 1024 / 1024:.1f} MB, loaded only when a count is clicked)")
     print(f"  {read:,} rows read, {sfr_rows:,} single-family rows")
     print(f"  {len(ain_geoid):,} distinct single-family parcels, {len(transactions):,} distinct transfers since {args.from_year}")
     print(f"  {len(records):,} block groups have at least one transfer")

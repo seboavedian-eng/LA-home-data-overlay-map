@@ -459,6 +459,10 @@ const BG_CONFIG = {
 
   // Produced by scripts/fetch-parcel-data.py from the LA County Assessor roll.
   PARCEL_DATA: "js/data/parcels-la-county.json",
+  // The per-sale detail behind each count. Fetched only when a count is
+  // clicked - it is far larger than the summary and most sessions never
+  // open it.
+  PARCEL_SALES: "js/data/parcel-sales-la-county.json",
 
   // OpenRouteService: free, no credit card, 2,500 requests/day. The key lives
   // in ors-api-key.txt beside this project (gitignored) and is read at start.
@@ -1078,7 +1082,8 @@ const BlockGroupApp = (() => {
           <td class="v dim">${shortMoney(y.p10)}</td>
           <td class="v dim">${shortMoney(y.p90)}</td>
           <td class="v">${y.ppsf ? `$${Math.round(y.ppsf)}` : "-"}</td>
-          <td class="v${thin ? " thin-sample" : ""}">${y.n}</td>
+          <td class="v${thin ? " thin-sample" : ""}"><button type="button" class="sales-link" data-year="${year}"
+            title="See the individual sales">${y.n}</button></td>
           <td class="v dim">${y.turnover === undefined ? "-" : `${y.turnover.toFixed(1)}%`}</td>
         </tr>`;
       })
@@ -1128,6 +1133,125 @@ const BlockGroupApp = (() => {
         rec.sfhTotal ? `Turnover is against ${Utils.fmtNumber(rec.sfhTotal)} single-family homes in this block group. ` : ""
       }The latest year is short: sales are recorded in the following year's roll.</p>
       ${countyRow}`;
+  }
+
+  // --- The individual sales behind a count --------------------------------
+  let salesData = null;
+  let salesMeta = null;
+  let salesLoad = null;
+
+  function loadSalesData() {
+    if (salesLoad) return salesLoad;
+    salesLoad = (async () => {
+      const res = await fetch(BG_CONFIG.PARCEL_SALES, { cache: "no-cache" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      salesData = data.byBlockGroup || {};
+      salesMeta = data.meta || null;
+      return salesData;
+    })();
+    return salesLoad;
+  }
+
+  function money(n) {
+    return n === null || n === undefined || n === "" ? "-" : Utils.fmtCurrency(n);
+  }
+
+  function readableDate(raw) {
+    const digits = String(raw || "").replace(/\D/g, "");
+    if (digits.length === 8) {
+      const year = digits.slice(0, 4);
+      // The roll writes YYYYMMDD; anything else is left as it came.
+      if (Number(year) > 1900 && Number(year) < 2100) {
+        return `${year}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+      }
+    }
+    return raw || "-";
+  }
+
+  function closeSalesPanel() {
+    const panel = document.getElementById("sales-panel");
+    if (panel) panel.classList.add("hidden");
+  }
+
+  async function openSalesPanel(geoid, year, label) {
+    const panel = document.getElementById("sales-panel");
+    panel.classList.remove("hidden");
+    panel.innerHTML = `<div class="sales-inner"><button class="sales-close" type="button">&times;</button>
+      <h3>${label} &middot; ${year}</h3><p class="src-note">Loading the sales&hellip;</p></div>`;
+    panel.querySelector(".sales-close").addEventListener("click", closeSalesPanel);
+
+    let rows = [];
+    try {
+      const data = await loadSalesData();
+      rows = ((data[geoid] || {})[year] || []).slice();
+    } catch (err) {
+      panel.querySelector(".sales-inner").innerHTML =
+        `<button class="sales-close" type="button">&times;</button>
+         <h3>${label} &middot; ${year}</h3>
+         <p class="hint error">No sale detail file (${err.message}). Re-run
+         <code>${fetchCommand().replace("fetch-blockgroup-data.py", "fetch-parcel-data.py")}</code>
+         to generate it.</p>`;
+      panel.querySelector(".sales-close").addEventListener("click", closeSalesPanel);
+      return;
+    }
+
+    // Dearest first: the top of a block group's range is what tells you what
+    // the good houses on that street go for.
+    rows.sort((a, b) => (b[6] || 0) - (a[6] || 0));
+
+    const body = rows
+      .map(
+        (r) => `<tr>
+          <td class="addr">${r[0] || "-"}</td>
+          <td>${readableDate(r[1])}</td>
+          <td class="num">${r[2] ? Utils.fmtNumber(r[2]) : "-"}</td>
+          <td class="num">${r[7] || "-"}</td>
+          <td class="num">${money(r[3])}</td>
+          <td class="num">${money(r[4])}</td>
+          <td class="num">${r[5] ? `-${money(r[5])}` : "-"}</td>
+          <td class="num total">${money(r[6])}</td>
+        </tr>`
+      )
+      .join("");
+
+    panel.innerHTML = `
+      <div class="sales-inner">
+        <button class="sales-close" type="button">&times;</button>
+        <h3>${label} &middot; ${year}</h3>
+        <p class="src-note">${rows.length} single-family transfer${rows.length === 1 ? "" : "s"} recorded that year,
+          dearest first. Land and improvement are the assessed values set at the transfer; the exemption is what is
+          subtracted from them to reach the taxable value.</p>
+        <div class="sales-scroll">
+          <table class="sales-table">
+            <thead>
+              <tr>
+                <th>Address</th><th>Recorded</th><th>Sq ft</th><th>Built</th>
+                <th>Land</th><th>Improvement</th><th>Exemption</th><th>Total</th>
+              </tr>
+            </thead>
+            <tbody>${body || '<tr><td colspan="8">No sales recorded for this year.</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>`;
+    panel.querySelector(".sales-close").addEventListener("click", closeSalesPanel);
+  }
+
+  // The card is re-rendered constantly and exists in two places, so this
+  // listens on the document rather than binding each button as it appears.
+  function initSalesPanel() {
+    document.addEventListener("click", (e) => {
+      const link = e.target.closest && e.target.closest(".sales-link");
+      if (!link) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!selectedProps) return;
+      const { tractLabel, bgLabel } = tractAndBlockGroup(selectedProps);
+      openSalesPanel(geoidOf(selectedProps), link.dataset.year, `Tract ${tractLabel}, Block Group ${bgLabel}`);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeSalesPanel();
+    });
   }
 
   // --- Commute (OpenRouteService) -----------------------------------------
@@ -3717,6 +3841,7 @@ const BlockGroupApp = (() => {
     initAddressSearch();
     initPinDrop();
     initInfoTips();
+    initSalesPanel();
     initCommute();
     loadParcelData();
     loadOrsKey();

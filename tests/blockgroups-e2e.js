@@ -302,6 +302,28 @@ async function main() {
     })
   );
 
+  // The per-sale detail behind each count, in its own file because it is far
+  // larger than the summary and only fetched when a count is clicked.
+  const salesPath = path.join(REPO, "js", "data", "parcel-sales-la-county.json");
+  fs.writeFileSync(
+    salesPath,
+    JSON.stringify({
+      meta: {
+        columns: ["address", "recorded", "sqft", "land", "improvement", "exemption", "total", "yearBuilt"],
+      },
+      byBlockGroup: {
+        "060372011001": {
+          "2021": [
+            ["123 N Spring St, Los Angeles", "20210415", 1480, 620000, 430000, 7000, 1050000, 1948],
+            ["77 Bunker Hill Rd, Los Angeles", "20210902", 2100, 900000, 500000, 0, 1400000, 1962],
+            ["9 Olive Ct, Los Angeles", "20211118", 1150, 500000, 380000, 7000, 880000, 1939],
+          ],
+          "2024": [["55 Hill St, Los Angeles", "20240220", 1600, 800000, 510000, 7000, 1310000, 1971]],
+        },
+      },
+    })
+  );
+
   // The routing key. Read as a file so it never has to be pasted into code.
   const orsKeyPath = path.join(REPO, "ors-api-key.txt");
   fs.writeFileSync(orsKeyPath, "5b3ce3597851110001cf6248TESTKEYTESTKEYTESTKEY");
@@ -1376,6 +1398,59 @@ async function main() {
       priceTable[0][2] === "-" && priceTable[0][3] === "-",
       JSON.stringify(priceTable[0])
     );
+    // --- The sales behind a count ---
+    step(
+      "the sales count is clickable, the other cells are not",
+      (await page.locator("#detail-panel .price-table .sales-link").count()) === 2,
+      `${await page.locator("#detail-panel .price-table .sales-link").count()} clickable counts`
+    );
+    step("no sale detail is fetched until a count is clicked", !(await page.locator("#sales-panel").isVisible()));
+
+    await page.click('#detail-panel .price-table .sales-link[data-year="2021"]');
+    await page.waitForTimeout(600);
+    step("clicking a count opens the sales panel", await page.locator("#sales-panel").isVisible());
+    const salesRows = await page.evaluate(() =>
+      [...document.querySelectorAll("#sales-panel .sales-table tbody tr")].map((tr) =>
+        [...tr.children].map((td) => td.textContent.trim())
+      )
+    );
+    step(
+      "it lists one row per sale that year, and only that year",
+      salesRows.length === 3,
+      `${salesRows.length} rows for 2021 (2024 has 1)`
+    );
+    step(
+      "each row carries address, date, size, year built and the values that net to the total",
+      salesRows[0][0].includes("Bunker Hill") &&
+        salesRows[0][1] === "2021-09-02" &&
+        salesRows[0][2] === "2,100" &&
+        salesRows[0][3] === "1962" &&
+        salesRows[0][4] === "$900,000" &&
+        salesRows[0][5] === "$500,000" &&
+        salesRows[0][7] === "$1,400,000",
+      JSON.stringify(salesRows[0])
+    );
+    step(
+      "rows are dearest first, so the top of the range is the first thing read",
+      Number(salesRows[0][7].replace(/\D/g, "")) > Number(salesRows[2][7].replace(/\D/g, "")),
+      salesRows.map((r) => r[7]).join(" > ")
+    );
+    step(
+      "an exemption is shown as the subtraction it is",
+      salesRows.some((r) => r[6].startsWith("-$")),
+      JSON.stringify(salesRows.map((r) => r[6]))
+    );
+    await page.click('#detail-panel .price-table .sales-link[data-year="2024"]');
+    await page.waitForTimeout(400);
+    step(
+      "clicking another year swaps the panel's contents rather than stacking panels",
+      (await page.locator("#sales-panel").count()) === 1 &&
+        (await page.locator("#sales-panel .sales-table tbody tr").count()) === 1
+    );
+    await page.click("#sales-panel .sales-close");
+    await page.waitForTimeout(200);
+    step("the panel closes", !(await page.locator("#sales-panel").isVisible()));
+
     const turnHeader = await page.evaluate(() => {
       const th = [...document.querySelectorAll("#detail-panel .price-table th")].pop();
       return th ? th.textContent.replace(/\s+/g, " ").trim() : "";
@@ -2212,6 +2287,7 @@ async function main() {
     fs.rmSync(dataPath, { force: true });
     fs.rmSync(windPath, { force: true });
     fs.rmSync(parcelPath, { force: true });
+    fs.rmSync(salesPath, { force: true });
     fs.rmSync(orsKeyPath, { force: true });
   }
 

@@ -489,3 +489,70 @@ html, body {
   flex: none;
   object-fit: cover;
 }
+
+/* --- The sales-detail panel --- */
+/* Opened from a count on the block group card. It floats over the map rather
+   than living in the sidebar: eight columns of addresses and dollar figures
+   need more width than a 330px column can give. */
+.sales-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.sales-link:hover { color: #14663a; }
+
+#sales-panel {
+  position: absolute;
+  z-index: 1200;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  max-height: calc(100% - 32px);
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+@media (min-width: 1100px) {
+  /* Leave the map visible beside it on a wide screen. */
+  #sales-panel { right: auto; width: 760px; }
+}
+.sales-inner { padding: 14px 16px; display: flex; flex-direction: column; max-height: calc(100vh - 120px); }
+.sales-inner h3 { margin: 0 0 4px; font-size: 0.95rem; }
+.sales-close {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  border: none;
+  background: none;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+.sales-close:hover { color: var(--ink); }
+.sales-scroll { overflow: auto; margin-top: 8px; }
+.sales-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+.sales-table th {
+  position: sticky;
+  top: 0;
+  background: var(--panel-bg);
+  text-align: right;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.sales-table th:first-child { text-align: left; }
+.sales-table td { padding: 4px 6px; border-bottom: 1px solid #f0f2f4; white-space: nowrap; }
+.sales-table td.num { text-align: right; }
+.sales-table td.addr { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.sales-table td.total { font-weight: 700; color: #14663a; }
+.sales-table tbody tr:hover { background: #f7fafc; }
