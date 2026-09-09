@@ -320,6 +320,42 @@ area lives only in the parcel *geometry* (the ~2 GB shapefile/geodatabase),
 where it is a field on each polygon. The script already looks for a lot column
 and will use it if a future export carries one.
 
+### Optional: listings for sale (Redfin)
+
+1. On redfin.com, search with your filters, switch to the **table view**,
+   scroll to the bottom of the table and click **Download All**. Redfin caps a
+   download at 350 homes and hides the button under 20 results, so pull one
+   file per neighbourhood.
+2. Save the files into `raw-data/` **keeping their `redfin_YYYYMMDDHHMMSS.csv`
+   names** - the timestamp in the filename is the only record of when the
+   snapshot was true, and the importer reads it.
+3. Run:
+
+```
+# Windows
+python scripts\import-listings.py
+
+# macOS / Linux
+python3 scripts/import-listings.py
+```
+
+Select a block group and its listings appear as dots; click one for the house
+card, which stays open alongside the block group card so both can be read at
+once.
+
+**Days on market is stored as a listing date, not as a number.** The
+days-on-market column in an export is only true on the day it was downloaded -
+by tomorrow it is a day short. The importer subtracts it from the download
+time to get the date the home was listed, and the card counts forward from
+there.
+
+**`firstSeen` is carried across runs**, so "NEW" means new to *you* rather
+than merely new to the newest file. Re-running with fresh downloads updates
+prices and days on market while preserving when each home first appeared.
+
+Lot size is here too, which the assessor roll lacks - so listings show
+**$/ft² of lot** as well as of floor area.
+
 ### Optional: commute times
 
 Put a free [OpenRouteService](https://openrouteservice.org/dev/#/signup) key
@@ -605,6 +641,8 @@ js/blockgroups.js      ...its map, toggles, viewport loading and popup
 css/blockgroups.css    ...its styles
 scripts/fetch-blockgroup-data.py   One-time block-group ACS fetch
 scripts/fetch-wind-data.py         One-time Global Wind Atlas GeoTIFF -> JSON grid
+scripts/import-listings.py         Redfin CSV exports -> the listings layer
+scripts/bg_geo.py                  Block group outlines + point-in-polygon, shared by both
 
 index.html
 css/style.css

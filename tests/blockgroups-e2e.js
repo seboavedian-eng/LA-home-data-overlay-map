@@ -324,6 +324,86 @@ async function main() {
     })
   );
 
+  // Listings, as scripts/import-listings.py writes them from a Redfin export.
+  const listingsPath = path.join(REPO, "js", "data", "listings.json");
+  fs.writeFileSync(
+    listingsPath,
+    JSON.stringify({
+      meta: {
+        source: "Redfin 'Download All' export (test fixture)",
+        latestDownload: "2026-09-09T16:01:53",
+        generated: "2026-09-09T16:30:00",
+        files: [{ file: "redfin_20260909160153.csv", downloaded: "2026-09-09T16:01:53" }],
+      },
+      byBlockGroup: {
+        "060372011001": [
+          {
+            id: "https://www.redfin.com/CA/Burbank/331-N-Reese-Pl-91506/home/5334447",
+            address: "331 N Reese",
+            city: "Burbank",
+            zip: "91506",
+            price: 1400000,
+            beds: 3,
+            baths: 2,
+            sqft: 1921,
+            lotSqft: 6746,
+            yearBuilt: 1940,
+            listedOn: "2026-09-02",
+            status: "Active",
+            type: "Single Family Residential",
+            url: "https://www.redfin.com/CA/Burbank/331-N-Reese-Pl-91506/home/5334447",
+            mls: "BB26142414",
+            source: "CRMLS",
+            lat: 34.05,
+            lon: -118.25,
+            geoid: "060372011001",
+            firstSeen: "2026-09-09T16:01:53",
+            lastSeen: "2026-09-09T16:01:53",
+          },
+          {
+            id: "https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903",
+            address: "322 S Lincoln St",
+            city: "Burbank",
+            zip: "91506",
+            price: 995000,
+            beds: 3,
+            baths: 3,
+            sqft: 1721,
+            lotSqft: 7067,
+            yearBuilt: 1944,
+            listedOn: "2026-08-01",
+            status: "Active",
+            type: "Single Family Residential",
+            url: "https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903",
+            mls: "BB26192871",
+            source: "CRMLS",
+            lat: 34.052,
+            lon: -118.252,
+            geoid: "060372011001",
+            firstSeen: "2026-07-02T10:00:00",
+            lastSeen: "2026-09-09T16:01:53",
+          },
+        ],
+        "060372011003": [
+          {
+            id: "https://www.redfin.com/CA/Burbank/other/home/1",
+            address: "9 Olive Ct",
+            price: 780000,
+            sqft: 1000,
+            lotSqft: 5000,
+            listedOn: "2026-09-01",
+            url: "https://www.redfin.com/CA/Burbank/other/home/1",
+            lat: 34.05,
+            lon: -118.21,
+            geoid: "060372011003",
+            firstSeen: "2026-09-09T16:01:53",
+            lastSeen: "2026-09-09T16:01:53",
+          },
+        ],
+      },
+    })
+  );
+
   // The routing key. Read as a file so it never has to be pasted into code.
   const orsKeyPath = path.join(REPO, "ors-api-key.txt");
   fs.writeFileSync(orsKeyPath, "5b3ce3597851110001cf6248TESTKEYTESTKEYTESTKEY");
@@ -1398,6 +1478,146 @@ async function main() {
       priceTable[0][2] === "-" && priceTable[0][3] === "-",
       JSON.stringify(priceTable[0])
     );
+    // --- Listings for the selected block group ---
+    step(
+      "the selected block group's listings appear as dots",
+      (await page.evaluate(() => {
+        let n = 0;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (l.options && l.options.fillColor === "#b3261e") n += 1;
+        });
+        return n;
+      })) === 2,
+      "block group A has two listings, block group C has one"
+    );
+    step(
+      "a listing in a DIFFERENT block group is not drawn",
+      await page.evaluate(() => {
+        // Block group C's listing sits east of -118.22; A's two sit west of it.
+        let found = false;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (l.getLatLng && l.options && l.options.fillColor === "#b3261e" && l.getLatLng().lng > -118.22) {
+            found = true;
+          }
+        });
+        return !found;
+      })
+    );
+
+    await page.evaluate(() => {
+      BlockGroupApp.state.map.eachLayer((l) => {
+        if (l.getLatLng && l.options && l.options.fillColor === "#b3261e" && l.getLatLng().lat === 34.05) {
+          l.fire("click", { latlng: l.getLatLng() });
+        }
+      });
+    });
+    await page.waitForTimeout(400);
+    const houseCard = await page.locator("#house-card").innerText();
+    const housePrice = await page.locator("#house-card .house-price").innerText();
+    step("clicking a listing opens the house card", await page.locator("#house-card").isVisible());
+    step(
+      "the block group card stays open alongside it",
+      (await page.locator(".leaflet-popup").count()) === 1 && (await page.locator("#detail-panel .detail-card").count()) === 1,
+      "both cards readable at once"
+    );
+    step(
+      "price leads the card, with both per-square-foot rates",
+      housePrice.startsWith("$1,400,000") && houseCard.includes("$729") && houseCard.includes("$208"),
+      `${housePrice} | ${(houseCard.match(/\$\d+\/ft.{0,30}/g) || []).join(" ")}`
+    );
+    // Listed 2026-09-02; the file said 7 days on the day it was downloaded.
+    // The card must count forward from the listing date, not repeat the 7.
+    // The label carries an info icon, so match across whatever sits between.
+    const domText = (houseCard.match(/Days on market\D*(\d+)/) || [])[1];
+    step(
+      "days on market is counted from the listing date, not copied from the file",
+      Number(domText) >= 7,
+      `card says ${domText} days; the export said 7 on 2026-09-09`
+    );
+    step(
+      "the card carries the Redfin link, opening in a new tab",
+      (await page.locator('#house-card a[href*="redfin.com"][target="_blank"]').count()) === 1
+    );
+    step(
+      "a listing first seen in the latest download is flagged NEW, an older one is not",
+      (await page.locator("#house-card .new-badge").count()) === 1,
+      "331 N Reese first appeared in this download"
+    );
+
+    // Another house in the SAME block group: swap the house card, keep the
+    // block group card.
+    await page.evaluate(() => {
+      BlockGroupApp.state.map.eachLayer((l) => {
+        if (l.getLatLng && l.options && l.options.fillColor && l.getLatLng().lat === 34.052) {
+          l.fire("click", { latlng: l.getLatLng() });
+        }
+      });
+    });
+    await page.waitForTimeout(400);
+    const secondPrice = await page.locator("#house-card .house-price").innerText();
+    step(
+      "clicking another house in the same block group swaps the house card only",
+      secondPrice.startsWith("$995,000") && (await page.locator(".leaflet-popup").count()) === 1,
+      secondPrice
+    );
+    step(
+      "a listing seen in an earlier download is not flagged NEW",
+      (await page.locator("#house-card .new-badge").count()) === 0
+    );
+
+    // A different block group closes both, then opens the new one.
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011003") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(500);
+    step(
+      "switching block group closes the house card",
+      !(await page.locator("#house-card").isVisible())
+    );
+    step(
+      "and swaps in that block group's listings",
+      (await page.evaluate(() => {
+        let n = 0;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (l.options && l.options.fillColor === "#b3261e") n += 1;
+        });
+        return n;
+      })) === 1
+    );
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(400);
+
+    // --- Data sources table ---
+    await page.evaluate(() => document.getElementById("sources-details").setAttribute("open", "open"));
+    await page.waitForTimeout(300);
+    const sourceRows = await page.evaluate(() =>
+      [...document.querySelectorAll("#source-table tbody tr")].map((tr) =>
+        [...tr.children].map((td) => td.textContent.trim())
+      )
+    );
+    step(
+      "the sources table lists every layer with a one-line description",
+      sourceRows.length >= 15 && sourceRows.every((r) => r[0] && r[1]),
+      `${sourceRows.length} sources listed`
+    );
+    step(
+      "live services say live, and file-backed ones give the date they were built",
+      sourceRows.some((r) => r[2] === "live") &&
+        sourceRows.some((r) => /2026-09-09/.test(r[2])),
+      JSON.stringify(sourceRows.filter((r) => /listing|Home prices/i.test(r[0])).map((r) => [r[0], r[2]]))
+    );
+    step(
+      "the listings row names Redfin as the source",
+      sourceRows.some((r) => /listings/i.test(r[0]) && /redfin/i.test(r[1])),
+      JSON.stringify(sourceRows.find((r) => /listings/i.test(r[0])))
+    );
+
     // --- The sales behind a count ---
     step(
       "the sales count is clickable, the other cells are not",
@@ -2288,6 +2508,7 @@ async function main() {
     fs.rmSync(windPath, { force: true });
     fs.rmSync(parcelPath, { force: true });
     fs.rmSync(salesPath, { force: true });
+    fs.rmSync(listingsPath, { force: true });
     fs.rmSync(orsKeyPath, { force: true });
   }
 

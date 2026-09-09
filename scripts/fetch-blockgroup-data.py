@@ -33,6 +33,7 @@ Usage:
 """
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -545,6 +546,8 @@ def main():
             # Bumped when the record shape changes, so the page can tell a
             # stale data file from a missing one and say which it is.
             "schemaVersion": 4,
+            # So the sidebar's data-source table can say when this was pulled.
+            "generated": datetime.date.today().isoformat(),
             "ageBracketLabels": {str(k): v for k, v in B01001_BRACKETS.items()},
             "year": args.year,
             "decennialYear": 2020,

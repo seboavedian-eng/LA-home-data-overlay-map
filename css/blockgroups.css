@@ -556,3 +556,81 @@ html, body {
 .sales-table td.addr { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .sales-table td.total { font-weight: 700; color: #14663a; }
 .sales-table tbody tr:hover { background: #f7fafc; }
+
+/* --- The house card --- */
+/* Deliberately a separate panel from the block group card: selecting a house
+   should let you read the house and its neighbourhood side by side. */
+#house-card {
+  position: absolute;
+  z-index: 1100;
+  right: 16px;
+  top: 16px;
+  width: 290px;
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+  padding: 14px 16px 12px;
+  font-size: 0.8rem;
+}
+.house-close {
+  position: absolute;
+  right: 8px;
+  top: 6px;
+  border: none;
+  background: none;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+.house-close:hover { color: var(--ink); }
+.house-price {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #14663a;
+}
+.new-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: #b3261e;
+  color: white;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: 6px;
+}
+.house-rates { margin: 2px 0 6px; font-size: 0.82rem; color: var(--ink); }
+.house-address { margin: 0 0 8px; font-size: 0.85rem; color: var(--muted); }
+#house-card table { width: 100%; border-collapse: collapse; }
+#house-card td { padding: 3px 0; border-bottom: 1px solid #f0f2f4; }
+#house-card td.k { color: var(--muted); }
+#house-card td.v { text-align: right; font-weight: 600; }
+.house-links { margin: 10px 0 2px; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.house-links a { font-weight: 600; }
+
+/* --- Data source table --- */
+#sources-details summary {
+  cursor: pointer;
+  font-size: 0.76rem;
+  color: var(--muted);
+  padding: 4px 0;
+}
+#sources-details summary:hover { color: var(--accent); }
+.source-table { width: 100%; border-collapse: collapse; font-size: 0.68rem; margin-top: 6px; }
+.source-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding: 3px 4px 4px 0;
+}
+.source-table td { padding: 3px 4px 3px 0; border-bottom: 1px solid #f0f2f4; vertical-align: top; }
+.source-table td.dim { color: var(--muted); }
+.source-table td.when { white-space: nowrap; font-weight: 600; }

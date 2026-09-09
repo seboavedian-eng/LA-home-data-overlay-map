@@ -204,6 +204,13 @@
         </div>
       </section>
 
+      <section id="sources-section">
+        <details id="sources-details">
+          <summary>Data sources &amp; when they were last updated</summary>
+          <div id="source-table"></div>
+        </details>
+      </section>
+
       <section id="status-section">
         <button id="status-toggle" type="button">Data source status &#9660;</button>
         <ul id="status-log" class="hidden"></ul>
@@ -215,6 +222,9 @@
       <!-- The individual sales behind a count on the block group card.
            Sits above the map so an eight-column table has room to breathe. -->
       <div id="sales-panel" class="hidden"></div>
+      <!-- One house, opened from a listing dot. Sits alongside the block
+           group card rather than replacing it, so both can be read at once. -->
+      <div id="house-card" class="hidden"></div>
     </main>
   </div>
 

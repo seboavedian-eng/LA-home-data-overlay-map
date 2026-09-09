@@ -463,6 +463,8 @@ const BG_CONFIG = {
   // clicked - it is far larger than the summary and most sessions never
   // open it.
   PARCEL_SALES: "js/data/parcel-sales-la-county.json",
+  // Produced by scripts/import-listings.py from Redfin CSV downloads.
+  LISTINGS_DATA: "js/data/listings.json",
 
   // OpenRouteService: free, no credit card, 2,500 requests/day. The key lives
   // in ors-api-key.txt beside this project (gitignored) and is read at start.
@@ -564,6 +566,7 @@ const BlockGroupApp = (() => {
     if (censusData || censusDataError) return censusData;
     try {
       censusData = await Utils.fetchJSON(BG_CONFIG.BLOCK_GROUP_DATA, { timeoutMs: 60000 });
+      renderSourceTable();
       const count = Object.keys(censusData.blockGroups || {}).length;
       Utils.logStatus(
         "census",
@@ -1022,6 +1025,7 @@ const BlockGroupApp = (() => {
       const data = await res.json();
       parcelData = data.blockGroups || {};
       parcelMeta = data.meta || null;
+      renderSourceTable();
       Utils.logStatus(
         "prices",
         "ok",
@@ -1133,6 +1137,154 @@ const BlockGroupApp = (() => {
         rec.sfhTotal ? `Turnover is against ${Utils.fmtNumber(rec.sfhTotal)} single-family homes in this block group. ` : ""
       }The latest year is short: sales are recorded in the following year's roll.</p>
       ${countyRow}`;
+  }
+
+  // --- Listings (Redfin downloads) ----------------------------------------
+  // Homes for sale are shown for the SELECTED block group only. Drawing every
+  // listing in the county at once would bury the thing being looked at, and
+  // the question this answers is always "what is for sale here", never "what
+  // is for sale everywhere".
+  let listingsData = null;
+  let listingsMeta = null;
+  let listingLayer = null;
+  let selectedListingId = null;
+
+  async function loadListings() {
+    if (listingsData) return listingsData;
+    try {
+      const res = await fetch(BG_CONFIG.LISTINGS_DATA, { cache: "no-cache" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      listingsData = data.byBlockGroup || {};
+      listingsMeta = data.meta || null;
+      renderSourceTable();
+      const count = Object.values(listingsData).reduce((n, rows) => n + rows.length, 0);
+      Utils.logStatus("listings", "ok", `${count} listings loaded (downloaded ${(listingsMeta && listingsMeta.latestDownload) || "?"}).`);
+    } catch (err) {
+      listingsData = {};
+      Utils.logStatus("listings", "info", `No listings file (${err.message}). Drop Redfin exports in raw-data/ and run scripts/import-listings.py.`);
+    }
+    return listingsData;
+  }
+
+  function listingsFor(props) {
+    if (!listingsData) return [];
+    return listingsData[geoidOf(props)] || [];
+  }
+
+  // Days on market, counted forward from the listing date rather than read
+  // from the file. The number Redfin exported was only true on the day it was
+  // downloaded; tomorrow it is one short.
+  function daysOnMarket(listing) {
+    if (!listing.listedOn) return null;
+    const listed = new Date(`${listing.listedOn}T00:00:00`);
+    if (Number.isNaN(listed.getTime())) return null;
+    return Math.max(0, Math.round((Date.now() - listed.getTime()) / 86400000));
+  }
+
+  function isNewListing(listing) {
+    if (!listing.firstSeen || !listingsMeta || !listingsMeta.latestDownload) return false;
+    return listing.firstSeen === listingsMeta.latestDownload;
+  }
+
+  function listingMarker(listing) {
+    const selected = listing.id === selectedListingId;
+    return L.circleMarker([listing.lat, listing.lon], {
+      radius: selected ? 9 : 6,
+      color: "#ffffff",
+      weight: selected ? 3 : 2,
+      fillColor: selected ? "#7f1d1d" : "#b3261e",
+      fillOpacity: 1,
+      pane: "markerPane",
+    });
+  }
+
+  function clearListingLayer() {
+    if (listingLayer) {
+      map.removeLayer(listingLayer);
+      listingLayer = null;
+    }
+  }
+
+  async function showListingsFor(props) {
+    await loadListings();
+    clearListingLayer();
+    const rows = listingsFor(props);
+    if (!rows.length) return;
+
+    listingLayer = L.layerGroup(
+      rows.map((listing) => {
+        const marker = listingMarker(listing);
+        marker.bindTooltip(
+          `${Utils.fmtCurrency(listing.price)} &middot; ${listing.address}${isNewListing(listing) ? " &middot; NEW" : ""}`
+        );
+        marker.on("click", (e) => {
+          if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+          openHouseCard(listing, props);
+        });
+        return marker;
+      })
+    ).addTo(map);
+  }
+
+  function houseCardHTML(listing) {
+    const dom = daysOnMarket(listing);
+    const perSqft = listing.sqft ? listing.price / listing.sqft : null;
+    const perLot = listing.lotSqft ? listing.price / listing.lotSqft : null;
+    const row = (k, v) => (v === null || v === undefined || v === "" ? "" : `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`);
+
+    return `
+      <button class="house-close" type="button">&times;</button>
+      <p class="house-price">${Utils.fmtCurrency(listing.price)}${
+        isNewListing(listing) ? '<span class="new-badge">NEW</span>' : ""
+      }</p>
+      <p class="house-rates">
+        ${perSqft ? `<strong>${Utils.fmtCurrency(Math.round(perSqft))}</strong>/ft&sup2;` : ""}
+        ${perSqft && perLot ? "&nbsp;&middot;&nbsp;" : ""}
+        ${perLot ? `<strong>${Utils.fmtCurrency(Math.round(perLot))}</strong>/ft&sup2; lot` : ""}
+      </p>
+      <p class="house-address">${listing.address}${listing.city ? `, ${listing.city}` : ""} ${listing.zip || ""}</p>
+      <table>
+        ${row(
+          `Days on market${infoIcon(
+            "Counted forward from the day this home was listed, which is the download date minus the days-on-market " +
+              "in the file. The number in a Redfin export is only true on the day it was downloaded - by tomorrow it is " +
+              "already one day short."
+          )}`,
+          dom === null ? null : `${dom} day${dom === 1 ? "" : "s"}`
+        )}
+        ${row("Sq ft", listing.sqft ? Utils.fmtNumber(listing.sqft) : null)}
+        ${row("Lot size", listing.lotSqft ? `${Utils.fmtNumber(listing.lotSqft)} ft²` : null)}
+        ${row("Beds", listing.beds)}
+        ${row("Baths", listing.baths)}
+        ${row("Property type", listing.type)}
+        ${row("Year built", listing.yearBuilt ? String(listing.yearBuilt) : null)}
+        ${row("HOA", listing.hoa ? `${Utils.fmtCurrency(listing.hoa)}/mo` : null)}
+        ${row("Status", listing.status)}
+      </table>
+      <p class="house-links">
+        <a href="${listing.url}" target="_blank" rel="noopener">Open on Redfin &rarr;</a>
+        ${listing.mls ? `<span class="src-note">${listing.source || "MLS"} #${listing.mls}</span>` : ""}
+      </p>
+      <p class="src-note">First seen in a download on ${(listing.firstSeen || "").slice(0, 10) || "?"}.</p>`;
+  }
+
+  function closeHouseCard() {
+    const card = document.getElementById("house-card");
+    if (card) card.classList.add("hidden");
+    selectedListingId = null;
+    if (selectedProps) showListingsFor(selectedProps); // redraw dots unselected
+  }
+
+  function openHouseCard(listing, props) {
+    selectedListingId = listing.id;
+    const card = document.getElementById("house-card");
+    card.classList.remove("hidden");
+    card.innerHTML = houseCardHTML(listing);
+    card.querySelector(".house-close").addEventListener("click", closeHouseCard);
+    // Redraw so the chosen dot is the highlighted one. The block group card is
+    // deliberately left alone: the point is to read both at once.
+    showListingsFor(props || selectedProps);
   }
 
   // --- The individual sales behind a count --------------------------------
@@ -2042,6 +2194,7 @@ const BlockGroupApp = (() => {
         throw new Error("file is missing bbox/nrows/ncols/values");
       }
       windGrid = data;
+      renderSourceTable();
       Utils.logStatus(
         "wind",
         "ok",
@@ -3024,7 +3177,10 @@ const BlockGroupApp = (() => {
     if (cardPopup) return cardPopup;
     cardPopup = L.popup(POPUP_OPTIONS);
     cardPopup.on("remove", () => {
-      // Closing the card clears the highlight, but keeps the sidebar copy.
+      // Closing the card clears the highlight and the listings, but keeps the
+      // sidebar copy of the card.
+      clearListingLayer();
+      closeHouseCard();
       const wasSelected = selectedLayer;
       selectedLayer = null;
       selectedGeoid = null;
@@ -3043,6 +3199,7 @@ const BlockGroupApp = (() => {
 
   function selectBlockGroup(layer, props, { openPopup = true, latlng = null } = {}) {
     const record = recordFor(props);
+    const previousGeoid = selectedGeoid;
 
     if (selectedLayer && selectedLayer !== layer && selectedLayer._map) {
       selectedLayer.setStyle(styleForBlockGroup(selectedLayer.feature));
@@ -3059,6 +3216,12 @@ const BlockGroupApp = (() => {
       if (!popup.isOpen()) popup.openOn(map);
     }
     document.getElementById("detail-panel").innerHTML = detailHTML(props, record, { feature: layer.feature });
+
+    if (previousGeoid !== selectedGeoid) {
+      // A different block group: its houses are not this one's houses.
+      closeHouseCard();
+      showListingsFor(props);
+    }
 
     lookupZip(geoidOf(props), layer);
     lookupSchools(geoidOf(props), layer);
@@ -3360,6 +3523,8 @@ const BlockGroupApp = (() => {
         delete loadedBBox[key];
       }
       if (key === "blockGroup") {
+        clearListingLayer();
+        closeHouseCard();
         if (cardPopup && cardPopup.isOpen()) map.closePopup(cardPopup);
         selectedLayer = null;
         selectedProps = null;
@@ -3740,6 +3905,57 @@ const BlockGroupApp = (() => {
     });
   }
 
+  // --- Where every number on this page comes from -------------------------
+  // Live services report as live; the files report the date they were built,
+  // read from the files themselves rather than typed in here, so this table
+  // cannot drift from what is actually loaded.
+  const SOURCE_ROWS = [
+    ["Block group, tract & ZIP borders", "Census TIGERweb boundary service", () => "live"],
+    ["Basemap", "OpenFreeMap vector tiles (OpenStreetMap data)", () => "live"],
+    ["Population, age, sex, ethnicity", "ACS 5-year B01001 / B03002, and 2020 Census P2", () => censusDate()],
+    ["Education & income", "ACS 5-year B15003, B19013, B19301, B19001", () => censusDate()],
+    ["Housing stock, tenure, commute", "ACS 5-year B25024, B25003, B08301, B25035 / B25034", () => censusDate()],
+    ["Household size", "ACS 5-year B25010", () => censusDate()],
+    ["Home prices & sales", "LA County Assessor roll, assessed value at each transfer", () => metaDate(parcelMeta)],
+    ["Listings for sale", "Redfin 'Download All' exports", () => (listingsMeta && listingsMeta.latestDownload ? listingsMeta.latestDownload.slice(0, 10) : "not loaded")],
+    ["Schools & attendance zones", "CA Dept of Education sites; LAUSD attendance boundaries", () => "live"],
+    ["Pollution burden", "CalEnviroScreen 4.0 (OEHHA), by census tract", () => "live"],
+    ["Fire hazard", "CAL FIRE / OSFM Fire Hazard Severity Zones", () => "live"],
+    ["Flood zones", "FEMA National Flood Hazard Layer", () => "live"],
+    ["Liquefaction & landslide", "CA Geological Survey seismic hazard zones", () => "live"],
+    ["Transportation noise", "BTS / DOT National Transportation Noise Map", () => "live"],
+    ["Wind speed", "Global Wind Atlas 3 (DTU / World Bank)", () => metaDate(windGrid && windGrid.meta)],
+    ["Address search & pins", "Nominatim (OpenStreetMap)", () => "live"],
+    ["Commute times", "OpenRouteService", () => "live"],
+  ];
+
+  function metaDate(meta) {
+    if (!meta) return "not loaded";
+    return (meta.generated || "").slice(0, 10) || "unknown";
+  }
+
+  function censusDate() {
+    if (!censusData || !censusData.meta) return "not loaded";
+    const meta = censusData.meta;
+    const pulled = (meta.generated || "").slice(0, 10);
+    return pulled ? `${pulled} (ACS ${meta.year})` : `ACS ${meta.year}`;
+  }
+
+  function renderSourceTable() {
+    const box = document.getElementById("source-table");
+    if (!box) return;
+    box.innerHTML = `<table class="source-table">
+      <thead><tr><th>What</th><th>Where from</th><th>Updated</th></tr></thead>
+      <tbody>${SOURCE_ROWS.map(
+        ([what, where, when]) =>
+          `<tr><td>${what}</td><td class="dim">${where}</td><td class="when">${when()}</td></tr>`
+      ).join("")}</tbody>
+    </table>
+    <p class="src-note">"Live" means the layer is fetched from the publisher each time you turn it on,
+      so it is as current as they are. A date means the figure came from a file on your disk, built on
+      that day - re-run the matching script to refresh it.</p>`;
+  }
+
   // --- Basemap ------------------------------------------------------------
   let basemapKind = null; // "vector" | "raster", exposed for tests
 
@@ -3842,8 +4058,11 @@ const BlockGroupApp = (() => {
     initPinDrop();
     initInfoTips();
     initSalesPanel();
+    renderSourceTable();
+    document.getElementById("sources-details").addEventListener("toggle", renderSourceTable);
     initCommute();
     loadParcelData();
+    loadListings();
     loadOrsKey();
     renderFilterRows();
     document.getElementById("toggle-density").addEventListener("change", (e) => {
