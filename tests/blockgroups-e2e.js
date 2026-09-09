@@ -273,6 +273,25 @@ async function main() {
   fs.mkdirSync(path.dirname(dataPath), { recursive: true });
   fs.writeFileSync(dataPath, JSON.stringify(CENSUS_DATA));
 
+  // Assessor-derived home prices. Block group A has a healthy sample, C rests
+  // on two sales and must be flagged as thin rather than passed off as a
+  // market rate.
+  const parcelPath = path.join(REPO, "js", "data", "parcels-la-county.json");
+  fs.writeFileSync(
+    parcelPath,
+    JSON.stringify({
+      meta: { salesFrom: 2023, source: "LA County Assessor parcel roll (test fixture)" },
+      blockGroups: {
+        "060372011001": { medianSalePrice: 1250000, saleCount: 34, medianPricePerSqft: 780.5, thin: false },
+        "060372011003": { medianSalePrice: 640000, saleCount: 2, thin: true },
+      },
+    })
+  );
+
+  // The routing key. Read as a file so it never has to be pasted into code.
+  const orsKeyPath = path.join(REPO, "ors-api-key.txt");
+  fs.writeFileSync(orsKeyPath, "5b3ce3597851110001cf6248TESTKEYTESTKEYTESTKEY");
+
   // A 2x2 wind grid over the block groups: calm in the north-west, windy in
   // the south-east, so a wrong row/column order shows up as a wrong reading
   // rather than a plausible one.
@@ -509,6 +528,24 @@ async function main() {
     }
     noiseRequests.root++;
     return route.fulfill(json({ mapName: "Noise_aviation_CONUS_2018", singleFusedMapCache: false }));
+  });
+
+  // OpenRouteService directions. Returns a GeoJSON LineString plus a summary,
+  // which is what the page reads for the drive time.
+  let orsRequests = [];
+  await page.route("**://api.openrouteservice.org/**", (route) => {
+    orsRequests.push(route.request().url());
+    return route.fulfill(
+      json({
+        features: [
+          {
+            type: "Feature",
+            properties: { summary: { duration: 1380, distance: 14484 } },
+            geometry: { type: "LineString", coordinates: [[-118.243, 34.055], [-118.30, 34.18]] },
+          },
+        ],
+      })
+    );
   });
 
   let tigerQueryCount = { zip: 0, tract: 0, bg: 0 };
@@ -1064,8 +1101,9 @@ async function main() {
       [...document.querySelectorAll("#detail-panel .key-figure")].map((el) => el.textContent.trim())
     );
     step(
-      "ZIP, household size, education %, median income and per-capita income are the highlighted figures",
-      keyFigures.length === 5 &&
+      "ZIP, household size, education %, both income figures and the home price are highlighted",
+      keyFigures.length === 6 &&
+        keyFigures.includes("$1,250,000") &&
         keyFigures[0].startsWith("ZIP") &&
         keyFigures.includes("3.40 people") &&
         keyFigures.includes("30.0%") &&
@@ -1179,6 +1217,111 @@ async function main() {
         return styled;
       })
     );
+
+    // --- Home prices from the assessor roll ---
+    const priceCard = await page.locator("#detail-panel").innerText();
+    step(
+      "card shows the median single-family SALE price, not assessed value",
+      /home prices/i.test(priceCard) && priceCard.includes("$1,250,000"),
+      priceCard.replace(/\n/g, " ").match(/Home prices.{0,80}/i)
+    );
+    step(
+      "card shows price per square foot and the sale count behind the median",
+      priceCard.includes("$781") && /34 sales/.test(priceCard),
+      priceCard.replace(/\n/g, " ").match(/Per square foot.{0,60}/i)
+    );
+    step(
+      "a healthy sample is not flagged as thin",
+      !(await page.evaluate(() => !!document.querySelector("#detail-panel .thin-sample")))
+    );
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011003") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(300);
+    const thinCard = await page.locator("#detail-panel").innerText();
+    step(
+      "a median resting on two sales is called out as thin, not shown as a market rate",
+      /2 sales - thin/.test(thinCard) &&
+        (await page.evaluate(() => !!document.querySelector("#detail-panel .thin-sample"))),
+      thinCard.replace(/\n/g, " ").match(/Based on.{0,40}/i)
+    );
+    const priceMetrics = await page.evaluate(() =>
+      [...document.querySelectorAll("#filter-metric-0 option")].map((o) => o.value)
+    );
+    step(
+      "price and price-per-sqft are filterable",
+      priceMetrics.includes("medianSalePrice") && priceMetrics.includes("pricePerSqft"),
+      JSON.stringify(priceMetrics.filter((m) => /price/i.test(m)))
+    );
+    // Price lives on the parcel file keyed by GEOID, not in the census record,
+    // so filtering has to reach the polygon's own properties.
+    await page.evaluate(() => {
+      BlockGroupApp.state.filters[0].enabled = true;
+      BlockGroupApp.state.filters[0].metric = "medianSalePrice";
+      BlockGroupApp.state.filters[0].op = "above";
+      BlockGroupApp.state.filters[0].value = "1000000";
+      BlockGroupApp.refreshFiltersForTest();
+    });
+    await page.waitForTimeout(300);
+    step(
+      "filtering on price matches only the block group above the threshold",
+      (await page.locator("#filter-summary").innerText()).includes("1 of 3"),
+      await page.locator("#filter-summary").innerText()
+    );
+    await page.evaluate(() => {
+      BlockGroupApp.state.filters[0].enabled = false;
+      BlockGroupApp.refreshFiltersForTest();
+    });
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(300);
+
+    // --- Commute from the dropped pin to a typed destination ---
+    await page.fill("#destination-input", "500 S Buena Vista St, Burbank");
+    await page.dispatchEvent("#destination-input", "change");
+    await page.waitForTimeout(800);
+    step(
+      "with no pin down yet, the destination is set and says what is missing",
+      /drop a pin/i.test(await page.locator("#commute-status").innerText()),
+      await page.locator("#commute-status").innerText()
+    );
+    await page.click("#drop-pin");
+    await page.evaluate(() => {
+      BlockGroupApp.state.map.fire("click", { latlng: L.latLng(34.055, -118.243) });
+    });
+    await page.waitForTimeout(900);
+    const commuteText = await page.locator("#commute-status").innerText();
+    step(
+      "dropping a pin routes to the destination and reports the drive",
+      /23 min/.test(commuteText) && /9\.0 mi/.test(commuteText),
+      commuteText.replace(/\n/g, " ")
+    );
+    step(
+      "the drive time is labelled free-flow, because no free router models traffic",
+      /free-flow/i.test(commuteText) && /traffic/i.test(commuteText),
+      commuteText.replace(/\n/g, " ").slice(-90)
+    );
+    step(
+      "the route is drawn on the map",
+      (await page.evaluate(() => !!document.querySelector("path[stroke='#1b4d8c'], canvas"))) &&
+        orsRequests.length === 1, // one destination, one route - not one per keystroke
+      `${orsRequests.length} routing request(s)`
+    );
+    step(
+      "the key is sent from the key file, not hardcoded",
+      orsRequests[0].includes("api_key=5b3ce3597851110001cf6248TESTKEY"),
+      orsRequests[0].replace(/api_key=([^&]{12}).*/, "api_key=$1...")
+    );
+    await page.click("#clear-destination");
+    await page.waitForTimeout(200);
+    step("clearing the destination clears the commute line", (await page.locator("#commute-status").innerText()) === "");
+    await page.click("#clear-pin");
+    await page.waitForTimeout(200);
 
     // --- Housing stock, tenure and work, from the new ACS tables ---
     const acsCard = await page.locator("#detail-panel").innerText();
@@ -1611,7 +1754,11 @@ async function main() {
     );
     step("the pin lands on the map", (await page.locator(".leaflet-marker-icon").count()) === 1);
     step("the mode disarms itself after one drop", !(await page.evaluate(() => BlockGroupApp.state.pinArmed)));
-    step("the pin is reverse-geocoded", reverseQueries.length === 1, JSON.stringify(reverseQueries));
+    step(
+      "the pin is reverse-geocoded",
+      reverseQueries.length >= 1 && reverseQueries[reverseQueries.length - 1].includes("format=jsonv2"),
+      `${reverseQueries.length} reverse lookup(s)`
+    );
     const pinPopup = await page.locator(".leaflet-popup-content").allInnerTexts();
     step(
       "the pin popup shows the street address, not the full Nominatim chain",
@@ -1848,6 +1995,8 @@ async function main() {
   } finally {
     fs.rmSync(dataPath, { force: true });
     fs.rmSync(windPath, { force: true });
+    fs.rmSync(parcelPath, { force: true });
+    fs.rmSync(orsKeyPath, { force: true });
   }
 
   const failed = steps.filter((s) => !s.ok);

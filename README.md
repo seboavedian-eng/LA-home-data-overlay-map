@@ -228,6 +228,52 @@ The script also **probes** B08303, B23025, B11003 and B25077 without using
 them, so the run prints whether each is published at block group - a
 definitive answer rather than an assumption.
 
+### Optional: home prices from the Assessor roll
+
+ACS `B25077` is the median value of *all* owner-occupied units - condos,
+townhouses and houses blended into one self-reported number, and no ACS table
+cross-tabs value by structure type at any geography. For a single-family
+figure the only free source is the LA County Assessor.
+
+1. At [data.lacounty.gov](https://data.lacounty.gov) search **Assessor** and
+   download the current **Assessor Parcel Data** roll as **CSV** (not the
+   shapefile or geodatabase - you don't need parcel geometry).
+2. Save it as `raw-data/assessor-roll-2025.csv`.
+3. Run:
+
+```
+# Windows
+python scripts\fetch-parcel-data.py
+
+# macOS / Linux
+python3 scripts/fetch-parcel-data.py
+```
+
+It pulls LA County block group outlines from TIGERweb, bins each parcel by its
+`CENTER_LAT`/`CENTER_LON`, and writes `js/data/parcels-la-county.json`.
+
+**It uses recorded sale price, not assessed value, and that is the whole
+point.** Under Proposition 13 an assessed value reflects how long the owner
+has held the house rather than what it is worth - two identical neighbours can
+differ tenfold. Only sales in the last three years count (`--years` to
+change), single-family use codes only, and anything under $50,000 is dropped
+as a family transfer or correction rather than a market sale. Each block group
+also reports **how many sales its median rests on**, and a median built on
+fewer than three is flagged as thin on the card - three sales is a rumour, not
+a market rate.
+
+### Optional: commute times
+
+Put a free [OpenRouteService](https://openrouteservice.org/dev/#/signup) key
+(no credit card, 2,500 requests/day) in `ors-api-key.txt` in the project root.
+Type a destination in the sidebar, drop a pin, and the card shows the drive.
+
+**The time shown is free-flow, and the page says so.** No genuinely free
+router models traffic, and in LA that is the difference between 30 minutes and
+75. If you want real rush-hour numbers, Mapbox's `driving-traffic` profile
+does model traffic on a free tier - but it requires a credit card, and it is a
+one-line swap in `BG_CONFIG` when you want it.
+
 ### Optional: wind data (one-time, about two minutes)
 
 The Global Wind Atlas has no tile service and no WMS - it publishes GeoTIFF

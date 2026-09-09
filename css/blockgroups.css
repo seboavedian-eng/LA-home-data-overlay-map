@@ -383,3 +383,35 @@ html, body {
   margin-right: 5px;
   vertical-align: 0;
 }
+
+/* --- Commute destination --- */
+#destination-wrap { position: relative; }
+#destination-input {
+  width: 100%;
+  padding: 8px 30px 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+#clear-destination {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: #dde1e6;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+#clear-destination:hover { background: var(--accent); color: white; }
+#commute-status .src-note { display: block; margin-top: 2px; }
+
+/* A median resting on a couple of sales is not a market rate. */
+.detail-card td.v.thin-sample,
+#detail-panel td.v.thin-sample { color: var(--warn); font-weight: 600; }

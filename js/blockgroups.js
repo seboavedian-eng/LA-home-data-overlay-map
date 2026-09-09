@@ -449,6 +449,14 @@ const BG_CONFIG = {
   // cheap to load once rather than per-viewport).
   LA_COUNTY_BBOX: { xmin: -118.95, ymin: 32.70, xmax: -117.60, ymax: 34.85 },
 
+  // Produced by scripts/fetch-parcel-data.py from the LA County Assessor roll.
+  PARCEL_DATA: "js/data/parcels-la-county.json",
+
+  // OpenRouteService: free, no credit card, 2,500 requests/day. The key lives
+  // in ors-api-key.txt beside this project (gitignored) and is read at start.
+  ORS_KEY_FILE: "ors-api-key.txt",
+  ORS_DIRECTIONS: "https://api.openrouteservice.org/v2/directions/driving-car",
+
   // Produced by scripts/fetch-blockgroup-data.py (see README).
   BLOCK_GROUP_DATA: "js/data/bg-la-county.json",
 
@@ -945,6 +953,194 @@ const BlockGroupApp = (() => {
         <tr><td class="k">CalEnviroScreen score</td><td class="v">${score.toFixed(1)}th pct</td></tr>
         <tr><td class="k">Band</td><td class="v">${bucket ? bucket.label : "Unknown"}</td></tr>
       </table>`;
+  }
+
+  // --- Home prices (LA County Assessor roll) ------------------------------
+  let parcelData = null;
+  let parcelError = null;
+
+  async function loadParcelData() {
+    if (parcelData || parcelError) return;
+    try {
+      const res = await fetch(BG_CONFIG.PARCEL_DATA, { cache: "no-cache" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      parcelData = data.blockGroups || {};
+      Utils.logStatus(
+        "prices",
+        "ok",
+        `Home prices: ${Object.keys(parcelData).length} block groups with sales since ${
+          data.meta ? data.meta.salesFrom : "?"
+        }.`
+      );
+    } catch (err) {
+      parcelError = err;
+      // Not an error worth shouting about: this file is optional, and the
+      // rest of the page works without it.
+      Utils.logStatus("prices", "info", `No parcel data yet (${err.message}). Run scripts/fetch-parcel-data.py to add home prices.`);
+    }
+  }
+
+  function parcelFor(props) {
+    return parcelData ? parcelData[geoidOf(props)] || null : null;
+  }
+
+  function priceRows(props) {
+    const rec = parcelFor(props);
+    if (!rec) return "";
+    const thin = rec.thin || rec.saleCount < 3;
+    return `
+      <div class="section-label">Home prices${infoIcon(
+        "Median RECORDED SALE PRICE of single-family parcels sold here in the last few years, from the LA County " +
+          "Assessor roll. Deliberately not assessed value: under Proposition 13 an assessed value reflects how long " +
+          "the owner has held the house, not what it is worth, so two identical neighbours can differ tenfold. " +
+          "Condos and townhouses are excluded, so this is comparable house to house."
+      )}</div>
+      <table>
+        <tr><td class="k">Median sale price</td><td class="v key-figure">${Utils.fmtCurrency(rec.medianSalePrice)}</td></tr>
+        ${
+          rec.medianPricePerSqft
+            ? `<tr><td class="k">Per square foot</td><td class="v">${Utils.fmtCurrency(rec.medianPricePerSqft)}</td></tr>`
+            : ""
+        }
+        <tr><td class="k">Based on${infoIcon(
+          "How many recent sales that median rests on. Three sales is a rumour, not a market rate - treat a thin " +
+            "block group's figure as a hint and look at its neighbours."
+        )}</td><td class="v${thin ? " thin-sample" : ""}">${rec.saleCount} sale${rec.saleCount === 1 ? "" : "s"}${
+      thin ? " - thin" : ""
+    }</td></tr>
+      </table>`;
+  }
+
+  // --- Commute (OpenRouteService) -----------------------------------------
+  // A destination address plus the dropped pin is a plain point-to-point
+  // routing question, not an isochrone. The free routers have no traffic
+  // model, so the number shown is free-flow driving time and says so - in LA
+  // that is the difference between 30 minutes and 75.
+  let orsKey = null;
+  let destination = null;   // { label, lat, lon }
+  let routeLine = null;
+
+  async function loadOrsKey() {
+    try {
+      const res = await fetch(BG_CONFIG.ORS_KEY_FILE, { cache: "no-cache" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = (await res.text()).trim();
+      // A missing file on some servers returns an HTML 404 page with status
+      // 200, so sanity-check the shape rather than trusting the status.
+      if (!text || /\s/.test(text) || text.length < 20) throw new Error("file does not look like a key");
+      orsKey = text;
+      Utils.logStatus("commute", "ok", "Routing key loaded - commute times available.");
+    } catch (err) {
+      Utils.logStatus(
+        "commute",
+        "info",
+        `No routing key (${err.message}). Put your free OpenRouteService key in ${BG_CONFIG.ORS_KEY_FILE} to get commute times.`
+      );
+    }
+  }
+
+  function clearRoute() {
+    if (routeLine) {
+      map.removeLayer(routeLine);
+      routeLine = null;
+    }
+  }
+
+  async function routeFromPin() {
+    const status = document.getElementById("commute-status");
+    if (!destination || !searchMarker) return;
+    if (!orsKey) {
+      status.className = "hint warn";
+      status.textContent = `Add your OpenRouteService key to ${BG_CONFIG.ORS_KEY_FILE} to get drive times.`;
+      return;
+    }
+
+    const from = searchMarker.getLatLng();
+    status.className = "hint";
+    status.textContent = "Working out the drive...";
+    try {
+      const url =
+        `${BG_CONFIG.ORS_DIRECTIONS}?` +
+        new URLSearchParams({
+          api_key: orsKey,
+          start: `${from.lng},${from.lat}`,
+          end: `${destination.lon},${destination.lat}`,
+        });
+      const data = await Utils.fetchJSON(url, { timeoutMs: 25000 });
+      const route = (data.features || [])[0];
+      if (!route) throw new Error("no route found");
+
+      const { duration, distance } = route.properties.summary;
+      const minutes = Math.round(duration / 60);
+      const miles = distance / 1609.34;
+
+      clearRoute();
+      routeLine = L.geoJSON(route, {
+        style: { color: "#1b4d8c", weight: 4, opacity: 0.75, dashArray: "6 4" },
+      }).addTo(map);
+
+      status.className = "hint ok";
+      status.innerHTML =
+        `<strong>${minutes} min</strong>, ${miles.toFixed(1)} mi to ${destination.label}` +
+        `<br><span class="src-note">Free-flow driving time - OpenRouteService has no traffic model, ` +
+        `so a rush-hour LA trip can be twice this.</span>`;
+    } catch (err) {
+      status.className = "hint error";
+      status.textContent = `Could not work out the drive: ${err.message}`;
+    }
+  }
+
+  let lastDestinationText = null;
+
+  async function setDestination(text) {
+    const status = document.getElementById("commute-status");
+    // Typing then tabbing away fires both the debounced input handler and the
+    // change event. Without this, one destination costs two geocodes and two
+    // routing calls - and the free tier is a daily allowance.
+    if (text.trim() === lastDestinationText && destination) return;
+    lastDestinationText = text.trim();
+    if (!text.trim()) {
+      destination = null;
+      clearRoute();
+      status.textContent = "";
+      return;
+    }
+    status.className = "hint";
+    status.textContent = "Finding that address...";
+    try {
+      const matches = await geocode(text);
+      if (!matches.length) throw new Error("no match");
+      const m = matches[0];
+      destination = { label: m.matchedAddress, lat: m.coordinates.y, lon: m.coordinates.x };
+      status.className = "hint ok";
+      status.textContent = searchMarker
+        ? "Destination set - working out the drive..."
+        : `Destination: ${destination.label}. Drop a pin to get the drive time.`;
+      if (searchMarker) routeFromPin();
+    } catch (err) {
+      destination = null;
+      status.className = "hint error";
+      status.textContent = `Could not find that address: ${err.message}`;
+    }
+  }
+
+  function initCommute() {
+    const input = document.getElementById("destination-input");
+    let timer = null;
+    input.addEventListener("change", () => {
+      clearTimeout(timer);
+      setDestination(input.value);
+    });
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => setDestination(input.value), BG_CONFIG.SEARCH_DEBOUNCE_MS + 300);
+    });
+    document.getElementById("clear-destination").addEventListener("click", () => {
+      input.value = "";
+      lastDestinationText = null;
+      setDestination("");
+    });
   }
 
   // --- Flood (FEMA NFHL) --------------------------------------------------
@@ -1980,6 +2176,7 @@ const BlockGroupApp = (() => {
       ${incomeBracketBars(record)}
       ${compact ? "" : `<p class="src-note">Source: ACS B19013 / B19301${geoNote("income")}</p>`}
 
+      ${priceRows(props)}
       ${housingRows(record)}
       ${commuteRows(record)}
       ${schoolRows(props)}
@@ -2040,6 +2237,24 @@ const BlockGroupApp = (() => {
       label: "Average household size (people)",
       unit: "people",
       value: (r) => householdSize(r).value,
+    },
+    medianSalePrice: {
+      label: "Median home sale price ($)",
+      unit: "$",
+      step: 25000,
+      value: (r, f, props) => {
+        const p = props ? parcelFor(props) : null;
+        return p ? p.medianSalePrice : null;
+      },
+    },
+    pricePerSqft: {
+      label: "Home price per sq ft ($)",
+      unit: "$",
+      step: 25,
+      value: (r, f, props) => {
+        const p = props ? parcelFor(props) : null;
+        return p && p.medianPricePerSqft ? p.medianPricePerSqft : null;
+      },
     },
     detached: {
       label: "Detached houses (%)",
@@ -2134,7 +2349,9 @@ const BlockGroupApp = (() => {
     return activeFilters().every((f) => {
       const metric = metricFor(f.metric);
       if (!metric) return true;
-      const v = metric.value(record, feature);
+      // Third argument is the polygon's own attributes: price metrics key off
+      // the GEOID rather than the census record, which may not exist.
+      const v = metric.value(record, feature, feature ? feature.properties : null);
       if (v == null) return false;
       return f.op === "above" ? v > Number(f.value) : v < Number(f.value);
     });
@@ -2891,6 +3108,7 @@ const BlockGroupApp = (() => {
 
   function clearPin() {
     setPinArmed(false);
+    clearRoute();
     if (searchMarker) {
       map.removeLayer(searchMarker);
       searchMarker = null;
@@ -2963,6 +3181,7 @@ const BlockGroupApp = (() => {
           `</div>`
       );
       document.getElementById("address-input").value = address;
+      if (destination) routeFromPin();
       status.className = "hint ok";
       status.textContent = address || "Pin dropped - no street address at this point.";
     } catch (err) {
@@ -3125,6 +3344,9 @@ const BlockGroupApp = (() => {
     initAddressSearch();
     initPinDrop();
     initInfoTips();
+    initCommute();
+    loadParcelData();
+    loadOrsKey();
     renderFilterRows();
     document.getElementById("toggle-density").addEventListener("change", (e) => {
       densityShading = e.target.checked;
@@ -3205,9 +3427,18 @@ const BlockGroupApp = (() => {
     init,
     // Forces a layer reload, so a test can prove the card survives one.
     refreshForTest: (key) => refreshLayer(key, { force: true }),
+    // Lets a test drive the filter state directly rather than through five
+    // form controls.
+    refreshFiltersForTest: () => {
+      renderFilterRows();
+      applyFilters();
+    },
     // exposed for tests
     get state() {
-      return { map, enabled, layers, censusData, selectedProps, windGrid, windOverlay, pinArmed, cesByTract, basemapKind };
+      return {
+        map, enabled, layers, censusData, selectedProps, windGrid, windOverlay,
+        pinArmed, cesByTract, basemapKind, filters, parcelData,
+      };
     },
   };
 })();
