@@ -324,85 +324,65 @@ async function main() {
     })
   );
 
-  // Listings, as scripts/import-listings.py writes them from a Redfin export.
-  const listingsPath = path.join(REPO, "js", "data", "listings.json");
-  fs.writeFileSync(
-    listingsPath,
-    JSON.stringify({
-      meta: {
-        source: "Redfin 'Download All' export (test fixture)",
-        latestDownload: "2026-09-09T16:01:53",
-        generated: "2026-09-09T16:30:00",
-        files: [{ file: "redfin_20260909160153.csv", downloaded: "2026-09-09T16:01:53" }],
-      },
-      byBlockGroup: {
-        "060372011001": [
-          {
-            id: "https://www.redfin.com/CA/Burbank/331-N-Reese-Pl-91506/home/5334447",
-            address: "331 N Reese",
-            city: "Burbank",
-            zip: "91506",
-            price: 1400000,
-            beds: 3,
-            baths: 2,
-            sqft: 1921,
-            lotSqft: 6746,
-            yearBuilt: 1940,
-            listedOn: "2026-09-02",
-            status: "Active",
-            type: "Single Family Residential",
-            url: "https://www.redfin.com/CA/Burbank/331-N-Reese-Pl-91506/home/5334447",
-            mls: "BB26142414",
-            source: "CRMLS",
-            lat: 34.05,
-            lon: -118.25,
-            geoid: "060372011001",
-            firstSeen: "2026-09-09T16:01:53",
-            lastSeen: "2026-09-09T16:01:53",
-          },
-          {
-            id: "https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903",
-            address: "322 S Lincoln St",
-            city: "Burbank",
-            zip: "91506",
-            price: 995000,
-            beds: 3,
-            baths: 3,
-            sqft: 1721,
-            lotSqft: 7067,
-            yearBuilt: 1944,
-            listedOn: "2026-08-01",
-            status: "Active",
-            type: "Single Family Residential",
-            url: "https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903",
-            mls: "BB26192871",
-            source: "CRMLS",
-            lat: 34.052,
-            lon: -118.252,
-            geoid: "060372011001",
-            firstSeen: "2026-07-02T10:00:00",
-            lastSeen: "2026-09-09T16:01:53",
-          },
-        ],
-        "060372011003": [
-          {
-            id: "https://www.redfin.com/CA/Burbank/other/home/1",
-            address: "9 Olive Ct",
-            price: 780000,
-            sqft: 1000,
-            lotSqft: 5000,
-            listedOn: "2026-09-01",
-            url: "https://www.redfin.com/CA/Burbank/other/home/1",
-            lat: 34.05,
-            lon: -118.21,
-            geoid: "060372011003",
-            firstSeen: "2026-09-09T16:01:53",
-            lastSeen: "2026-09-09T16:01:53",
-          },
-        ],
-      },
-    })
-  );
+  // Listings, as they actually arrive: Redfin "Download All" CSVs in a folder,
+  // parsed by the page itself. No import step is exercised because there no
+  // longer is one - the fixture is the raw file, quoted addresses, MLS notice
+  // row and all.
+  const LISTING_HEADER =
+    "SALE TYPE,SOLD DATE,PROPERTY TYPE,ADDRESS,CITY,STATE OR PROVINCE,ZIP OR POSTAL CODE,PRICE,BEDS," +
+    "BATHS,LOCATION,SQUARE FEET,LOT SIZE,YEAR BUILT,DAYS ON MARKET,$/SQUARE FEET,HOA/MONTH,STATUS," +
+    "NEXT OPEN HOUSE START TIME,NEXT OPEN HOUSE END TIME,URL,SOURCE,MLS#,FAVORITE,INTERESTED,LATITUDE,LONGITUDE";
+  // Redfin puts this on its own line under the header. It is one field wide,
+  // so it must be recognised as a note rather than parsed as a home.
+  const MLS_NOTICE =
+    '"In accordance with local MLS rules, some MLS listings are not included in the download"';
+
+  function listingRow(f) {
+    return [
+      "MLS Listing", "", f.type || "Single Family Residential", `"${f.address}"`, f.city || "",
+      "CA", f.zip || "", f.price, f.beds || "", f.baths || "", "", f.sqft || "", f.lot || "",
+      f.built || "", f.dom, f.ppsf || "", f.hoa || "", f.status || "Active", "", "",
+      f.url, f.source || "CRMLS", f.mls || "", "", "", f.lat, f.lon,
+    ].join(",");
+  }
+
+  const REESE = {
+    // The comma in the address is the point: split on commas and every later
+    // column shifts by one.
+    address: "331 N Reese Pl, Unit A",
+    city: "Burbank", zip: "91506", price: 1400000, beds: 3, baths: 2, sqft: 1921,
+    lot: 6746, built: 1940, dom: 7, hoa: "", mls: "BB26142414",
+    url: "https://www.redfin.com/CA/Burbank/331-N-Reese-Pl-91506/home/5334447",
+    lat: 34.05, lon: -118.25,
+  };
+  const LINCOLN = {
+    address: "322 S Lincoln St", city: "Burbank", zip: "91506", price: 995000, beds: 3,
+    baths: 3, sqft: 1721, lot: 7067, built: 1944, dom: 39, mls: "BB26192871",
+    url: "https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903",
+    lat: 34.052, lon: -118.252,
+  };
+  // In block group C, so it must NOT be drawn while A is selected.
+  const OLIVE = {
+    address: "9 Olive Ct", price: 780000, sqft: 1000, lot: 5000, dom: 8,
+    url: "https://www.redfin.com/CA/Burbank/other/home/1", lat: 34.05, lon: -118.21,
+  };
+  // A lot given in acres - Redfin switches units above an acre without
+  // renaming the column, and 0.5 square feet is not a lot.
+  const ACRE_LOT = {
+    address: "1 Ranch Rd", city: "Burbank", price: 2000000, sqft: 2000, lot: 0.5, dom: 3,
+    url: "https://www.redfin.com/CA/Burbank/ranch/home/2", lat: 34.055, lon: -118.255,
+  };
+
+  function listingCsv(rows) {
+    return [LISTING_HEADER, MLS_NOTICE, ...rows.map(listingRow)].join("\n") + "\n";
+  }
+
+  // Two downloads, so "new since your last download" is a fact and not a
+  // guess: Lincoln was already there in July, the rest arrived in September.
+  const LISTING_FILES = {
+    "redfin_20260702100000.csv": listingCsv([{ ...LINCOLN, dom: 0 }]),
+    "redfin_20260909160153.csv": listingCsv([REESE, LINCOLN, OLIVE, ACRE_LOT]),
+  };
 
   // The routing key. Read as a file so it never has to be pasted into code.
   const orsKeyPath = path.join(REPO, "ors-api-key.txt");
@@ -439,6 +419,34 @@ async function main() {
   await page.route("**://tile.openstreetmap.org/**", (route) =>
     route.fulfill({ contentType: "image/png", body: BLANK_PNG })
   );
+
+  // The listings folder. python's http.server publishes a directory index for
+  // it and the page scrapes the .csv links out of that, so the stub has to be
+  // an index page and not a JSON manifest - a manifest would test something
+  // the app does not do.
+  let listingsIndexRequests = 0;
+  await page.route(/\/raw-data\/redfin-listings\//, (route) => {
+    const url = new URL(route.request().url());
+    const name = decodeURIComponent(url.pathname.split("/").pop() || "");
+    if (!name) {
+      listingsIndexRequests++;
+      const links = Object.keys(LISTING_FILES)
+        .map((f) => `<li><a href="${f}">${f}</a></li>`)
+        .join("");
+      return route.fulfill({
+        contentType: "text/html",
+        body: `<!DOCTYPE HTML><html><head><title>Directory listing for /raw-data/redfin-listings/</title></head>
+               <body><h1>Directory listing for /raw-data/redfin-listings/</h1><hr><ul>
+               <li><a href="notes.txt">notes.txt</a></li>${links}</ul><hr></body></html>`,
+      });
+    }
+    if (LISTING_FILES[name] === undefined) return route.fulfill({ status: 404, body: "not found" });
+    return route.fulfill({
+      contentType: "text/csv",
+      headers: { "last-modified": "Wed, 09 Sep 2026 23:01:53 GMT" },
+      body: LISTING_FILES[name],
+    });
+  });
   await page.route("**://services.arcgisonline.com/**", (route) =>
     route.fulfill({ contentType: "image/png", body: BLANK_PNG })
   );
@@ -1487,8 +1495,39 @@ async function main() {
           if (l.options && l.options.fillColor === "#b3261e") n += 1;
         });
         return n;
-      })) === 2,
-      "block group A has two listings, block group C has one"
+      })) === 3,
+      "block group A has three listings, block group C has one"
+    );
+    step(
+      "the folder is read as a directory index, not a hand-maintained manifest",
+      listingsIndexRequests >= 1,
+      `${listingsIndexRequests} index request(s)`
+    );
+    step(
+      "a non-CSV file in the same folder is ignored",
+      (await page.evaluate(() => BlockGroupApp.state.listingsMeta.files.map((f) => f.file))).join(",") ===
+        "redfin_20260702100000.csv,redfin_20260909160153.csv",
+      JSON.stringify(await page.evaluate(() => BlockGroupApp.state.listingsMeta.files.map((f) => f.file)))
+    );
+    step(
+      "the MLS notice row under the header is skipped, not read as a home",
+      (await page.evaluate(() => BlockGroupApp.state.listingsData.length)) === 4,
+      "four homes across two files, deduplicated"
+    );
+    step(
+      "an address containing a comma keeps every later column in place",
+      await page.evaluate(() => {
+        const l = BlockGroupApp.state.listingsData.find((r) => r.lat === 34.05 && r.lon === -118.25);
+        return l && l.address === "331 N Reese Pl, Unit A" && l.price === 1400000 && l.sqft === 1921;
+      })
+    );
+    step(
+      "a lot size under an acre's worth of units is read as acres, not square feet",
+      (await page.evaluate(() => {
+        const l = BlockGroupApp.state.listingsData.find((r) => r.address === "1 Ranch Rd");
+        return l && l.lotSqft;
+      })) === 21780,
+      "0.5 in the file means half an acre"
     );
     step(
       "a listing in a DIFFERENT block group is not drawn",
@@ -1565,6 +1604,140 @@ async function main() {
       (await page.locator("#house-card .new-badge").count()) === 0
     );
 
+    // --- What you decide about a house ---
+    // The card is showing 322 S Lincoln St, which was already in the July
+    // download.
+    step(
+      "the card says when the home entered your list, not when it was listed",
+      /In your list since\D*2026-07-02/.test(await page.locator("#house-card").innerText()),
+      (await page.locator("#house-card").innerText()).split("\n").find((l) => /In your list/.test(l))
+    );
+    step(
+      "an untouched house offers Remove and Not interested",
+      (await page.locator('#house-card [data-act="remove"]').count()) === 1 &&
+        (await page.locator('#house-card [data-act="not-interested"]').count()) === 1
+    );
+
+    // Not interested: asks why, records it, greys the dot.
+    step(
+      "the reason box is out of the way until Not interested is clicked",
+      !(await page.locator("#house-card .house-reason").isVisible())
+    );
+    await page.locator('#house-card [data-act="not-interested"]').click();
+    await page.waitForTimeout(200);
+    step(
+      "clicking Not interested asks why",
+      await page.locator("#house-card .house-reason input").isVisible()
+    );
+    await page.locator("#house-card .house-reason input").fill("Backs onto the 5");
+    await page.locator('#house-card .house-reason button[type="submit"]').click();
+    await page.waitForTimeout(400);
+    const coldText = await page.locator("#house-card").innerText();
+    step(
+      "the reason is shown above the price, where it is read before anything else",
+      coldText.indexOf("Backs onto the 5") < coldText.indexOf("$995,000") &&
+        coldText.includes("Not interested"),
+      coldText.split("\n").slice(0, 4).join(" | ")
+    );
+    step(
+      "and the buttons become Remove and Interested, so it can be undone",
+      (await page.locator('#house-card [data-act="interested"]').count()) === 1 &&
+        (await page.locator('#house-card [data-act="not-interested"]').count()) === 0
+    );
+    step(
+      "the dot greys out rather than disappearing",
+      await page.evaluate(() => {
+        let grey = 0;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (l.getLatLng && l.options && l.options.fillColor === "#98a2ac") grey += 1;
+        });
+        return grey === 1;
+      })
+    );
+    step(
+      "the verdict survives a reload, because it is kept in this browser",
+      await page.evaluate(() => {
+        const store = JSON.parse(localStorage.getItem("la-home-map.listings.v1"));
+        const note = store["https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903"];
+        return note.status === "notInterested" && note.reason === "Backs onto the 5" && !!note.added;
+      })
+    );
+
+    await page.locator('#house-card [data-act="interested"]').click();
+    await page.waitForTimeout(400);
+    step(
+      "clicking Interested clears the verdict and the grey",
+      (await page.locator("#house-card .house-cold").count()) === 0 &&
+        (await page.locator('#house-card [data-act="not-interested"]').count()) === 1 &&
+        (await page.evaluate(() => {
+          let grey = 0;
+          BlockGroupApp.state.map.eachLayer((l) => {
+            if (l.getLatLng && l.options && l.options.fillColor === "#98a2ac") grey += 1;
+          });
+          return grey === 0;
+        }))
+    );
+
+    // Remove: for a home that has sold or been withdrawn.
+    await page.locator('#house-card [data-act="remove"]').click();
+    await page.waitForTimeout(400);
+    step(
+      "Remove closes the card and takes the dot off the map",
+      !(await page.locator("#house-card").isVisible()) &&
+        (await page.evaluate(() => {
+          let n = 0;
+          BlockGroupApp.state.map.eachLayer((l) => {
+            if (l.options && l.options.fillColor === "#b3261e") n += 1;
+          });
+          return n;
+        })) === 2
+    );
+    // A removal made BEFORE the newest download is a stale verdict: the home
+    // is still being published, so it is still for sale.
+    await page.evaluate(() => {
+      const key = "la-home-map.listings.v1";
+      const store = JSON.parse(localStorage.getItem(key));
+      store["https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903"].statusAt =
+        "2026-08-01T00:00:00.000Z";
+      localStorage.setItem(key, JSON.stringify(store));
+    });
+    await page.evaluate(() => BlockGroupApp.reloadListingsForTest());
+    await page.waitForTimeout(500);
+    step(
+      "a home you removed comes back when a newer download still carries it",
+      (await page.evaluate(() => {
+        let n = 0;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (l.options && l.options.fillColor === "#b3261e") n += 1;
+        });
+        return n;
+      })) === 3,
+      "still being published means still for sale"
+    );
+    step(
+      "a removal made after the newest download stands",
+      await page.evaluate(async () => {
+        const key = "la-home-map.listings.v1";
+        const id = "https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903";
+        const store = JSON.parse(localStorage.getItem(key));
+        store[id] = { ...store[id], status: "removed", statusAt: new Date().toISOString() };
+        localStorage.setItem(key, JSON.stringify(store));
+        await BlockGroupApp.reloadListingsForTest();
+        let n = 0;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (l.options && l.options.fillColor === "#b3261e") n += 1;
+        });
+        // Put it back so the counts below are the ones the rest of the run
+        // expects.
+        const after = JSON.parse(localStorage.getItem(key));
+        delete after[id].status;
+        delete after[id].statusAt;
+        localStorage.setItem(key, JSON.stringify(after));
+        await BlockGroupApp.reloadListingsForTest();
+        return n === 2;
+      })
+    );
+
     // A different block group closes both, then opens the new one.
     await page.evaluate(() => {
       BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
@@ -1585,6 +1758,33 @@ async function main() {
         });
         return n;
       })) === 1
+    );
+    step(
+      "a block group's homes are worked out from its own polygon, with no lookup table",
+      await page.evaluate(() => {
+        let inside = true;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (l.getLatLng && l.options && l.options.fillColor === "#b3261e") {
+            inside = inside && l.getLatLng().lng > -118.22;
+          }
+        });
+        return inside;
+      }),
+      "the one dot left is the one inside block group C"
+    );
+    // Closing the block group card is a deselection: its houses go with it,
+    // rather than being left floating over a block group nothing is showing.
+    await page.evaluate(() => BlockGroupApp.state.map.closePopup());
+    await page.waitForTimeout(400);
+    step(
+      "closing the block group card takes its houses off the map too",
+      await page.evaluate(() => {
+        let n = 0;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (l.getLatLng && l.options && /^#(b3261e|98a2ac|7f1d1d)$/.test(l.options.fillColor || "")) n += 1;
+        });
+        return n === 0;
+      })
     );
     await page.evaluate(() => {
       BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
@@ -2508,7 +2708,6 @@ async function main() {
     fs.rmSync(windPath, { force: true });
     fs.rmSync(parcelPath, { force: true });
     fs.rmSync(salesPath, { force: true });
-    fs.rmSync(listingsPath, { force: true });
     fs.rmSync(orsKeyPath, { force: true });
   }
 

@@ -326,35 +326,49 @@ and will use it if a future export carries one.
    scroll to the bottom of the table and click **Download All**. Redfin caps a
    download at 350 homes and hides the button under 20 results, so pull one
    file per neighbourhood.
-2. Save the files into `raw-data/` **keeping their `redfin_YYYYMMDDHHMMSS.csv`
-   names** - the timestamp in the filename is the only record of when the
-   snapshot was true, and the importer reads it.
-3. Run:
+2. Save the files into `raw-data/redfin-listings/` **keeping their
+   `redfin_YYYYMMDDHHMMSS.csv` names** - the timestamp in the filename is the
+   only record of when the snapshot was true, and the page reads it.
+3. Reload the page. That is the whole procedure.
 
-```
-# Windows
-python scripts\import-listings.py
-
-# macOS / Linux
-python3 scripts/import-listings.py
-```
+**There is no script to run and nothing to re-run.** The page lists the folder
+over HTTP, parses whatever CSVs are in it, and works out which homes fall
+inside the block group you selected by testing their coordinates against that
+polygon. Add a file, delete a file, drop in a fresher download - reload and
+it is picked up. (This is why the page has to be served by
+`python -m http.server` rather than opened as a `file://` URL: a folder needs
+a server to be listable.)
 
 Select a block group and its listings appear as dots; click one for the house
 card, which stays open alongside the block group card so both can be read at
 once.
 
-**Days on market is stored as a listing date, not as a number.** The
+**Days on market is a listing date, not the number in the file.** The
 days-on-market column in an export is only true on the day it was downloaded -
-by tomorrow it is a day short. The importer subtracts it from the download
-time to get the date the home was listed, and the card counts forward from
-there.
-
-**`firstSeen` is carried across runs**, so "NEW" means new to *you* rather
-than merely new to the newest file. Re-running with fresh downloads updates
-prices and days on market while preserving when each home first appeared.
+by tomorrow it is a day short. The page subtracts it from the download time to
+get the date the home was listed, and counts forward from there.
 
 Lot size is here too, which the assessor roll lacks - so listings show
 **$/ft² of lot** as well as of floor area.
+
+#### What you decide about a house
+
+The house card carries three things that are yours rather than Redfin's:
+
+* **In your list since** - the first download of yours the home appeared in.
+* **Remove** - for a home that has sold or been withdrawn. Its dot disappears.
+  If a download made *after* you removed it still contains the home, it comes
+  back on its own: a sale usually shows up as a listing that simply stops
+  appearing, so anything still being published is still for sale.
+* **Not interested** - asks why in one line, records it, greys the dot out and
+  shows the reason above the price the next time you open the card. The
+  buttons then become **Remove** and **Interested**, so you can change your
+  mind.
+
+These live in the browser's `localStorage` under `la-home-map.listings.v1`,
+because a page served off disk cannot write files back to it. They survive
+reloads and re-downloads, and they are per-browser: they do not travel to
+another machine, and clearing site data clears them.
 
 ### Optional: commute times
 
@@ -641,8 +655,8 @@ js/blockgroups.js      ...its map, toggles, viewport loading and popup
 css/blockgroups.css    ...its styles
 scripts/fetch-blockgroup-data.py   One-time block-group ACS fetch
 scripts/fetch-wind-data.py         One-time Global Wind Atlas GeoTIFF -> JSON grid
-scripts/import-listings.py         Redfin CSV exports -> the listings layer
-scripts/bg_geo.py                  Block group outlines + point-in-polygon, shared by both
+scripts/fetch-parcel-data.py       One-time Assessor roll -> per-year prices and sales
+raw-data/redfin-listings/          Drop Redfin CSV exports here - the page reads them directly
 
 index.html
 css/style.css

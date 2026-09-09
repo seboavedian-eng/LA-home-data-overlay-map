@@ -463,8 +463,16 @@ const BG_CONFIG = {
   // clicked - it is far larger than the summary and most sessions never
   // open it.
   PARCEL_SALES: "js/data/parcel-sales-la-county.json",
-  // Produced by scripts/import-listings.py from Redfin CSV downloads.
-  LISTINGS_DATA: "js/data/listings.json",
+  // Redfin "Download All" exports, read straight from disk. No import step:
+  // the page lists the folder, parses whatever CSVs are in it, and works out
+  // which listings fall inside the selected block group itself. Drop a file
+  // in, reload, done.
+  LISTINGS_DIR: "raw-data/redfin-listings/",
+  // What you decide about a house - added date, removed, not interested and
+  // why - lives in the browser, because a page served from disk cannot write
+  // files. It survives reloads and re-downloads; it does not travel between
+  // machines.
+  LISTINGS_STORE_KEY: "la-home-map.listings.v1",
 
   // OpenRouteService: free, no credit card, 2,500 requests/day. The key lives
   // in ors-api-key.txt beside this project (gitignored) and is read at start.
@@ -499,6 +507,7 @@ const BlockGroupApp = (() => {
   let censusDataError = null;
   let selectedLayer = null;
   let selectedProps = null;   // so the open detail can re-render on source switch
+  let selectedFeature = null; // the polygon itself, for point-in-polygon work
   let moveTimer = null;
   let ethSource = "acs";      // "acs" = B03002 (default), "dec" = 2020 Census P2
   let densityShading = false; // population-density colour scale on/off
@@ -1144,32 +1153,373 @@ const BlockGroupApp = (() => {
   // listing in the county at once would bury the thing being looked at, and
   // the question this answers is always "what is for sale here", never "what
   // is for sale everywhere".
-  let listingsData = null;
+  //
+  // The CSVs are read straight out of the folder, in the browser, every time
+  // the page loads. There is no import step and nothing to re-run: python's
+  // http.server publishes a directory index for the folder, the page scrapes
+  // the .csv links out of it and parses them here. Drop a file in, reload,
+  // done. Which block group a home belongs to is worked out on the spot, by
+  // testing the home's coordinates against the polygon you selected, so no
+  // lookup table has to be built ahead of time either.
+  let listingsData = null;      // every listing, deduped, county-wide
   let listingsMeta = null;
+  let listingsPromise = null;
   let listingLayer = null;
   let selectedListingId = null;
+  let currentListing = null;    // the one the house card is showing
 
-  async function loadListings() {
-    if (listingsData) return listingsData;
+  // What you decide about a house lives in localStorage: a page served off
+  // disk cannot write back to it. See BG_CONFIG.LISTINGS_STORE_KEY.
+  let listingStore = readListingStore();
+
+  const SQFT_PER_ACRE = 43560;
+  // A "lot size" under this many units is being reported in acres, not square
+  // feet - Redfin switches units on larger parcels without renaming the
+  // column.
+  const LOT_ACRE_THRESHOLD = 100;
+
+  // Redfin's column names, as its "Download All" writes them.
+  const LISTING_COLUMNS = {
+    status: ["STATUS"],
+    type: ["PROPERTY TYPE"],
+    address: ["ADDRESS"],
+    city: ["CITY"],
+    zip: ["ZIP OR POSTAL CODE"],
+    price: ["PRICE"],
+    beds: ["BEDS"],
+    baths: ["BATHS"],
+    sqft: ["SQUARE FEET"],
+    lot: ["LOT SIZE"],
+    built: ["YEAR BUILT"],
+    dom: ["DAYS ON MARKET"],
+    hoa: ["HOA/MONTH"],
+    url: ["URL"],
+    source: ["SOURCE"],
+    mls: ["MLS#"],
+    lat: ["LATITUDE"],
+    lon: ["LONGITUDE"],
+  };
+
+  // --- Your notes on a house ----------------------------------------------
+
+  function readListingStore() {
     try {
-      const res = await fetch(BG_CONFIG.LISTINGS_DATA, { cache: "no-cache" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      listingsData = data.byBlockGroup || {};
-      listingsMeta = data.meta || null;
-      renderSourceTable();
-      const count = Object.values(listingsData).reduce((n, rows) => n + rows.length, 0);
-      Utils.logStatus("listings", "ok", `${count} listings loaded (downloaded ${(listingsMeta && listingsMeta.latestDownload) || "?"}).`);
+      const raw = localStorage.getItem(BG_CONFIG.LISTINGS_STORE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === "object" ? parsed : {};
     } catch (err) {
-      listingsData = {};
-      Utils.logStatus("listings", "info", `No listings file (${err.message}). Drop Redfin exports in raw-data/ and run scripts/import-listings.py.`);
+      return {};   // a private window, or a corrupt value: start clean
     }
+  }
+
+  function saveListingStore() {
+    try {
+      localStorage.setItem(BG_CONFIG.LISTINGS_STORE_KEY, JSON.stringify(listingStore));
+    } catch (err) {
+      Utils.logStatus("listings", "warn", `Could not save your note on this house: ${err.message}`);
+    }
+  }
+
+  function noteFor(id) {
+    return listingStore[id] || {};
+  }
+
+  function listingStatus(id) {
+    return noteFor(id).status || "active";
+  }
+
+  function setListingStatus(id, status, reason) {
+    const note = listingStore[id] || (listingStore[id] = {});
+    if (status === "active") delete note.status;
+    else note.status = status;
+    note.statusAt = new Date().toISOString();
+    if (status === "notInterested") note.reason = (reason || "").trim();
+    else delete note.reason;
+    saveListingStore();
+  }
+
+  // --- Reading the folder --------------------------------------------------
+
+  // A real CSV parser rather than a split on commas: Redfin quotes its
+  // addresses, and one comma inside a quoted address would shift every column
+  // after it.
+  function parseCsv(text) {
+    const rows = [];
+    let row = [];
+    let field = "";
+    let quoted = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (quoted) {
+        if (ch !== '"') field += ch;
+        else if (text[i + 1] === '"') { field += '"'; i += 1; }
+        else quoted = false;
+      } else if (ch === '"') {
+        quoted = true;
+      } else if (ch === ",") {
+        row.push(field);
+        field = "";
+      } else if (ch === "\n") {
+        row.push(field);
+        rows.push(row);
+        row = [];
+        field = "";
+      } else if (ch !== "\r") {
+        field += ch;
+      }
+    }
+    if (field !== "" || row.length) {
+      row.push(field);
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  function findColumn(header, candidates) {
+    const lowered = header.map((h) => (h || "").toLowerCase().trim());
+    for (const candidate of candidates) {
+      const i = lowered.indexOf(candidate.toLowerCase());
+      if (i !== -1) return i;
+    }
+    for (const candidate of candidates) {
+      const i = lowered.findIndex((h) => h.startsWith(candidate.toLowerCase()));
+      if (i !== -1) return i;
+    }
+    return -1;
+  }
+
+  function toNumber(value) {
+    const n = Number(String(value == null ? "" : value).replace(/[$,]/g, "").trim());
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function localDay(date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+      date.getDate()
+    ).padStart(2, "0")}`;
+  }
+
+  // Redfin names its exports redfin_YYYYMMDDHHMMSS.csv, and that timestamp is
+  // the only record of when the snapshot was true - the rows carry no date.
+  function downloadTimeOf(name) {
+    const m = name.match(/(20\d{2})(\d{2})(\d{2})(?:[-_ ]?(\d{2})(\d{2})(\d{2}))?/);
+    if (!m) return null;
+    const date = new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  async function listListingFiles() {
+    const res = await fetch(BG_CONFIG.LISTINGS_DIR, { cache: "no-cache" });
+    if (!res.ok) throw new Error(`HTTP ${res.status} on ${BG_CONFIG.LISTINGS_DIR}`);
+    const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+    const names = new Set();
+    doc.querySelectorAll("a[href]").forEach((a) => {
+      const href = a.getAttribute("href") || "";
+      let name = href.split("?")[0].split("#")[0].split("/").pop() || "";
+      try { name = decodeURIComponent(name); } catch (err) { /* leave it as-is */ }
+      if (/\.csv$/i.test(name)) names.add(name);
+    });
+    return [...names].sort();
+  }
+
+  function parseListingFile(text, downloaded, stats) {
+    const rows = parseCsv(text);
+    const header = rows.shift();
+    if (!header) throw new Error("the file is empty");
+
+    const idx = {};
+    Object.entries(LISTING_COLUMNS).forEach(([key, names]) => {
+      idx[key] = findColumn(header, names);
+    });
+    const missing = ["address", "price", "lat", "lon"].filter((k) => idx[k] === -1);
+    if (missing.length) {
+      throw new Error(`no ${missing.join(", ")} column - is this a Redfin "Download All" export?`);
+    }
+
+    const seen = downloaded.toISOString();
+    const listings = [];
+    rows.forEach((row) => {
+      // Redfin puts a legal notice on its own line under the header ("in
+      // accordance with local MLS rules, some listings are not included").
+      // Any row too short to hold the columns is a note, not a home.
+      if (row.length < header.length - 2) {
+        stats.notes += 1;
+        return;
+      }
+      const cell = (key) => (idx[key] >= 0 && idx[key] < row.length ? row[idx[key]].trim() : "");
+
+      const lat = toNumber(cell("lat"));
+      const lon = toNumber(cell("lon"));
+      const price = toNumber(cell("price"));
+      if (lat === null || lon === null || price === null) {
+        stats.incomplete += 1;
+        return;
+      }
+
+      const lot = toNumber(cell("lot"));
+      const lotSqft =
+        lot === null ? null : Math.round(lot < LOT_ACRE_THRESHOLD ? lot * SQFT_PER_ACRE : lot);
+
+      // Days on market is stored as the day the home was listed - download
+      // date minus the days-on-market in the file - so the card can count
+      // forward from it. The number in the file was only true on the day it
+      // was downloaded; by tomorrow it is already one short.
+      const dom = toNumber(cell("dom"));
+      const listedOn =
+        dom === null
+          ? null
+          : localDay(new Date(downloaded.getTime() - Math.round(dom) * 86400000));
+
+      listings.push({
+        id: cell("url") || `${cell("mls")}:${cell("source")}:${cell("address")}`,
+        address: cell("address"),
+        city: cell("city"),
+        zip: cell("zip"),
+        price: Math.round(price),
+        beds: toNumber(cell("beds")),
+        baths: toNumber(cell("baths")),
+        sqft: toNumber(cell("sqft")),
+        lotSqft,
+        yearBuilt: toNumber(cell("built")),
+        listedOn,
+        status: cell("status"),
+        type: cell("type"),
+        hoa: toNumber(cell("hoa")),
+        url: cell("url"),
+        mls: cell("mls"),
+        source: cell("source"),
+        lat,
+        lon,
+        firstSeen: seen,
+        lastSeen: seen,
+      });
+    });
+    return listings;
+  }
+
+  // Carry the portfolio date forward and bring back anything you removed that
+  // has since turned up in a newer download.
+  function reconcileListingStore(listings) {
+    let back = 0;
+    listings.forEach((listing) => {
+      const note = listingStore[listing.id] || (listingStore[listing.id] = {});
+      // The portfolio date: when this home first appeared in a download you
+      // had. It survives deleting the old CSVs, which is the whole point - it
+      // is what tells you a listing has been sitting in your list for months.
+      if (!note.added || listing.firstSeen < note.added) note.added = listing.firstSeen;
+      listing.firstSeen = note.added;
+      if (note.status === "removed" && note.statusAt && listing.lastSeen > note.statusAt) {
+        // It came back in a download made after you removed it, so it is on
+        // the market again.
+        delete note.status;
+        delete note.statusAt;
+        back += 1;
+      }
+    });
+    saveListingStore();
+    return back;
+  }
+
+  function loadListings() {
+    if (!listingsPromise) listingsPromise = loadListingsOnce();
+    return listingsPromise;
+  }
+
+  async function loadListingsOnce() {
+    listingsData = [];
+    listingsMeta = null;
+    let names = [];
+    try {
+      names = await listListingFiles();
+    } catch (err) {
+      Utils.logStatus(
+        "listings",
+        "info",
+        `No listings folder (${err.message}). Drop Redfin "Download All" CSVs in ${BG_CONFIG.LISTINGS_DIR} and reload.`
+      );
+      renderSourceTable();
+      return listingsData;
+    }
+    if (!names.length) {
+      Utils.logStatus(
+        "listings",
+        "info",
+        `${BG_CONFIG.LISTINGS_DIR} has no CSVs in it yet. Drop Redfin "Download All" exports there and reload - no script to run.`
+      );
+      renderSourceTable();
+      return listingsData;
+    }
+
+    const stats = { notes: 0, incomplete: 0 };
+    const files = [];
+    const merged = new Map();
+
+    for (const name of names) {
+      try {
+        const res = await fetch(BG_CONFIG.LISTINGS_DIR + encodeURIComponent(name), { cache: "no-cache" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        // The name is the download time. If the file has been renamed, fall
+        // back to what the server says about it rather than refusing it.
+        const modified = res.headers.get("last-modified");
+        const named = downloadTimeOf(name);
+        const downloaded = named || (modified ? new Date(modified) : new Date());
+        const rows = parseListingFile(text, downloaded, stats);
+        files.push({ file: name, downloaded: downloaded.toISOString(), datedFromName: !!named, count: rows.length });
+        rows.forEach((listing) => {
+          const existing = merged.get(listing.id);
+          if (!existing) {
+            merged.set(listing.id, listing);
+            return;
+          }
+          // The same home turns up in two neighbourhood exports. Keep the
+          // newest row's figures, but the earliest and latest sightings.
+          const first = existing.firstSeen < listing.firstSeen ? existing.firstSeen : listing.firstSeen;
+          const last = existing.lastSeen > listing.lastSeen ? existing.lastSeen : listing.lastSeen;
+          const newest = listing.lastSeen >= existing.lastSeen ? listing : existing;
+          newest.firstSeen = first;
+          newest.lastSeen = last;
+          merged.set(listing.id, newest);
+        });
+      } catch (err) {
+        Utils.logStatus("listings", "warn", `Could not read ${name}: ${err.message}`);
+      }
+    }
+
+    listingsData = [...merged.values()];
+    const back = reconcileListingStore(listingsData);
+    const latest = files.reduce((a, f) => (a && a > f.downloaded ? a : f.downloaded), null);
+    listingsMeta = {
+      files,
+      latestDownload: latest,
+      latestDownloadLabel: latest ? localDay(new Date(latest)) : null,
+    };
+    renderSourceTable();
+
+    const notes = [];
+    if (stats.notes) notes.push(`${stats.notes} MLS notice row(s) skipped`);
+    if (stats.incomplete) notes.push(`${stats.incomplete} row(s) had no price or coordinates`);
+    if (back) notes.push(`${back} you had removed are back in a newer download`);
+    Utils.logStatus(
+      "listings",
+      "ok",
+      `${listingsData.length} listings from ${files.length} file(s), latest downloaded ${
+        listingsMeta.latestDownloadLabel || "?"
+      }.${notes.length ? ` ${notes.join("; ")}.` : ""}`
+    );
     return listingsData;
   }
 
-  function listingsFor(props) {
-    if (!listingsData) return [];
-    return listingsData[geoidOf(props)] || [];
+  // Which homes are in this block group is decided here, against the polygon
+  // itself, so it works for a tract or a ZIP just as well and needs nothing
+  // precomputed. Removed homes are not drawn at all; ones you are not
+  // interested in stay, greyed out, so you do not keep rediscovering them.
+  function listingsFor(feature) {
+    const geometry = feature && feature.geometry;
+    if (!listingsData || !listingsData.length || !geometry) return [];
+    return listingsData
+      .filter((l) => listingStatus(l.id) !== "removed" && pointInGeometry(l.lat, l.lon, geometry))
+      .sort((a, b) => b.price - a.price);
   }
 
   // Days on market, counted forward from the listing date rather than read
@@ -1182,6 +1532,13 @@ const BlockGroupApp = (() => {
     return Math.max(0, Math.round((Date.now() - listed.getTime()) / 86400000));
   }
 
+  function daysSince(iso) {
+    if (!iso) return null;
+    const then = new Date(iso);
+    if (Number.isNaN(then.getTime())) return null;
+    return Math.max(0, Math.round((Date.now() - then.getTime()) / 86400000));
+  }
+
   function isNewListing(listing) {
     if (!listing.firstSeen || !listingsMeta || !listingsMeta.latestDownload) return false;
     return listing.firstSeen === listingsMeta.latestDownload;
@@ -1189,12 +1546,13 @@ const BlockGroupApp = (() => {
 
   function listingMarker(listing) {
     const selected = listing.id === selectedListingId;
+    const cold = listingStatus(listing.id) === "notInterested";
     return L.circleMarker([listing.lat, listing.lon], {
       radius: selected ? 9 : 6,
       color: "#ffffff",
       weight: selected ? 3 : 2,
-      fillColor: selected ? "#7f1d1d" : "#b3261e",
-      fillOpacity: 1,
+      fillColor: cold ? "#98a2ac" : selected ? "#7f1d1d" : "#b3261e",
+      fillOpacity: cold ? 0.7 : 1,
       pane: "markerPane",
     });
   }
@@ -1206,21 +1564,25 @@ const BlockGroupApp = (() => {
     }
   }
 
-  async function showListingsFor(props) {
+  async function showListingsFor(feature) {
     await loadListings();
+    const target = feature || selectedFeature;
     clearListingLayer();
-    const rows = listingsFor(props);
+    const rows = listingsFor(target);
     if (!rows.length) return;
 
     listingLayer = L.layerGroup(
       rows.map((listing) => {
         const marker = listingMarker(listing);
+        const cold = listingStatus(listing.id) === "notInterested";
         marker.bindTooltip(
-          `${Utils.fmtCurrency(listing.price)} &middot; ${listing.address}${isNewListing(listing) ? " &middot; NEW" : ""}`
+          `${Utils.fmtCurrency(listing.price)} &middot; ${Utils.escapeHTML(listing.address)}${
+            isNewListing(listing) ? " &middot; NEW" : ""
+          }${cold ? " &middot; not interested" : ""}`
         );
         marker.on("click", (e) => {
           if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
-          openHouseCard(listing, props);
+          openHouseCard(listing);
         });
         return marker;
       })
@@ -1228,13 +1590,24 @@ const BlockGroupApp = (() => {
   }
 
   function houseCardHTML(listing) {
+    const note = noteFor(listing.id);
+    const cold = note.status === "notInterested";
     const dom = daysOnMarket(listing);
+    const held = daysSince(note.added);
     const perSqft = listing.sqft ? listing.price / listing.sqft : null;
     const perLot = listing.lotSqft ? listing.price / listing.lotSqft : null;
     const row = (k, v) => (v === null || v === undefined || v === "" ? "" : `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`);
+    const esc = Utils.escapeHTML;
 
     return `
       <button class="house-close" type="button">&times;</button>
+      ${
+        cold
+          ? `<p class="house-cold">Not interested${
+              note.reason ? `: <span class="house-reason-text">${esc(note.reason)}</span>` : ""
+            }</p>`
+          : ""
+      }
       <p class="house-price">${Utils.fmtCurrency(listing.price)}${
         isNewListing(listing) ? '<span class="new-badge">NEW</span>' : ""
       }</p>
@@ -1243,7 +1616,7 @@ const BlockGroupApp = (() => {
         ${perSqft && perLot ? "&nbsp;&middot;&nbsp;" : ""}
         ${perLot ? `<strong>${Utils.fmtCurrency(Math.round(perLot))}</strong>/ft&sup2; lot` : ""}
       </p>
-      <p class="house-address">${listing.address}${listing.city ? `, ${listing.city}` : ""} ${listing.zip || ""}</p>
+      <p class="house-address">${esc(listing.address)}${listing.city ? `, ${esc(listing.city)}` : ""} ${esc(listing.zip)}</p>
       <table>
         ${row(
           `Days on market${infoIcon(
@@ -1253,38 +1626,101 @@ const BlockGroupApp = (() => {
           )}`,
           dom === null ? null : `${dom} day${dom === 1 ? "" : "s"}`
         )}
+        ${row(
+          `In your list since${infoIcon(
+            "The first download of yours this home appeared in. It is kept in this browser, so it survives deleting " +
+              "the old CSVs - which is what makes it useful for spotting a listing that has gone stale in your list."
+          )}`,
+          note.added ? `${note.added.slice(0, 10)}${held === null ? "" : ` (${held} day${held === 1 ? "" : "s"})`}` : null
+        )}
         ${row("Sq ft", listing.sqft ? Utils.fmtNumber(listing.sqft) : null)}
         ${row("Lot size", listing.lotSqft ? `${Utils.fmtNumber(listing.lotSqft)} ft²` : null)}
         ${row("Beds", listing.beds)}
         ${row("Baths", listing.baths)}
-        ${row("Property type", listing.type)}
+        ${row("Property type", esc(listing.type))}
         ${row("Year built", listing.yearBuilt ? String(listing.yearBuilt) : null)}
         ${row("HOA", listing.hoa ? `${Utils.fmtCurrency(listing.hoa)}/mo` : null)}
-        ${row("Status", listing.status)}
+        ${row("Status", esc(listing.status))}
       </table>
       <p class="house-links">
-        <a href="${listing.url}" target="_blank" rel="noopener">Open on Redfin &rarr;</a>
-        ${listing.mls ? `<span class="src-note">${listing.source || "MLS"} #${listing.mls}</span>` : ""}
+        <a href="${esc(listing.url) || "#"}" target="_blank" rel="noopener">Open on Redfin &rarr;</a>
+        ${listing.mls ? `<span class="src-note">${esc(listing.source || "MLS")} #${esc(listing.mls)}</span>` : ""}
       </p>
-      <p class="src-note">First seen in a download on ${(listing.firstSeen || "").slice(0, 10) || "?"}.</p>`;
+      <div class="house-actions">
+        <button type="button" class="house-btn" data-act="remove">Remove</button>
+        ${
+          cold
+            ? '<button type="button" class="house-btn" data-act="interested">Interested</button>'
+            : '<button type="button" class="house-btn" data-act="not-interested">Not interested</button>'
+        }
+      </div>
+      <form class="house-reason hidden">
+        <label for="house-reason-text">Why not?</label>
+        <input id="house-reason-text" type="text" maxlength="140" placeholder="Backs onto the freeway" />
+        <div class="house-actions">
+          <button type="submit" class="house-btn">Save</button>
+          <button type="button" class="house-btn" data-act="cancel">Cancel</button>
+        </div>
+      </form>`;
   }
 
   function closeHouseCard() {
     const card = document.getElementById("house-card");
     if (card) card.classList.add("hidden");
     selectedListingId = null;
-    if (selectedProps) showListingsFor(selectedProps); // redraw dots unselected
+    currentListing = null;
+    if (selectedFeature) showListingsFor(); // redraw dots unselected
   }
 
-  function openHouseCard(listing, props) {
+  function openHouseCard(listing) {
     selectedListingId = listing.id;
+    currentListing = listing;
+    renderHouseCard();
+    // Redraw so the chosen dot is the highlighted one. The block group card is
+    // deliberately left alone: the point is to read both at once.
+    showListingsFor();
+  }
+
+  function renderHouseCard() {
     const card = document.getElementById("house-card");
+    if (!card || !currentListing) return;
+    const listing = currentListing;
     card.classList.remove("hidden");
     card.innerHTML = houseCardHTML(listing);
     card.querySelector(".house-close").addEventListener("click", closeHouseCard);
-    // Redraw so the chosen dot is the highlighted one. The block group card is
-    // deliberately left alone: the point is to read both at once.
-    showListingsFor(props || selectedProps);
+
+    const form = card.querySelector(".house-reason");
+    const input = form.querySelector("input");
+
+    card.querySelectorAll(".house-actions [data-act]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const act = btn.dataset.act;
+        if (act === "remove") {
+          // Gone from the map until a download made after today brings it
+          // back - a sold or withdrawn home usually just stops appearing.
+          setListingStatus(listing.id, "removed");
+          Utils.logStatus("listings", "info", `Removed ${listing.address}. It returns if a newer download still has it.`);
+          closeHouseCard();
+        } else if (act === "not-interested") {
+          form.classList.remove("hidden");
+          input.value = noteFor(listing.id).reason || "";
+          input.focus();
+        } else if (act === "interested") {
+          setListingStatus(listing.id, "active");
+          renderHouseCard();
+          showListingsFor();
+        } else if (act === "cancel") {
+          form.classList.add("hidden");
+        }
+      });
+    });
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      setListingStatus(listing.id, "notInterested", input.value);
+      renderHouseCard();
+      showListingsFor();
+    });
   }
 
   // --- The individual sales behind a count --------------------------------
@@ -3178,12 +3614,15 @@ const BlockGroupApp = (() => {
     cardPopup = L.popup(POPUP_OPTIONS);
     cardPopup.on("remove", () => {
       // Closing the card clears the highlight and the listings, but keeps the
-      // sidebar copy of the card.
-      clearListingLayer();
-      closeHouseCard();
+      // sidebar copy of the card. The selection is dropped BEFORE the houses
+      // are, because closing the house card redraws the dots for whatever is
+      // still selected - and nothing is.
       const wasSelected = selectedLayer;
       selectedLayer = null;
+      selectedFeature = null;
       selectedGeoid = null;
+      clearListingLayer();
+      closeHouseCard();
       if (wasSelected && wasSelected._map) wasSelected.setStyle(styleForBlockGroup(wasSelected.feature));
     });
     return cardPopup;
@@ -3206,6 +3645,7 @@ const BlockGroupApp = (() => {
     }
     selectedLayer = layer;
     selectedProps = props;
+    selectedFeature = layer.feature;
     selectedGeoid = geoidOf(props);
     layer.setStyle(BG_CONFIG.STYLES.blockGroupSelected);
 
@@ -3220,7 +3660,7 @@ const BlockGroupApp = (() => {
     if (previousGeoid !== selectedGeoid) {
       // A different block group: its houses are not this one's houses.
       closeHouseCard();
-      showListingsFor(props);
+      showListingsFor();
     }
 
     lookupZip(geoidOf(props), layer);
@@ -3528,6 +3968,7 @@ const BlockGroupApp = (() => {
         if (cardPopup && cardPopup.isOpen()) map.closePopup(cardPopup);
         selectedLayer = null;
         selectedProps = null;
+        selectedFeature = null;
         selectedGeoid = null;
         document.getElementById("detail-panel").innerHTML =
           '<p class="hint">Turn on <strong>Block Group Borders</strong>, zoom in, and click a block group.</p>';
@@ -3742,7 +4183,9 @@ const BlockGroupApp = (() => {
         // Not in the loaded viewport (rare) - still show the card.
         selectedProps = feature.properties;
         selectedLayer = null;
+        selectedFeature = feature;
         renderSelection();
+        showListingsFor();
         lookupZip(wanted, L.geoJSON(feature));
       }
 
@@ -3917,7 +4360,11 @@ const BlockGroupApp = (() => {
     ["Housing stock, tenure, commute", "ACS 5-year B25024, B25003, B08301, B25035 / B25034", () => censusDate()],
     ["Household size", "ACS 5-year B25010", () => censusDate()],
     ["Home prices & sales", "LA County Assessor roll, assessed value at each transfer", () => metaDate(parcelMeta)],
-    ["Listings for sale", "Redfin 'Download All' exports", () => (listingsMeta && listingsMeta.latestDownload ? listingsMeta.latestDownload.slice(0, 10) : "not loaded")],
+    [
+      "Listings for sale",
+      "Redfin 'Download All' exports, read from raw-data/redfin-listings/",
+      () => (listingsMeta && listingsMeta.latestDownloadLabel) || "not loaded",
+    ],
     ["Schools & attendance zones", "CA Dept of Education sites; LAUSD attendance boundaries", () => "live"],
     ["Pollution burden", "CalEnviroScreen 4.0 (OEHHA), by census tract", () => "live"],
     ["Fire hazard", "CAL FIRE / OSFM Fire Hazard Severity Zones", () => "live"],
@@ -4145,11 +4592,20 @@ const BlockGroupApp = (() => {
       renderFilterRows();
       applyFilters();
     },
+    // Re-reads the CSV folder from scratch, so a test can prove that a home
+    // you removed comes back when a newer download still carries it.
+    reloadListingsForTest: async () => {
+      listingsPromise = null;
+      listingStore = readListingStore();
+      await loadListings();
+      await showListingsFor();
+    },
     // exposed for tests
     get state() {
       return {
         map, enabled, layers, censusData, selectedProps, windGrid, windOverlay,
         pinArmed, cesByTract, basemapKind, filters, parcelData, districtLayer,
+        listingsData, listingsMeta, listingStore,
       };
     },
   };

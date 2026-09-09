@@ -318,6 +318,15 @@ const Utils = (() => {
     return `${((p / w) * 100).toFixed(1)}%`;
   }
 
+  // Anything that came out of a downloaded file or was typed by hand goes
+  // through this before it is put into innerHTML.
+  function escapeHTML(value) {
+    return String(value === null || value === undefined ? "" : value).replace(
+      /[&<>"']/g,
+      (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch])
+    );
+  }
+
   function greatSchoolsSearchUrl(schoolName) {
     const q = `${schoolName} greatschools rating`;
     return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
@@ -336,6 +345,7 @@ const Utils = (() => {
     fmtNumber,
     fmtCurrency,
     fmtPercent,
+    escapeHTML,
     greatSchoolsSearchUrl,
     logStatus,
     onStatusChange,
