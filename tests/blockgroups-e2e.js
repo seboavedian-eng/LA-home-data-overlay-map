@@ -542,10 +542,18 @@ async function main() {
 
   // BTS/DOT noise: a raster service, so the page asks it to draw tiles and
   // to identify a pixel value at a point.
-  let noiseRequests = { root: 0, tiles: 0, identify: 0 };
+  // The real DOT service is TILE-CACHED, which is why a well-formed /export
+  // URL drew nothing: a cached service refuses export outright. The mock
+  // behaves the same way - export 404s, /tile serves an image - so the page
+  // has to read the service's metadata and pick the right endpoint.
+  let noiseRequests = { root: 0, exports: 0, tiles: 0, identify: 0 };
   await page.route("**://geo.dot.gov/**", (route) => {
     const url = route.request().url();
     if (url.includes("/export")) {
+      noiseRequests.exports++;
+      return route.fulfill({ status: 400, contentType: "text/plain", body: "Export not supported" });
+    }
+    if (url.includes("/tile/")) {
       noiseRequests.tiles++;
       return route.fulfill({ contentType: "image/png", body: BLANK_PNG });
     }
@@ -554,7 +562,13 @@ async function main() {
       return route.fulfill(json({ results: [{ attributes: { "Pixel Value": "58.4" } }] }));
     }
     noiseRequests.root++;
-    return route.fulfill(json({ mapName: "Noise_aviation_CONUS_2018", singleFusedMapCache: false }));
+    return route.fulfill(
+      json({
+        mapName: "Noise_aviation_CONUS_2018",
+        singleFusedMapCache: true,
+        tileInfo: { lods: [{ level: 0 }, { level: 16 }] },
+      })
+    );
   });
 
   // OpenRouteService directions. Returns a GeoJSON LineString plus a summary,
@@ -1484,14 +1498,17 @@ async function main() {
       noiseRequests.root > 0 && noiseRequests.tiles > 0,
       JSON.stringify(noiseRequests)
     );
-    const exportUrl = await page.evaluate(() => {
-      const img = document.querySelector('img[src*="/export"]');
-      return img ? img.src : null;
-    });
     step(
-      "tiles are requested in Web Mercator with a transparent background",
-      exportUrl && exportUrl.includes("bboxSR=3857") && exportUrl.includes("transparent=true"),
-      exportUrl && exportUrl.slice(0, 120)
+      "a tile-cached service is read through /tile, not /export",
+      noiseRequests.tiles > 0 && noiseRequests.exports === 0,
+      JSON.stringify(noiseRequests)
+    );
+    step(
+      "raster overlays sit in their own pane, above the basemap and below the polygons",
+      await page.evaluate(() => {
+        const pane = document.querySelector(".leaflet-rasterOverlay-pane");
+        return !!pane && pane.querySelectorAll("img").length > 0 && Number(pane.style.zIndex) > 200;
+      })
     );
     await page.evaluate(() => {
       BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
@@ -1519,7 +1536,7 @@ async function main() {
     step(
       "turning the hazard layers off removes them",
       (await page.evaluate(() => !BlockGroupApp.state.layers.flood && !BlockGroupApp.state.layers.seismic)) &&
-        (await page.locator('img[src*="/export"]').count()) === 0
+        (await page.locator('img[src*="/tile/"]').count()) === 0
     );
 
     // --- Schools: dots, zones, districts ---

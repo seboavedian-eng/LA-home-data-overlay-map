@@ -355,6 +355,13 @@ const BG_CONFIG = {
       "https://geo.dot.gov/server/rest/services/hosted/Noise_aviation_CONUS_2016/MapServer",
       "https://maps.bts.dot.gov/services/rest/services/Noise/CONUS_road_and_aviation_noise/MapServer",
     ],
+    // BTS also publishes the 2022 map as cached tile services. Rather than
+    // guess their exact names, ask the folder what it holds and take whatever
+    // matches - the names change between vintages, the folder does not.
+    discoverFrom: {
+      folder: "https://tiles.arcgis.com/tiles/xOi1kZaI0eWDREZv/arcgis/rest/services",
+      match: /noise.*(aviation|air)/i,
+    },
     // Bands the map's own legend uses, for the sidebar key.
     BANDS: [
       { max: 50, label: "Under 50 dB - quiet", color: "#f1f5f9" },
@@ -1275,6 +1282,7 @@ const BlockGroupApp = (() => {
   // and it needs no plugin: a Leaflet tile layer whose URL is computed per
   // tile from that tile's bounding box in Web Mercator.
   let noiseServerUrl = null;
+  let noiseLayer = null;
 
   function esriExportTileLayer(url, options) {
     const Layer = L.TileLayer.extend({
@@ -1283,14 +1291,10 @@ const BlockGroupApp = (() => {
       onAdd(map) {
         L.TileLayer.prototype.onAdd.call(this, map);
         let reported = false;
-        this.on("tileerror", (e) => {
+        this.on("tileerror", () => {
           if (reported) return;
           reported = true;
-          Utils.logStatus(
-            "noise",
-            "warn",
-            `Noise tiles are not drawing: ${(e.tile && e.tile.src) || "the export request failed"}`
-          );
+          tryNextNoiseSource("This service will not render tiles through export.");
         });
       },
       getTileUrl(coords) {
@@ -1315,16 +1319,66 @@ const BlockGroupApp = (() => {
     return new Layer("", options);
   }
 
+  // Ask a hosted folder what services it carries, so a renamed vintage is
+  // found rather than guessed at.
+  async function discoverNoiseServices(spec) {
+    try {
+      const data = await Utils.fetchJSON(`${spec.folder}?f=json`, { timeoutMs: 20000 });
+      return (data.services || [])
+        .filter((svc) => spec.match.test(svc.name || ""))
+        .map((svc) => `${spec.folder}/${(svc.name || "").split("/").pop()}/MapServer`);
+    } catch (err) {
+      return [];
+    }
+  }
+
+  // An ArcGIS map service is drawn one of two ways and they are not
+  // interchangeable. A dynamic service renders on demand through /export; a
+  // CACHED service has pre-rendered tiles and refuses /export outright, which
+  // is what "noise tiles are not drawing" was - a perfectly good export URL
+  // against a service that does not do export. The service's own metadata
+  // says which it is, and we already fetch it.
+  function noiseLayerFor(url, root) {
+    const cached = !!(root && (root.singleFusedMapCache || (root.tileInfo && root.tileInfo.lods)));
+    if (cached) {
+      Utils.logStatus("noise", "info", "Service is tile-cached, so its tiles are read directly.");
+      const layer = L.tileLayer(`${url}/tile/{z}/{y}/{x}`, {
+        opacity: 0.55,
+        pane: "rasterOverlay",
+        maxZoom: BG_CONFIG.MAX_ZOOM,
+        maxNativeZoom: 16,
+      });
+      let reported = false;
+      layer.on("tileerror", () => {
+        if (reported) return;
+        reported = true;
+        tryNextNoiseSource("This service's tile cache has no tiles here.");
+      });
+      return layer;
+    }
+    Utils.logStatus("noise", "info", "Service renders on demand, so tiles are requested through export.");
+    return esriExportTileLayer(url, { opacity: 0.55, pane: "rasterOverlay" });
+  }
+
+  let noiseCandidates = null;
+
   async function addNoiseLayer() {
-    const candidates = noiseServerUrl ? [noiseServerUrl] : BG_CONFIG.NOISE.servers;
+    if (!noiseCandidates) {
+      noiseCandidates = noiseServerUrl
+        ? [noiseServerUrl]
+        : BG_CONFIG.NOISE.servers.concat(await discoverNoiseServices(BG_CONFIG.NOISE.discoverFrom));
+    }
     const problems = [];
-    for (const url of candidates) {
+
+    while (noiseCandidates.length) {
+      const url = noiseCandidates.shift();
       try {
-        // Read the service root first: a dead or renamed service fails here
-        // rather than silently drawing empty tiles.
-        await Utils.fetchJSON(`${url}?f=json`, { timeoutMs: 20000 });
+        // Read the service root first: it proves the service is reachable AND
+        // says whether it is cached or dynamic.
+        const root = await Utils.fetchJSON(`${url}?f=json`, { timeoutMs: 20000 });
+        if (root && root.error) throw new Error(root.error.message || "service error");
         noiseServerUrl = url;
-        const layer = esriExportTileLayer(url, { opacity: 0.55, pane: "rasterOverlay" });
+        const layer = noiseLayerFor(url, root);
         Utils.logStatus("noise", "ok", `Aviation noise from ${url.split("/services/")[1] || url}.`);
         return layer;
       } catch (err) {
@@ -1332,6 +1386,35 @@ const BlockGroupApp = (() => {
       }
     }
     throw new Error(problems.join(" | "));
+  }
+
+  // If the tiles themselves fail - a cached service missing this area, an
+  // export refused - move to the next service rather than leaving an empty
+  // map and a cheerful "loaded" in the log.
+  async function tryNextNoiseSource(reason) {
+    Utils.logStatus("noise", "warn", `${reason} Trying the next noise service...`);
+    if (noiseLayer) {
+      map.removeLayer(noiseLayer);
+      noiseLayer = null;
+    }
+    noiseServerUrl = null;
+    if (!noiseCandidates || !noiseCandidates.length) {
+      Utils.logStatus("noise", "error", "No aviation noise service could draw here.");
+      document.getElementById("toggle-noise").checked = false;
+      enabled.noise = false;
+      renderOverlayLegend("noise");
+      return;
+    }
+    try {
+      const layer = await addNoiseLayer();
+      if (!enabled.noise) return;
+      noiseLayer = layer.addTo(map);
+    } catch (err) {
+      Utils.logStatus("noise", "error", `Aviation noise failed: ${err.message}`);
+      document.getElementById("toggle-noise").checked = false;
+      enabled.noise = false;
+      renderOverlayLegend("noise");
+    }
   }
 
   // The dB value under a point, read from the same service with identify.
@@ -2932,8 +3015,6 @@ const BlockGroupApp = (() => {
       hintEl.textContent = `Zoom ${zoom}. Tract and block group layers load for the visible area only.`;
     }
   }
-
-  let noiseLayer = null;
 
   async function onToggleNoise(checked) {
     enabled.noise = checked;
