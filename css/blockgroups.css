@@ -443,3 +443,10 @@ html, body {
 .price-table td.dim { color: var(--muted); }
 .price-table tbody tr:first-child td { font-weight: 600; }
 .price-table .info-icon { width: 11px; height: 11px; font-size: 8px; margin-left: 2px; }
+
+.price-table .th-sub {
+  display: block;
+  font-weight: 400;
+  font-size: 0.62rem;
+  color: var(--muted);
+}

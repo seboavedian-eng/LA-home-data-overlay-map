@@ -230,8 +230,8 @@ const BG_CONFIG = {
         // The National Flood Hazard Layer. Layer 28 is the flood zone
         // polygons; the same service also carries panels, cross-sections and
         // base flood elevations, none of which belong on this map.
-        { url: "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer", layerId: 28 },
         { url: "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer", layerId: 28 },
+        { url: "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer", layerId: 28 },
       ],
       outFields: "*",
     },
@@ -245,71 +245,23 @@ const BG_CONFIG = {
       mergeAll: true,
       servers: [
         {
-          url: "https://gis.conservation.ca.gov/server/rest/services/CGS_Earthquake_Hazard_Zones/SHP_Liquefaction_Zones/MapServer",
-          layerId: 0,
           hazard: "liquefaction",
+          layerId: 0,
+          // CGS's own server answers 500 "Service not started" often enough
+          // that its hosted mirrors go first.
+          urls: [
+            "https://services2.arcgis.com/zr3KAIbsRSUyARHG/ArcGIS/rest/services/CGS_Liquefaction_Zones/FeatureServer",
+            "https://services.gis.ca.gov/arcgis/rest/services/GeoscientificInformation/Liquefaction/MapServer",
+            "https://gis.conservation.ca.gov/server/rest/services/CGS_Earthquake_Hazard_Zones/SHP_Liquefaction_Zones/MapServer",
+          ],
         },
         {
-          url: "https://gis.conservation.ca.gov/server/rest/services/CGS_Earthquake_Hazard_Zones/SHP_Landslide_Zones/MapServer",
-          layerId: 0,
           hazard: "landslide",
-        },
-      ],
-      outFields: "*",
-    },
-    schoolDistricts: {
-      label: "School district boundaries",
-      minZoom: 8,
-      simplifyDegrees: 0.0005,
-      servers: [
-        // TIGERweb again - the same host the tract and block group layers
-        // come from, which keeps this to one more query against a server
-        // already known to work. It carries elementary, secondary and
-        // unified districts as separate sublayers; all three are merged,
-        // because a given address can sit in an elementary district AND a
-        // secondary district at once.
-        {
-          url: "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Current/MapServer",
-          discover: {
-            nameHint: "school district",
-            match: /school district/i,
-            exclude: /label/i,
-            polygonsOnly: true,
-            fallbackId: 14,
-          },
-        },
-        // CA Dept of Education's own composite, which carries district-level
-        // attributes TIGERweb does not.
-        {
-          url: "https://services3.arcgis.com/fdvHcZVgB2QSRNkL/arcgis/rest/services/CaliforniaSchoolDistrictAreas2425/FeatureServer",
           layerId: 0,
-        },
-        {
-          url: "https://services.gis.ca.gov/arcgis/rest/services/Boundaries/CA_School_Districts/MapServer",
-          discover: { nameHint: "school district", match: /school district|unified|elementary|secondary/i, exclude: /label/i, polygonsOnly: true, fallbackId: 0 },
-        },
-      ],
-      outFields: "*",
-    },
-    schoolZones: {
-      label: "School attendance zones (LAUSD)",
-      minZoom: 10,
-      simplifyDegrees: 0.0002,
-      servers: [
-        // LA City's GeoHub publishes LAUSD's own attendance boundaries, split
-        // by level. This is the layer that answers "which school does this
-        // address go to" - district boundaries cannot.
-        {
-          url: "https://maps.lacity.org/lahub/rest/services/LAUSD_Schools/MapServer",
-          discover: {
-            nameHint: "attendance boundary",
-            match: /attendance boundary/i,
-            // "Key Codes" layers are lookup tables of boundary ids, not
-            // boundaries.
-            exclude: /key code|label/i,
-            polygonsOnly: true,
-            fallbackId: 4,
-          },
+          urls: [
+            "https://services.gis.ca.gov/arcgis/rest/services/GeoscientificInformation/Potential_Landslides/MapServer",
+            "https://gis.conservation.ca.gov/server/rest/services/CGS_Earthquake_Hazard_Zones/SHP_Landslide_Zones/MapServer",
+          ],
         },
       ],
       outFields: "*",
@@ -339,6 +291,33 @@ const BG_CONFIG = {
       charter: ["Charter", "CharterSchool"],
       city: ["City", "CITY"],
     },
+  },
+
+  // Attendance boundaries, queried by point only - never drawn as a layer.
+  SCHOOL_ZONES: {
+    url: "https://maps.lacity.org/lahub/rest/services/LAUSD_Schools/MapServer",
+    discover: {
+      nameHint: "attendance boundary",
+      match: /attendance boundary/i,
+      exclude: /key code|label/i,
+      polygonsOnly: true,
+      fallbackId: 4,
+    },
+  },
+
+  // Clicking a school dot outlines the district that school sits in. The
+  // polygon is fetched for that one point, so nothing is downloaded until
+  // something is clicked.
+  SCHOOL_DISTRICT_LOOKUP: {
+    url: "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Current/MapServer",
+    discover: {
+      nameHint: "school district",
+      match: /school district/i,
+      exclude: /label/i,
+      polygonsOnly: true,
+      fallbackId: 14,
+    },
+    style: { color: "#6d28d9", weight: 3, fillColor: "#6d28d9", fillOpacity: 0.07, dashArray: "7 4" },
   },
 
   // One colour per level, used for the dots, the legend and the card.
@@ -478,7 +457,7 @@ const BlockGroupApp = (() => {
     zip: false, tract: false, blockGroup: false,
     fire: false, pollution: false, wind: false,
     flood: false, seismic: false, noise: false,
-    schoolDistricts: false, schoolZones: false, schools: false,
+    schools: false,
   };
   const loadedBBox = {};    // key -> padded bbox covered by the current layer
   let censusData = null;    // { meta, blockGroups } from the local snapshot
@@ -627,6 +606,17 @@ const BlockGroupApp = (() => {
   // be drawn).
   const overlaySources = {};
 
+  // Cheapest possible proof that a service is actually alive and reachable
+  // from the browser: read the layer's own metadata.
+  async function validateLayer(serverUrl, layerId) {
+    const url = layerId === undefined || layerId === null ? `${serverUrl}?f=json` : `${serverUrl}/${layerId}?f=json`;
+    const data = await Utils.fetchJSON(url, { timeoutMs: 20000 });
+    if (data && data.error) {
+      throw new Error(`${data.error.message || "service error"} (code ${data.error.code || "?"})`);
+    }
+    return data;
+  }
+
   async function resolveOverlaySublayers(serverUrl, spec) {
     const root = await Utils.fetchJSON(`${serverUrl}?f=json`, { timeoutMs: 20000 });
     const all = root.layers || [];
@@ -662,14 +652,23 @@ const BlockGroupApp = (() => {
     if (spec.mergeAll) {
       const sources = [];
       for (const candidate of spec.servers) {
-        try {
-          const sublayers = candidate.discover
-            ? await resolveOverlaySublayers(candidate.url, candidate.discover)
-            : [{ id: candidate.layerId, name: candidate.hazard || `layer ${candidate.layerId}` }];
-          sources.push({ url: candidate.url, sublayers, hazard: candidate.hazard });
-        } catch (err) {
-          problems.push(`${candidate.url}: ${err.message}`);
+        // Each entry may carry a list of mirrors; the first that answers wins,
+        // and every entry still contributes its own features.
+        const urls = candidate.urls || [candidate.url];
+        let chosen = null;
+        for (const url of urls) {
+          try {
+            const sublayers = candidate.discover
+              ? await resolveOverlaySublayers(url, candidate.discover)
+              : [{ id: candidate.layerId, name: candidate.hazard || `layer ${candidate.layerId}` }];
+            await validateLayer(url, sublayers[0].id);
+            chosen = { url, sublayers, hazard: candidate.hazard };
+            break;
+          } catch (err) {
+            problems.push(`${url}: ${err.message}`);
+          }
         }
+        if (chosen) sources.push(chosen);
       }
       if (!sources.length) throw new Error(`no server answered. Tried - ${problems.join(" | ")}`);
       if (problems.length) Utils.logStatus(key, "warn", `${spec.label}: ${problems.join(" | ")}`);
@@ -684,7 +683,12 @@ const BlockGroupApp = (() => {
         if (candidate.discover) {
           sublayers = await resolveOverlaySublayers(candidate.url, candidate.discover);
         } else {
+          // A candidate with a fixed layer id used to be accepted without a
+          // single request, so a dead host was cached as "the source" and its
+          // working siblings were never tried - which is how FEMA's flood
+          // layer failed with "Failed to fetch" and stopped there.
           sublayers = [{ id: candidate.layerId, name: `layer ${candidate.layerId}` }];
+          await validateLayer(candidate.url, candidate.layerId);
         }
         const source = { url: candidate.url, sublayers };
         overlaySources[key] = source;
@@ -1049,7 +1053,7 @@ const BlockGroupApp = (() => {
                 "a large one. Building area, not lot: this roll export carries no lot size."
             )}</th>
             <th>Sales</th>
-            <th>Turn${infoIcon(
+            <th>Turn${rec.sfhTotal ? `<br><span class="th-sub">of ${Utils.fmtNumber(rec.sfhTotal)}</span>` : ""}${infoIcon(
               "Sales that year as a share of every single-family home in this block group - roughly, how often a " +
                 "house here comes up for sale. Around 2-4% a year is normal; much lower means a street where nothing " +
                 "moves, much higher can mean new construction or an unsettled area."
@@ -1058,12 +1062,9 @@ const BlockGroupApp = (() => {
         </thead>
         <tbody>${rows}</tbody>
       </table>
-      <p class="src-note">${rec.sfhTotal ? `${Utils.fmtNumber(rec.sfhTotal)} single-family homes in this block group.` : ""}
-        ${
-          parcelMeta && parcelMeta.salesFrom
-            ? ` Latest year is short: sales are recorded in the following year's roll.`
-            : ""
-        }</p>
+      <p class="src-note">${
+        rec.sfhTotal ? `Turnover is against ${Utils.fmtNumber(rec.sfhTotal)} single-family homes in this block group. ` : ""
+      }The latest year is short: sales are recorded in the following year's roll.</p>
       ${countyRow}`;
   }
 
@@ -1277,6 +1278,21 @@ const BlockGroupApp = (() => {
 
   function esriExportTileLayer(url, options) {
     const Layer = L.TileLayer.extend({
+      // A tile that 404s or errors leaves a hole and says nothing, so make it
+      // say something.
+      onAdd(map) {
+        L.TileLayer.prototype.onAdd.call(this, map);
+        let reported = false;
+        this.on("tileerror", (e) => {
+          if (reported) return;
+          reported = true;
+          Utils.logStatus(
+            "noise",
+            "warn",
+            `Noise tiles are not drawing: ${(e.tile && e.tile.src) || "the export request failed"}`
+          );
+        });
+      },
       getTileUrl(coords) {
         const size = this.getTileSize();
         const nw = this._map.unproject(coords.scaleBy(size), coords.z);
@@ -1288,6 +1304,7 @@ const BlockGroupApp = (() => {
           bboxSR: "3857",
           imageSR: "3857",
           size: `${size.x},${size.y}`,
+          dpi: "96",
           format: "png32",
           transparent: "true",
           f: "image",
@@ -1307,7 +1324,7 @@ const BlockGroupApp = (() => {
         // rather than silently drawing empty tiles.
         await Utils.fetchJSON(`${url}?f=json`, { timeoutMs: 20000 });
         noiseServerUrl = url;
-        const layer = esriExportTileLayer(url, { opacity: 0.55, zIndex: 350 });
+        const layer = esriExportTileLayer(url, { opacity: 0.55, pane: "rasterOverlay" });
         Utils.logStatus("noise", "ok", `Aviation noise from ${url.split("/services/")[1] || url}.`);
         return layer;
       } catch (err) {
@@ -1433,7 +1450,74 @@ const BlockGroupApp = (() => {
       .map(([k, v]) => `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`)
       .join("");
     return `<div class="school-popup"><strong>${name}</strong><table>${rows}</table>
+      <p class="src-note">Its district is outlined on the map.</p>
       <a href="${Utils.greatSchoolsSearchUrl(name)}" target="_blank" rel="noopener">GreatSchools rating &rarr;</a></div>`;
+  }
+
+  // --- District highlight on a school click -------------------------------
+  let districtLayer = null;
+  let districtSource = null;
+
+  function clearDistrictHighlight() {
+    if (districtLayer) {
+      map.removeLayer(districtLayer);
+      districtLayer = null;
+    }
+  }
+
+  async function highlightDistrictAt(lat, lon, schoolName) {
+    const spec = BG_CONFIG.SCHOOL_DISTRICT_LOOKUP;
+    Utils.logStatus("schools", "info", `Finding the district for ${schoolName}...`);
+    try {
+      if (!districtSource) {
+        districtSource = await resolveOverlaySublayers(spec.url, spec.discover);
+      }
+      // A school sits in exactly one district of each kind - unified, or an
+      // elementary and a secondary district as a pair - so every matching
+      // sublayer is asked and whatever comes back is drawn.
+      const features = [];
+      for (const sub of districtSource) {
+        const url = Utils.arcgisQueryUrl(spec.url, sub.id, {
+          outFields: "NAME,BASENAME,GEOID",
+          extraParams: {
+            geometry: `${lon},${lat}`,
+            geometryType: "esriGeometryPoint",
+            inSR: "4326",
+            spatialRel: "esriSpatialRelIntersects",
+            maxAllowableOffset: "0.0005",
+          },
+        });
+        try {
+          const gj = await Utils.fetchEsriAsGeoJSON(url, { timeoutMs: 30000 });
+          gj.features.forEach((f) => {
+            f.properties.SOURCE_LAYER = sub.name;
+            features.push(f);
+          });
+        } catch (err) {
+          // One sublayer failing is normal - an address in a unified district
+          // is in no elementary district.
+        }
+      }
+
+      clearDistrictHighlight();
+      if (!features.length) {
+        Utils.logStatus("schools", "warn", `No school district polygon covers ${schoolName}.`);
+        return;
+      }
+
+      districtLayer = L.geoJSON({ type: "FeatureCollection", features }, {
+        style: spec.style,
+        pane: "rasterOverlay",
+        interactive: false,
+      }).addTo(map);
+
+      const names = features
+        .map((f) => Utils.pickField(f.properties, ["NAME", "BASENAME"]) || "district")
+        .join(", ");
+      Utils.logStatus("schools", "ok", `${schoolName} is in ${names}.`);
+    } catch (err) {
+      Utils.logStatus("schools", "warn", `Could not outline the district: ${err.message}`);
+    }
   }
 
   async function fetchSchoolPoints(bbox) {
@@ -1469,6 +1553,18 @@ const BlockGroupApp = (() => {
   // same question is asked of the server directly - one small point query,
   // cached per block group.
   const schoolsByGeoid = {};
+  let zoneSource = null;
+
+  // LAUSD's attendance boundaries are no longer drawn as a layer, but they
+  // still answer "which school does this block group belong to" - one point
+  // query per block group, cached, no polygons downloaded.
+  async function resolveZoneSource() {
+    if (zoneSource) return zoneSource;
+    const url = BG_CONFIG.SCHOOL_ZONES.url;
+    const sublayers = await resolveOverlaySublayers(url, BG_CONFIG.SCHOOL_ZONES.discover);
+    zoneSource = { url, sublayers };
+    return zoneSource;
+  }
 
   function pointInGeometry(lat, lon, geometry) {
     const rings =
@@ -1490,32 +1586,14 @@ const BlockGroupApp = (() => {
     );
   }
 
-  function zonesFromLoadedLayer(lat, lon) {
-    if (!layers.schoolZones) return null;
-    const hits = [];
-    layers.schoolZones.eachLayer((l) => {
-      if (l.feature && l.feature.geometry && pointInGeometry(lat, lon, l.feature.geometry)) {
-        hits.push({ layer: l.feature.properties.SOURCE_LAYER || "", name: zoneNameOf(l.feature.properties) });
-      }
-    });
-    return hits;
-  }
-
   async function lookupSchools(geoid, layer) {
     if (schoolsByGeoid[geoid] !== undefined) return;
     const center = layer && layer.getBounds ? layer.getBounds().getCenter() : null;
     if (!center) return;
 
-    const fromLoaded = zonesFromLoadedLayer(center.lat, center.lng);
-    if (fromLoaded && fromLoaded.length) {
-      schoolsByGeoid[geoid] = fromLoaded;
-      if (selectedProps && geoidOf(selectedProps) === geoid) renderSelection();
-      return;
-    }
-
     schoolsByGeoid[geoid] = null; // in flight; stops a second click re-asking
     try {
-      const source = await resolveOverlaySource("schoolZones");
+      const source = await resolveZoneSource();
       const hits = [];
       for (const sub of source.sublayers) {
         const url = Utils.arcgisQueryUrl(source.url, sub.id, {
@@ -1683,6 +1761,7 @@ const BlockGroupApp = (() => {
     return L.imageOverlay(canvas.toDataURL(), [[bbox.south, bbox.west], [bbox.north, bbox.east]], {
       opacity: 0.5,
       interactive: false,
+      pane: "rasterOverlay",
     });
   }
 
@@ -2698,44 +2777,18 @@ const BlockGroupApp = (() => {
       });
     }
 
-    if (key === "schoolDistricts") {
-      return L.geoJSON(geojson, {
-        style: { color: "#6d28d9", weight: 2, fill: false, opacity: 0.85, dashArray: "6 3" },
-        onEachFeature: (feature, layer) => {
-          const name =
-            Utils.pickField(feature.properties, ["NAME", "BASENAME", "DistrictName", "District", "LEA_NAME"]) ||
-            "School district";
-          layer.bindTooltip(`${name}<br><span style="opacity:.7">${feature.properties.SOURCE_LAYER || ""}</span>`, {
-            sticky: true,
-          });
-        },
-      });
-    }
-
-    if (key === "schoolZones") {
-      return L.geoJSON(geojson, {
-        style: (feature) => {
-          const level = zoneLevel(feature.properties.SOURCE_LAYER || "");
-          const color = BG_CONFIG.SCHOOL_LEVEL_COLORS[level] || BG_CONFIG.SCHOOL_LEVEL_COLORS.other;
-          return { color, weight: 1.4, fillColor: color, fillOpacity: 0.08 };
-        },
-        onEachFeature: (feature, layer) => {
-          const name = zoneNameOf(feature.properties) || "Attendance zone";
-          layer.bindTooltip(`${name}<br><span style="opacity:.7">${feature.properties.SOURCE_LAYER || ""}</span>`, {
-            sticky: true,
-          });
-        },
-      });
-    }
-
     if (key === "schools") {
       return L.geoJSON(geojson, {
         pointToLayer: schoolMarker,
         onEachFeature: (feature, layer) => {
-          layer.bindTooltip(
-            Utils.pickField(feature.properties, BG_CONFIG.SCHOOL_POINTS.FIELDS.name) || "School"
-          );
+          const name = Utils.pickField(feature.properties, BG_CONFIG.SCHOOL_POINTS.FIELDS.name) || "School";
+          layer.bindTooltip(name);
           layer.bindPopup(schoolPopup(feature.properties));
+          // Clicking a dot outlines the district that school belongs to.
+          layer.on("click", (e) => {
+            const ll = e.latlng || layer.getLatLng();
+            highlightDistrictAt(ll.lat, ll.lng, name);
+          });
         },
       });
     }
@@ -2922,7 +2975,6 @@ const BlockGroupApp = (() => {
     if (!enabled.wind) return; // toggled off while the file was loading
     if (windGrid && !windOverlay) {
       windOverlay = buildWindOverlay().addTo(map);
-      windOverlay.bringToBack();
     }
     renderOverlayLegend("wind");
     renderSelection(); // the open card gains its wind rows
@@ -2946,6 +2998,7 @@ const BlockGroupApp = (() => {
         document.getElementById("detail-panel").innerHTML =
           '<p class="hint">Turn on <strong>Block Group Borders</strong>, zoom in, and click a block group.</p>';
       }
+      if (key === "schools") clearDistrictHighlight();
       if (BG_CONFIG.OVERLAYS[key] || key === "schools") {
         renderOverlayLegend(key);
         if (key === "pollution") renderSelection();
@@ -3000,7 +3053,7 @@ const BlockGroupApp = (() => {
         (b) => `<div class="legend-row"><span class="swatch" style="background:${b.color}"></span>${b.label}</div>`
       );
       rows.push('<div class="legend-note">24-hour average (LAeq), not DNL: no night-time penalty, so it understates an airport that flies at night.</div>');
-    } else if (key === "schools" || key === "schoolZones") {
+    } else if (key === "schools") {
       rows = Object.entries(BG_CONFIG.SCHOOL_LEVEL_COLORS)
         .filter(([name]) => name !== "other")
         .map(
@@ -3010,9 +3063,6 @@ const BlockGroupApp = (() => {
               (c) => c.toUpperCase()
             )}</div>`
         );
-      if (key === "schoolZones") {
-        rows.push('<div class="legend-note">LAUSD only. Other districts publish their own boundaries; none is shown rather than a guess.</div>');
-      }
     } else {
       rows = BG_CONFIG.WIND_BUCKETS.map(
         (b) => `<div class="legend-row"><span class="swatch" style="background:${b.color}"></span>${b.label}</div>`
@@ -3393,6 +3443,15 @@ const BlockGroupApp = (() => {
       BG_CONFIG.MAP_CENTER,
       BG_CONFIG.MAP_ZOOM
     );
+    // Raster overlays (aviation noise, the wind grid) need to sit above the
+    // basemap but below the polygons. The vector basemap occupies the tile
+    // pane, so a plain tile layer added there can end up underneath it and
+    // simply never appear - which is what happened to aviation noise: the
+    // service loaded, the tiles were fetched, and nothing was visible.
+    map.createPane("rasterOverlay");
+    map.getPane("rasterOverlay").style.zIndex = 380;
+    map.getPane("rasterOverlay").style.pointerEvents = "none";
+
     addBasemap();
 
     initStatusPanel();
@@ -3436,12 +3495,6 @@ const BlockGroupApp = (() => {
     document.getElementById("toggle-fire").addEventListener("change", (e) => onToggle("fire", e.target.checked));
     document.getElementById("toggle-pollution").addEventListener("change", (e) => onToggle("pollution", e.target.checked));
     document.getElementById("toggle-wind").addEventListener("change", (e) => onToggle("wind", e.target.checked));
-    document
-      .getElementById("toggle-school-districts")
-      .addEventListener("change", (e) => onToggle("schoolDistricts", e.target.checked));
-    document
-      .getElementById("toggle-school-zones")
-      .addEventListener("change", (e) => onToggle("schoolZones", e.target.checked));
     document.getElementById("toggle-schools").addEventListener("change", (e) => onToggle("schools", e.target.checked));
     document.getElementById("toggle-flood").addEventListener("change", (e) => onToggle("flood", e.target.checked));
     document.getElementById("toggle-seismic").addEventListener("change", (e) => onToggle("seismic", e.target.checked));
@@ -3468,8 +3521,6 @@ const BlockGroupApp = (() => {
         refreshLayer("pollution");
         refreshLayer("flood");
         refreshLayer("seismic");
-        refreshLayer("schoolDistricts");
-        refreshLayer("schoolZones");
         refreshLayer("schools");
       }, 400);
       updateZoomHint();
@@ -3492,7 +3543,7 @@ const BlockGroupApp = (() => {
     get state() {
       return {
         map, enabled, layers, censusData, selectedProps, windGrid, windOverlay,
-        pinArmed, cesByTract, basemapKind, filters, parcelData,
+        pinArmed, cesByTract, basemapKind, filters, parcelData, districtLayer,
       };
     },
   };

@@ -431,6 +431,11 @@ async function main() {
   let fireQueries = [];
   await page.route("**://services.gis.ca.gov/**", (route) => {
     const url = route.request().url();
+    if (url.includes("Potential_Landslides")) {
+      cgsQueries.push(url);
+      if (url.includes("/query")) return route.fulfill(json(esriFC([LANDSLIDE])));
+      return route.fulfill(json({ id: 0, name: "Potential Landslides", geometryType: "esriGeometryPolygon" }));
+    }
     if (url.includes("/query")) {
       fireQueries.push(url);
       // The real service caps a query at 1,000 records and reports the
@@ -507,24 +512,32 @@ async function main() {
   });
 
   let femaQueries = [];
-  await page.route("**://hazards.fema.gov/**", (route) => {
+  // The first host in the candidate list is dead - exactly the case that used
+  // to strand the layer, because a candidate with a fixed layer id was
+  // accepted without a single request and its working sibling never tried.
+  await page.route("**://hazards.fema.gov/gis/nfhl/**", (route) => route.abort("failed"));
+  await page.route("**://hazards.fema.gov/arcgis/**", (route) => {
     const url = route.request().url();
     if (url.includes("/query")) {
       femaQueries.push(url);
       return route.fulfill(json(esriFC([FLOOD_AE, FLOOD_X])));
     }
-    return route.fulfill(json({ layers: [{ id: 28, name: "Flood Hazard Zones", geometryType: "esriGeometryPolygon" }] }));
+    // Layer metadata, read to prove the service is actually reachable.
+    return route.fulfill(json({ id: 28, name: "Flood Hazard Zones", geometryType: "esriGeometryPolygon" }));
   });
 
   // Two CGS services, one per hazard type - the merge-all path.
   let cgsQueries = [];
-  await page.route("**://gis.conservation.ca.gov/**", (route) => {
+  // CGS's own server answers 500 "Service not started" - the failure the user
+  // hit - so the mirrors have to take over.
+  await page.route("**://gis.conservation.ca.gov/**", (route) =>
+    route.fulfill(json({ error: { code: 500, message: "Service not started ", details: [] } }))
+  );
+  await page.route("**://services2.arcgis.com/**", (route) => {
     const url = route.request().url();
     cgsQueries.push(url);
-    if (url.includes("/query")) {
-      return route.fulfill(json(esriFC([url.includes("Landslide") ? LANDSLIDE : LIQUEFACTION])));
-    }
-    return route.fulfill(json({ layers: [{ id: 0, name: "Zones", geometryType: "esriGeometryPolygon" }] }));
+    if (url.includes("/query")) return route.fulfill(json(esriFC([LIQUEFACTION])));
+    return route.fulfill(json({ id: 0, name: "Liquefaction Zones", geometryType: "esriGeometryPolygon" }));
   });
 
   // BTS/DOT noise: a raster service, so the page asks it to draw tiles and
@@ -1264,6 +1277,15 @@ async function main() {
       priceTable[0][2] === "-" && priceTable[0][3] === "-",
       JSON.stringify(priceTable[0])
     );
+    const turnHeader = await page.evaluate(() => {
+      const th = [...document.querySelectorAll("#detail-panel .price-table th")].pop();
+      return th ? th.textContent.replace(/\s+/g, " ").trim() : "";
+    });
+    step(
+      "the turnover column header says what the percentage is out of",
+      /of 210/.test(turnHeader),
+      turnHeader
+    );
     step(
       "the block group's single-family total is shown, so turnover can be read",
       priceCard.includes("210 single-family homes"),
@@ -1537,25 +1559,47 @@ async function main() {
       schoolsLegend.replace(/\n/g, " | ")
     );
 
-    // Attendance zones: the layer, and the names they put on the card.
-    await page.click("#toggle-school-zones");
-    await page.waitForTimeout(800);
+    // Clicking a dot outlines that school's district. The polygon is fetched
+    // for that one point, so nothing is downloaded until something is clicked.
     step(
-      "attendance zones load one polygon per level",
-      (await page.evaluate(() => BlockGroupApp.state.layers.schoolZones.getLayers().length)) === 3
+      "no district is drawn before any school is clicked",
+      !(await page.evaluate(() => !!BlockGroupApp.state.districtLayer))
+    );
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.schools.eachLayer((l) => {
+        if (l.feature.properties.SchoolName === "Civic Center Middle") l.fire("click", { latlng: l.getLatLng() });
+      });
+    });
+    await page.waitForTimeout(900);
+    step(
+      "clicking a school outlines its district",
+      await page.evaluate(() => !!BlockGroupApp.state.districtLayer),
+      JSON.stringify(tigerUrls.filter((u) => /\/1[3-6]\/query/.test(u)).map((u) => u.match(/\/(\d+)\/query/)[1]))
     );
     step(
-      "the 'Key Codes' lookup layer is never queried as a boundary",
-      !zoneQueries.some((u) => u.includes("/7/query")),
-      JSON.stringify(zoneQueries.map((u) => u.match(/\/(\d+)\/query/)[1]))
+      "the district is found by asking which polygon contains the school",
+      tigerUrls.some((u) => /\/1[346]\/query/.test(u) && u.includes("esriGeometryPoint")),
+      (tigerUrls.find((u) => u.includes("esriGeometryPoint")) || "").slice(0, 110)
+    );
+    step(
+      "the district label sublayer is never queried",
+      !tigerUrls.some((u) => u.includes("/15/query"))
+    );
+    const districtLog = await page.locator("#status-log").innerText();
+    step(
+      "the status log names the district the school belongs to",
+      /Los Angeles Unified/.test(districtLog),
+      (districtLog.split("\n").find((l) => /is in /.test(l)) || "").slice(0, 110)
     );
 
+    // The card still names the assigned schools - that lookup is a point
+    // query against LAUSD's zones, and never needed a drawn layer.
     await page.evaluate(() => {
       BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
         if (l.feature.properties.GEOID === "060372011001") l.fire("click");
       });
     });
-    await page.waitForTimeout(600);
+    await page.waitForTimeout(700);
     const schoolCard = await page.locator("#detail-panel").innerText();
     step(
       "the card names the assigned elementary, middle and high school",
@@ -1565,30 +1609,21 @@ async function main() {
       schoolCard.slice(schoolCard.toUpperCase().indexOf("SCHOOLS")).replace(/\n/g, " ").slice(0, 160)
     );
     step(
-      "each school on the card carries its level's colour dot",
-      (await page.evaluate(() =>
-        [...document.querySelectorAll("#detail-panel .school-dot")].map((el) => el.style.background)
-      )).length === 3
-    );
-
-    // District boundaries come from TIGERweb - the same service the tract and
-    // block group layers already use.
-    await page.click("#toggle-school-districts");
-    await page.waitForTimeout(700);
-    step(
-      "district boundaries load from TIGERweb's school district sublayers",
-      (await page.evaluate(() => BlockGroupApp.state.layers.schoolDistricts.getLayers().length)) >= 1
+      "the zone service is asked by point, never for whole polygons",
+      zoneQueries.length > 0 && zoneQueries.every((u) => u.includes("esriGeometryPoint")),
+      `${zoneQueries.length} point queries`
     );
     step(
-      "the district label sublayer is never queried",
-      !tigerUrls.some((u) => u.includes("/15/query")),
-      JSON.stringify(tigerUrls.filter((u) => /\/1[3-6]\/query/.test(u)).map((u) => u.match(/\/(\d+)\/query/)[1]))
+      "the 'Key Codes' lookup layer is never queried",
+      !zoneQueries.some((u) => u.includes("/7/query"))
     );
 
     await page.click("#toggle-schools");
-    await page.click("#toggle-school-zones");
-    await page.click("#toggle-school-districts");
     await page.waitForTimeout(300);
+    step(
+      "turning schools off clears the district outline too",
+      !(await page.evaluate(() => !!BlockGroupApp.state.districtLayer))
+    );
 
     // --- Income filters step in $5k ---
     await page.selectOption("#filter-metric-0", "medianIncome");
