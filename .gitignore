@@ -6,3 +6,8 @@ __pycache__/
 census-api-key.txt
 raw-data/
 ors-api-key.txt
+
+# Everything in js/data/ is generated on your machine by the scripts in
+# scripts/ - from your own Census key and your own assessor-roll download.
+# Committing a copy risks shipping a stale or synthetic file over a real one.
+js/data/*.json
