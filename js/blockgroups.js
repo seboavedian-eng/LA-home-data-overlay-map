@@ -380,7 +380,14 @@ const BG_CONFIG = {
         label: "Road & rail noise",
         minZoom: 8,
         include: /road|rail|highway/i,
-        exclude: null,
+        // A combined "aviation_road" service would put aircraft noise back
+        // under the surface toggle, which is the whole thing these two were
+        // split apart to stop.
+        exclude: /aviation/i,
+        // Road and rail are published as SEPARATE services, so taking the
+        // first match drew one and silently dropped the other - the toggle
+        // said "road & rail" and showed rail. Every match is drawn.
+        mergeAll: true,
         servers: [],
       },
     },
@@ -2098,8 +2105,50 @@ const BlockGroupApp = (() => {
   // were never generated - which is what broke the layer on zoom in.
   function topCachedZoom(root) {
     const lods = (root && root.tileInfo && root.tileInfo.lods) || [];
-    const levels = lods.map((l) => l.level).filter((n) => Number.isFinite(n));
+    let levels = lods.map((l) => l.level).filter((n) => Number.isFinite(n));
+    // A service usually publishes the WHOLE standard LOD scheme (0-23) in
+    // tileInfo.lods while having actually cached only the first dozen. Taking
+    // the deepest published level therefore promised tiles that do not exist,
+    // Leaflet requested them, and the layer went blank the moment you zoomed
+    // past the real cache. maxScale is where the cache genuinely stops.
+    const maxScale = Number(root && root.maxScale);
+    if (maxScale > 0 && lods.length) {
+      const usable = lods.filter((l) => Number(l.scale) >= maxScale).map((l) => l.level);
+      if (usable.length) levels = usable;
+    }
     return levels.length ? Math.max(...levels) : 13;
+  }
+
+  // A dynamic (uncached) map service has no /tile endpoint - it renders on
+  // demand through /export. This asks it for one image per map tile, with that
+  // tile's own bounding box in Web Mercator metres, which is what the service
+  // expects. It was being CALLED and had never been written: any noise service
+  // that was not tile-cached threw a ReferenceError and was discarded as
+  // broken.
+  const EsriExportTileLayer = L.TileLayer.extend({
+    getTileUrl(coords) {
+      const size = this.getTileSize();
+      const crs = this._map.options.crs;
+      const nw = this._map.unproject(coords.scaleBy(size), coords.z);
+      const se = this._map.unproject(coords.add([1, 1]).scaleBy(size), coords.z);
+      const a = crs.project(nw);
+      const b = crs.project(se);
+      const params = new URLSearchParams({
+        bbox: [Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y)].join(","),
+        bboxSR: "3857",
+        imageSR: "3857",
+        size: `${size.x},${size.y}`,
+        format: "png32",
+        transparent: "true",
+        dpi: "96",
+        f: "image",
+      });
+      return `${this._url}/export?${params.toString()}`;
+    },
+  });
+
+  function esriExportTileLayer(url, options) {
+    return new EsriExportTileLayer(url, options);
   }
 
   // The service's own legend, so the sidebar cannot disagree with the map.
@@ -2119,6 +2168,60 @@ const BlockGroupApp = (() => {
     }
   }
 
+  // One service -> one tile layer. Throws if the service will not describe
+  // itself, so the caller can move on to the next candidate.
+  async function buildNoiseTileLayer(modeKey, url) {
+    const state = noise[modeKey];
+    const root = await Utils.fetchJSON(`${url}?f=json`, { timeoutMs: 20000 });
+    if (root && root.error) throw new Error(root.error.message || "service error");
+    const cached = !!(root.singleFusedMapCache || (root.tileInfo && root.tileInfo.lods));
+    const maxNative = topCachedZoom(root);
+
+    const layer = cached
+      ? L.tileLayer(`${url}/tile/{z}/{y}/{x}`, {
+          opacity: 0.55,
+          pane: "rasterOverlay",
+          maxZoom: BG_CONFIG.MAX_ZOOM,
+          maxNativeZoom: maxNative,
+        })
+      : esriExportTileLayer(url, {
+          opacity: 0.55,
+          pane: "rasterOverlay",
+          maxZoom: BG_CONFIG.MAX_ZOOM,
+        });
+
+    layer.on("load", () => {
+      state.drew = true;
+    });
+
+    if (cached) {
+      // Whatever the metadata claims, the tiles themselves are the authority.
+      // If a zoom the service said it had turns out to 404, step the layer's
+      // native zoom back to the last one that actually drew and re-request:
+      // the map upscales instead of going blank. This is what keeps the layer
+      // on screen past zoom 12 even when a service overstates its cache.
+      let deepestGood = -1;
+      layer.on("tileload", (e) => {
+        if (e.coords && e.coords.z > deepestGood) deepestGood = e.coords.z;
+      });
+      layer.on("tileerror", (e) => {
+        const z = e.coords && e.coords.z;
+        if (!Number.isFinite(z) || z <= 0) return;
+        const limit = Math.max(0, z - 1);
+        if (limit >= layer.options.maxNativeZoom) return;   // only ever lower it
+        layer.options.maxNativeZoom = limit;
+        Utils.logStatus(
+          modeKey,
+          "info",
+          `${BG_CONFIG.NOISE.modes[modeKey].label}: no tiles cached at zoom ${z}, so it is upscaled from ${limit} instead.`
+        );
+        layer.redraw();
+      });
+    }
+
+    return { layer, url, maxNative, cached };
+  }
+
   async function addNoiseLayer(modeKey) {
     const state = noise[modeKey];
     const mode = BG_CONFIG.NOISE.modes[modeKey];
@@ -2126,30 +2229,53 @@ const BlockGroupApp = (() => {
       state.candidates = mode.servers.concat(await discoverNoiseServices(modeKey));
     }
     const problems = [];
+    state.drew = false;
+
+    // Road and rail are two services covering the same ground, so this mode
+    // draws all of them together rather than picking one.
+    if (mode.mergeAll) {
+      const built = [];
+      while (state.candidates.length) {
+        const url = state.candidates.shift();
+        try {
+          built.push(await buildNoiseTileLayer(modeKey, url));
+        } catch (err) {
+          problems.push(`${url}: ${err.message}`);
+        }
+      }
+      if (!built.length) {
+        throw new Error(problems.length ? problems.join(" | ") : "no matching noise service was found");
+      }
+      state.url = built[0].url;
+      // Both services band decibels the same way, so a merged legend would
+      // repeat every row. Deduplicated on the label.
+      const seen = new Set();
+      const legend = [];
+      for (const b of built) {
+        const rows = await fetchNoiseLegend(b.url);
+        (rows || []).forEach((row) => {
+          if (seen.has(row.label)) return;
+          seen.add(row.label);
+          legend.push(row);
+        });
+      }
+      state.legend = legend.length ? legend : null;
+      Utils.logStatus(
+        modeKey,
+        "ok",
+        `${mode.label}: drawing ${built.length} service(s) - ${built
+          .map((b) => `${b.url.split("/services/")[1] || b.url} to zoom ${b.maxNative}`)
+          .join("; ")}.`
+      );
+      return L.layerGroup(built.map((b) => b.layer));
+    }
 
     while (state.candidates.length) {
       const url = state.candidates.shift();
       try {
-        const root = await Utils.fetchJSON(`${url}?f=json`, { timeoutMs: 20000 });
-        if (root && root.error) throw new Error(root.error.message || "service error");
-        const cached = !!(root.singleFusedMapCache || (root.tileInfo && root.tileInfo.lods));
-        const maxNative = topCachedZoom(root);
-
-        const layer = cached
-          ? L.tileLayer(`${url}/tile/{z}/{y}/{x}`, {
-              opacity: 0.55,
-              pane: "rasterOverlay",
-              maxZoom: BG_CONFIG.MAX_ZOOM,
-              maxNativeZoom: maxNative,
-            })
-          : esriExportTileLayer(url, { opacity: 0.55, pane: "rasterOverlay" });
-
-        state.drew = false;
-        layer.on("load", () => {
-          state.drew = true;
-        });
+        const built = await buildNoiseTileLayer(modeKey, url);
         let escalated = false;
-        layer.on("tileerror", () => {
+        built.layer.on("tileerror", () => {
           // Only give up on a service that never managed to draw anything. A
           // single missing tile in a service that is otherwise working is not
           // a reason to throw it away and cycle through every alternative.
@@ -2162,10 +2288,10 @@ const BlockGroupApp = (() => {
         Utils.logStatus(
           modeKey,
           "ok",
-          `${mode.label} from ${url.split("/services/")[1] || url} (cached to zoom ${maxNative}; beyond that it is upscaled).`
+          `${mode.label} from ${url.split("/services/")[1] || url} (cached to zoom ${built.maxNative}; beyond that it is upscaled).`
         );
         state.legend = await fetchNoiseLegend(url);
-        return layer;
+        return built.layer;
       } catch (err) {
         problems.push(`${url}: ${err.message}`);
       }

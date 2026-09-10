@@ -267,6 +267,33 @@ const CENSUS_DATA = {
 
 async function main() {
   const server = spawn("python3", ["-m", "http.server", String(PORT)], { cwd: REPO });
+  // A crashed run used to leave this server holding the port, and the NEXT
+  // run then failed at page.goto with an empty response - which reads like a
+  // broken page rather than a stale process. Kill it however the run ends.
+  const killServer = () => {
+    try { server.kill(); } catch (err) { /* already gone */ }
+  };
+  process.on("exit", killServer);
+  process.on("SIGINT", () => { killServer(); process.exit(130); });
+  process.on("uncaughtException", (err) => {
+    killServer();
+    console.error(err);
+    process.exit(1);
+  });
+
+  // Wait for it to actually accept connections rather than assuming a fixed
+  // delay is enough.
+  const serverReady = async () => {
+    for (let i = 0; i < 60; i += 1) {
+      try {
+        const res = await fetch(`http://localhost:${PORT}/blockgroups.html`);
+        if (res.ok) return true;
+      } catch (err) { /* not up yet */ }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    throw new Error(`the test server never came up on port ${PORT} - is something else using it?`);
+  };
+  await serverReady();
   await new Promise((r) => setTimeout(r, 800));
 
   const dataPath = path.join(REPO, "js", "data", "bg-la-county.json");
@@ -660,6 +687,15 @@ async function main() {
   // behaves the same way - export 404s, /tile serves an image - so the page
   // has to read the service's metadata and pick the right endpoint.
   let noiseServicesChosen = [];
+  // The standard ArcGIS Online tiling scheme: 24 levels, each half the scale
+  // of the one before. Services publish all of them regardless of what was
+  // actually built.
+  const ARCGIS_LODS = Array.from({ length: 24 }, (_, level) => ({
+    level,
+    resolution: 156543.03392800014 / 2 ** level,
+    scale: 591657527.591555 / 2 ** level,
+  }));
+
   await page.route("**://tiles.arcgis.com/**", (route) => {
     const url = route.request().url();
     // The folder listing, named the way BTS actually names these.
@@ -693,19 +729,33 @@ async function main() {
         })
       );
     }
-    if (url.includes("/tile/")) return route.fulfill({ contentType: "image/png", body: BLANK_PNG });
-    // Service metadata: cached, with a cache that stops at zoom 13.
+    if (url.includes("/tile/")) {
+      // Only zooms 0-12 were ever cached. Anything deeper 404s, exactly as a
+      // real cache does - which is what left the layer blank past zoom 12.
+      const z = Number((url.match(/\/tile\/(\d+)\//) || [])[1]);
+      if (Number.isFinite(z) && z > 12) {
+        noiseRequests.deepTiles++;
+        return route.fulfill({ status: 404, contentType: "text/plain", body: "Tile not found" });
+      }
+      return route.fulfill({ contentType: "image/png", body: BLANK_PNG });
+    }
     noiseServicesChosen.push(url);
+    // Real ArcGIS metadata publishes the WHOLE standard LOD scheme whether or
+    // not those levels were cached. An aviation service also states maxScale,
+    // which is where its cache actually stops; the road and rail ones here do
+    // not, so the layer has to discover the limit from the tiles themselves.
+    const statesMaxScale = /aviation/i.test(url);
     return route.fulfill(
       json({
         mapName: "NTAD noise",
         singleFusedMapCache: true,
-        tileInfo: { lods: [{ level: 0 }, { level: 12 }, { level: 13 }] },
+        ...(statesMaxScale ? { maxScale: ARCGIS_LODS[12].scale } : {}),
+        tileInfo: { lods: ARCGIS_LODS },
       })
     );
   });
 
-  let noiseRequests = { root: 0, exports: 0, tiles: 0, identify: 0 };
+  let noiseRequests = { root: 0, exports: 0, tiles: 0, identify: 0, deepTiles: 0 };
   await page.route("**://geo.dot.gov/**", (route) => {
     const url = route.request().url();
     if (url.includes("/export")) {
@@ -2179,18 +2229,27 @@ async function main() {
       aviationUrl && !/aviation_road/i.test(aviationUrl),
       aviationUrl && aviationUrl.split("/services/")[1]
     );
-    step(
-      "the cache's top zoom is read from the service, so zooming past it upscales instead of failing",
-      await page.evaluate(() => {
-        let found = null;
-        BlockGroupApp.state.map.eachLayer((l) => {
-          if (l.options && l.options.pane === "rasterOverlay" && l.options.maxNativeZoom) {
-            found = l.options.maxNativeZoom;
+    // Keyed by URL: a layer inside a LayerGroup is reachable both directly and
+    // through the group, so a plain list counts each one twice.
+    const maxNativeOf = (pattern) =>
+      page.evaluate((pat) => {
+        const re = new RegExp(pat, "i");
+        const found = {};
+        const visit = (l) => {
+          if (l.eachLayer && !l._url) return l.eachLayer(visit);
+          if (l._url && re.test(l._url)) {
+            found[l._url.split("/services/")[1].split("/MapServer")[0]] = l.options.maxNativeZoom;
           }
-        });
-        return found === 13;
-      }),
-      "the mocked cache stops at level 13"
+        };
+        BlockGroupApp.state.map.eachLayer(visit);
+        return found;
+      }, pattern);
+    step(
+      "the cache's real depth is read from maxScale, not from the LOD list",
+      Object.values(await maxNativeOf("CONUS_aviation/MapServer")).join() === "12",
+      // tileInfo.lods advertises all 24 levels; only 0-12 were built. Trusting
+      // the list asked for tiles that do not exist and the layer went blank.
+      `${JSON.stringify(await maxNativeOf("CONUS_aviation/MapServer"))} while the LODs advertised 0-23`
     );
     const noiseLegend = await page.locator("#noise-legend").innerText();
     step(
@@ -2203,8 +2262,10 @@ async function main() {
       (await page.locator("#noise-legend img.swatch").count()) === 3
     );
 
+    const deepBefore = noiseRequests.deepTiles;
+    const zoomWhenTested = await page.evaluate(() => BlockGroupApp.state.map.getZoom());
     await page.click("#toggle-noise-surface");
-    await page.waitForTimeout(1200);
+    await page.waitForTimeout(1500);
     const surfaceUrl = await page.evaluate(() => {
       const imgs = [...document.querySelectorAll('.leaflet-rasterOverlay-pane img[src*="/tile/"]')].map((i) => i.src);
       return imgs.find((u) => /road|rail/i.test(u)) || null;
@@ -2217,6 +2278,44 @@ async function main() {
     step(
       "both noise layers can be on at once without one replacing the other",
       aviationUrl && surfaceUrl && aviationUrl !== surfaceUrl
+    );
+    // Road and rail are published as two separate services. Drawing whichever
+    // sorted first showed rail and silently dropped road, under a toggle
+    // labelled "Road & rail".
+    const surfaceLayers = await maxNativeOf("_(road|rail)");
+    const surfaceNames = Object.keys(surfaceLayers).sort();
+    step(
+      "BOTH road and rail are drawn, not whichever sorted first",
+      surfaceNames.some((n) => /_road$/i.test(n)) && surfaceNames.some((n) => /_rail$/i.test(n)),
+      JSON.stringify(surfaceNames)
+    );
+    step(
+      "a combined aviation+road service is kept out of the surface toggle",
+      !surfaceNames.some((n) => /aviation/i.test(n)),
+      JSON.stringify(surfaceNames)
+    );
+    step(
+      "the merged legend does not repeat a band once per service",
+      (await page.locator("#noiseSurface-legend img.swatch").count()) === 3,
+      `${await page.locator("#noiseSurface-legend img.swatch").count()} swatches for two services banded the same way`
+    );
+
+    // These services do NOT declare maxScale, so the only way to find the real
+    // cache depth is to ask for a tile and be refused. The map is above zoom
+    // 12 here, so the layer asks, is refused, and must step its own native
+    // zoom back rather than leaving the map blank - which is what the user saw
+    // as "shows at zoom 12 and below, nothing above".
+    step(
+      "a service that overstates its cache is corrected from the tiles themselves",
+      Object.values(surfaceLayers).every((z) => z === 12) && Object.values(surfaceLayers).length > 0,
+      `at zoom ${zoomWhenTested}: ${JSON.stringify(surfaceLayers)} after ${
+        noiseRequests.deepTiles - deepBefore
+      } refused tiles`
+    );
+    step(
+      "and the layer is still on the map, upscaled rather than blank",
+      (await page.locator('.leaflet-rasterOverlay-pane img[src*="/tile/"]').count()) > 0,
+      `${await page.locator('.leaflet-rasterOverlay-pane img[src*="/tile/"]').count()} tiles drawn above the cache depth`
     );
     await page.click("#toggle-noise-surface");
     await page.waitForTimeout(300);
@@ -2670,10 +2769,22 @@ async function main() {
       return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
     });
     await page404.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
-    await page404.check("#toggle-bg");
+    // Wait for the app to have bound its handlers. Checking the box before
+    // that ticks it without firing anything, so the layer never loads - which
+    // showed up as an intermittent "layers.blockGroup is undefined" much
+    // further down.
+    // typeof, not window.BlockGroupApp: the app is a top-level `const`, which
+    // creates a global binding but NOT a property of window.
     await page404.waitForFunction(
-      () => document.getElementById("status-log").textContent.includes("Block group data"),
-      { timeout: 10000 }
+      () => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.map
+    );
+    await page404.check("#toggle-bg");
+    // Wait for the layer itself, not for a line in the log: the status text
+    // can be written before the polygons are on the map, which made this
+    // intermittently read layers.blockGroup as undefined.
+    await page404.waitForFunction(
+      () => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.layers.blockGroup,
+      { timeout: 15000 }
     );
     await page404.evaluate(() => {
       BlockGroupApp.state.layers.blockGroup.eachLayer((l) => l.fire("click"));
