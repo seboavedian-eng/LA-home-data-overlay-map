@@ -1598,6 +1598,24 @@ const BlockGroupApp = (() => {
     ).addTo(map);
   }
 
+  // What houses in this block group have actually been going for, per square
+  // foot. The most recent year with a figure is preferred over the pooled
+  // number: an asking price is set against this year's market, not a
+  // five-year average.
+  function blockGroupPricePerSqft() {
+    const p = selectedProps ? parcelFor(selectedProps) : null;
+    if (!p) return null;
+    const years = p.years || {};
+    const withPpsf = Object.keys(years)
+      .filter((y) => years[y] && years[y].ppsf)
+      .sort();
+    if (withPpsf.length) {
+      const year = withPpsf[withPpsf.length - 1];
+      return { value: years[year].ppsf, year };
+    }
+    return p.medianPricePerSqft ? { value: p.medianPricePerSqft, year: null } : null;
+  }
+
   function houseCardHTML(listing) {
     const note = noteFor(listing.id);
     const cold = note.status === "notInterested";
@@ -1605,6 +1623,7 @@ const BlockGroupApp = (() => {
     const held = daysSince(note.added);
     const perSqft = listing.sqft ? listing.price / listing.sqft : null;
     const perLot = listing.lotSqft ? listing.price / listing.lotSqft : null;
+    const bgPpsf = blockGroupPricePerSqft();
     const row = (k, v) => (v === null || v === undefined || v === "" ? "" : `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`);
     const esc = Utils.escapeHTML;
 
@@ -1621,10 +1640,27 @@ const BlockGroupApp = (() => {
         isNewListing(listing) ? '<span class="new-badge">NEW</span>' : ""
       }</p>
       <p class="house-rates">
-        ${perSqft ? `<strong>${Utils.fmtCurrency(Math.round(perSqft))}</strong>/ft&sup2;` : ""}
+        ${perSqft ? `<strong class="${bgPpsf ? (perSqft <= bgPpsf.value ? "cheaper" : "dearer") : ""}">${Utils.fmtCurrency(
+          Math.round(perSqft)
+        )}</strong>/ft&sup2;` : ""}
         ${perSqft && perLot ? "&nbsp;&middot;&nbsp;" : ""}
         ${perLot ? `<strong>${Utils.fmtCurrency(Math.round(perLot))}</strong>/ft&sup2; lot` : ""}
       </p>
+      ${
+        perSqft && bgPpsf
+          ? `<p class="house-vs">${
+              perSqft <= bgPpsf.value
+                ? `<span class="cheaper">${Math.round((1 - perSqft / bgPpsf.value) * 100)}% below</span>`
+                : `<span class="dearer">${Math.round((perSqft / bgPpsf.value - 1) * 100)}% above</span>`
+            } this block group's <strong>${Utils.fmtCurrency(Math.round(bgPpsf.value))}</strong>/ft&sup2;${
+              bgPpsf.year ? ` (${bgPpsf.year} sales)` : ""
+            }${infoIcon(
+              "The block group's own median price per square foot, from the assessor roll's recorded sales. It is what " +
+                "houses here actually changed hands at, so it is the fairest thing to hold an asking price up against - " +
+                "but it is assessed value at transfer, not a listing price, and the newest year is always thin."
+            )}</p>`
+          : ""
+      }
       <p class="house-address">${esc(listing.address)}${listing.city ? `, ${esc(listing.city)}` : ""} ${esc(listing.zip)}</p>
       <table>
         ${row(
@@ -3236,7 +3272,81 @@ const BlockGroupApp = (() => {
         <tr><td class="k">Work from home</td><td class="v">${wfh.toFixed(1)}%</td></tr>
         <tr><td class="k">Walk to work</td><td class="v">${walked === null ? "n/a" : `${walked.toFixed(1)}%`}</td></tr>
         <tr><td class="k">Public transit</td><td class="v">${transit === null ? "n/a" : `${transit.toFixed(1)}%`}</td></tr>
+        ${
+          record.commuteMedianMinutes
+            ? `<tr><td class="k">Median commute${infoIcon(
+                "ACS B08303, interpolated from the table's 13 travel-time bands - the Census publishes no median at this " +
+                  "geography. It counts door to door for people who leave the house to work, so a block group full of " +
+                  "home workers is described by whoever is left commuting."
+              )}</td><td class="v key-figure">${record.commuteMedianMinutes} min</td></tr>`
+            : ""
+        }
+        ${
+          longCommuteShare(record) === null
+            ? ""
+            : `<tr><td class="k">Commuting 45+ min${infoIcon(
+                "The share of commuters travelling three quarters of an hour or more each way. A median hides this: two " +
+                  "block groups can share a median while one has a long tail of hour-and-a-half drives."
+              )}</td><td class="v">${longCommuteShare(record).toFixed(1)}%</td></tr>`
+        }
+        ${
+          unemploymentRate(record) === null
+            ? ""
+            : `<tr><td class="k">Unemployment${infoIcon(
+                "ACS B23025, against the civilian labour force rather than everyone 16 and over - the way the rate is " +
+                  "normally quoted. Five-year data, so it lags a turning market badly."
+              )}</td><td class="v">${unemploymentRate(record).toFixed(1)}%</td></tr>`
+        }
       </table>`;
+  }
+
+  // Families with children, and what owners think their homes are worth. The
+  // second is deliberately next to the first rather than inside Home prices:
+  // it covers condos and townhouses too, so it is not the same population as
+  // the single-family figures from the assessor roll and should not be read
+  // as a competing estimate of the same thing.
+  function householdRows(record) {
+    const kids = familiesWithChildrenShare(record);
+    const value = record.medianHomeValue;
+    if (kids === null && !value) return "";
+    return `
+      <div class="section-label">Households${infoIcon(
+        "ACS B11003 and B25077. 'Families with children' is families with their OWN children under 18 - so an " +
+          "empty-nester couple and a household of flatmates both count against it, in different ways."
+      )}</div>
+      <table>
+        ${
+          kids === null
+            ? ""
+            : `<tr><td class="k">Families with children under 18</td><td class="v">${kids.toFixed(1)}%</td></tr>`
+        }
+        ${
+          value
+            ? `<tr><td class="k">Median home value, owner-reported${infoIcon(
+                "ACS B25077: what owners SAY their home is worth, across houses, condos and townhouses together. It is a " +
+                  "genuinely independent second opinion on the assessor roll, arrived at a completely different way - so " +
+                  "where the two disagree sharply, that is usually a block group of long-held homes whose assessed values " +
+                  "are frozen well below the market. It is a five-year rolling figure and covers owner-occupied units only."
+              )}</td><td class="v key-figure">${Utils.fmtCurrency(value)}</td></tr>`
+            : ""
+        }
+      </table>`;
+  }
+
+  function longCommuteShare(record) {
+    return shareOf(record.commute45Plus || 0, record.commuteWorkers);
+  }
+
+  function unemploymentRate(record) {
+    return shareOf(record.unemployed, record.civilianLaborForce);
+  }
+
+  function familiesWithChildrenShare(record) {
+    return shareOf(record.familiesWithChildren, record.families);
+  }
+
+  function youngDegreeShare(record) {
+    return shareOf(record.edu25to34BachelorsPlus, record.edu25to34Total);
   }
 
   function ageBandCount(record, band) {
@@ -3375,6 +3485,15 @@ const BlockGroupApp = (() => {
             "percentages above (which are shares of everyone)."
         )}</td><td class="v key-figure">${bachelorsPct}</td></tr>
       </table>
+      ${
+        youngDegreeShare(record) === null
+          ? ""
+          : `<table><tr><td class="k">...among 25-34 year olds${infoIcon(
+              "ACS B15001. The 25-and-over figure is weighted by whoever has lived here longest, so it describes the " +
+                "neighbourhood's past. This one describes who is moving in now, and the two often disagree sharply in " +
+                "a block group that is changing."
+            )}</td><td class="v">${youngDegreeShare(record).toFixed(1)}%</td></tr></table>`
+      }
       ${compact ? "" : `<p class="src-note">Source: ACS B15003, share of the 25-and-over population${geoNote("education")}</p>`}
 
       <div class="section-label">Income</div>
@@ -3395,6 +3514,7 @@ const BlockGroupApp = (() => {
       ${incomeBracketBars(record)}
       ${compact ? "" : `<p class="src-note">Source: ACS B19013 / B19301${geoNote("income")}</p>`}
 
+      ${householdRows(record)}
       ${priceRows(props)}
       ${housingRows(record)}
       ${commuteRows(record)}
@@ -3474,6 +3594,26 @@ const BlockGroupApp = (() => {
         const p = props ? parcelFor(props) : null;
         return p && p.medianPricePerSqft ? p.medianPricePerSqft : null;
       },
+    },
+    // The three worth filtering on, of the tables added last: what owners think
+    // homes are worth here, how long the commute is, and whether families with
+    // children actually live here.
+    medianHomeValue: {
+      label: "Median home value, owner-reported ($)",
+      unit: "$",
+      step: 25000,
+      value: (r) => (r && r.medianHomeValue ? r.medianHomeValue : null),
+    },
+    commuteMinutes: {
+      label: "Median commute (minutes)",
+      unit: "min",
+      step: 5,
+      value: (r) => (r && r.commuteMedianMinutes ? r.commuteMedianMinutes : null),
+    },
+    familiesWithChildren: {
+      label: "Families with children under 18 (%)",
+      unit: "%",
+      value: (r) => (r ? familiesWithChildrenShare(r) : null),
     },
     detached: {
       label: "Detached houses (%)",

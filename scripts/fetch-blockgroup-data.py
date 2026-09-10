@@ -21,11 +21,11 @@ WHY THESE TABLES: ACS Subject Tables (S1501, S0101) and Data Profiles are
 derived products that the Census Bureau does NOT publish at block group -
 only Detailed (B) tables go that deep. B01001 replaces S0101 completely;
 B15003 replaces S1501 except that it has no age breakdown (education by age
-is B15001, which this script probes for and reports on).
+is B15001, which is fetched for the 25-34 band).
 
-Every table is probed before use: if one isn't available at block group,
-the script says so explicitly and falls back to tract level for that table
-only, marking it so the page can label those numbers as tract-level.
+Every table is tried at block group first: if one isn't available there, the
+script says so explicitly and falls back to tract level for that table only,
+marking it so the page can label those numbers as tract-level.
 
 Usage:
     python3 scripts/fetch-blockgroup-data.py
@@ -165,6 +165,50 @@ B25034_PRE_1980 = ["B25034_007E", "B25034_008E", "B25034_009E", "B25034_010E", "
 # of the division - unlike dividing total population by household count.
 B25010_AVG_HH_SIZE = "B25010_001E"
 
+# B25077: median value of owner-occupied housing units. One figure per block
+# group, so it belongs on the block group card and not on a house card - it
+# describes the neighbourhood, not any particular property. It is what OWNERS
+# SAY their home is worth, across houses, condos and townhouses together, which
+# makes it a genuinely independent second opinion on the assessor roll rather
+# than a duplicate of it.
+B25077_MEDIAN_VALUE = "B25077_001E"
+
+# B08303: travel time to work, in 13 brackets. The median is interpolated from
+# them, because the Census publishes no median travel time at block group.
+B08303_TOTAL = "B08303_001E"
+B08303_BRACKETS = [
+    ("B08303_002E", 0, 5), ("B08303_003E", 5, 10), ("B08303_004E", 10, 15),
+    ("B08303_005E", 15, 20), ("B08303_006E", 20, 25), ("B08303_007E", 25, 30),
+    ("B08303_008E", 30, 35), ("B08303_009E", 35, 40), ("B08303_010E", 40, 45),
+    ("B08303_011E", 45, 60), ("B08303_012E", 60, 90), ("B08303_013E", 90, 120),
+]
+# The long-commute share, which a median hides: two block groups can share a
+# median while one has a tail of hour-and-a-half drives.
+B08303_45_PLUS = ["B08303_011E", "B08303_012E", "B08303_013E"]
+
+# B23025: employment status for the population 16 and over. The unemployment
+# rate is against the CIVILIAN labour force, which is how it is normally
+# quoted - not against everyone 16+.
+B23025_TOTAL_16_PLUS = "B23025_001E"
+B23025_IN_LABOR_FORCE = "B23025_002E"
+B23025_CIVILIAN_LF = "B23025_003E"
+B23025_EMPLOYED = "B23025_004E"
+B23025_UNEMPLOYED = "B23025_005E"
+
+# B11003: family type by presence of own children under 18. These three lines
+# are the "with own children" ones under married-couple, male-householder and
+# female-householder families.
+B11003_TOTAL_FAMILIES = "B11003_001E"
+B11003_WITH_OWN_CHILDREN = ["B11003_003E", "B11003_010E", "B11003_016E"]
+
+# B15001: sex by age by educational attainment. Only the 25-34 block is used,
+# for bachelor's-or-higher among young adults - a different signal from the
+# 25-and-over figure, which is weighted by whoever has lived here longest.
+# Male 25-34 runs 011-018 and female 25-34 runs 052-059, bachelor's and
+# graduate being the last two of each eight.
+B15001_25_34_TOTAL = ["B15001_011E", "B15001_052E"]
+B15001_25_34_BACHELORS_PLUS = ["B15001_017E", "B15001_018E", "B15001_058E", "B15001_059E"]
+
 B19013_MEDIAN_HH = "B19013_001E"
 B19301_PER_CAPITA = "B19301_001E"
 
@@ -288,29 +332,6 @@ def fetch_table(base, variables, key, label, prefer="block group"):
     return None, None
 
 
-def probe(base, variables, key, label):
-    """
-    Availability check only - used to answer open questions, not to fetch.
-
-    Reports "unavailable" ONLY for an actual HTTP error from the API. Any
-    other failure (network, malformed query, non-JSON body) is reported as
-    inconclusive: it says nothing about whether the table exists, and
-    claiming otherwise would be a wrong answer stated confidently.
-    """
-    try:
-        fetch_rows(base, variables, "block group", key)
-        print(f"  {label}: IS available at block group")
-        return True
-    except CensusKeyRequired:
-        raise
-    except urllib.error.HTTPError as err:
-        print(f"  {label}: is NOT available at block group (HTTP {err.code})")
-        return False
-    except Exception as err:  # noqa: BLE001
-        print(f"  {label}: INCONCLUSIVE - the probe itself failed ({type(err).__name__}: {err})")
-        return None
-
-
 # --- value helpers ----------------------------------------------------------
 
 def to_number(raw):
@@ -324,6 +345,26 @@ def to_number(raw):
     if value < 0:
         return None
     return int(value) if value.is_integer() else value
+
+
+def median_from_brackets(counts, n):
+    """
+    The median of a bracketed distribution, interpolated inside the bracket it
+    falls in. The Census publishes no median travel time at block group, so it
+    has to come from the 13 buckets - and picking the bucket's midpoint would
+    quantise every block group in LA onto the same dozen values.
+
+    counts is [(people, low, high)] in ascending order.
+    """
+    if not n:
+        return None
+    half = n / 2
+    running = 0
+    for people, low, high in counts:
+        if running + people >= half and people:
+            return round(low + (half - running) / people * (high - low), 1)
+        running += people
+    return None
 
 
 def total(values, codes):
@@ -433,24 +474,31 @@ def main():
     print("\nAverage household size (B25010):")
     hhsize, hhsize_geo = fetch_table(acs, [B25010_AVG_HH_SIZE], args.key, "B25010")
 
-    # Open question worth an empirical answer: is education-by-age-bracket
-    # (B15001) published at block group? If it is, a future version can show
-    # bachelor's-or-higher per age band instead of just for 25+ overall.
-    print("\nProbing (not used yet): education by age bracket, B15001:")
-    probe(acs, ["B15001_001E"], args.key, "B15001")
+    print("\nMedian home value, owner-reported (B25077):")
+    value, value_geo = fetch_table(acs, [B25077_MEDIAN_VALUE], args.key, "B25077")
 
-    # Open availability questions. The tables above either came back at block
-    # group or fell back to tract, and the log above says which. These are the
-    # ones not fetched at all, probed so the answer is on the record rather
-    # than guessed at.
-    print("\nProbing (not used yet): commute TIME, B08303:")
-    probe(acs, ["B08303_001E"], args.key, "B08303")
-    print("\nProbing (not used yet): employment status, B23025:")
-    probe(acs, ["B23025_001E"], args.key, "B23025")
-    print("\nProbing (not used yet): household type with own children, B11003:")
-    probe(acs, ["B11003_001E"], args.key, "B11003")
-    print("\nProbing (not used yet): median home value, B25077:")
-    probe(acs, ["B25077_001E"], args.key, "B25077")
+    print("\nTravel time to work (B08303):")
+    ttime, ttime_geo = fetch_table(
+        acs, [B08303_TOTAL] + [code for code, _, _ in B08303_BRACKETS], args.key, "B08303"
+    )
+
+    print("\nEmployment status (B23025):")
+    employ, employ_geo = fetch_table(
+        acs,
+        [B23025_TOTAL_16_PLUS, B23025_IN_LABOR_FORCE, B23025_CIVILIAN_LF, B23025_EMPLOYED, B23025_UNEMPLOYED],
+        args.key,
+        "B23025",
+    )
+
+    print("\nFamilies with own children under 18 (B11003):")
+    families, families_geo = fetch_table(
+        acs, [B11003_TOTAL_FAMILIES] + B11003_WITH_OWN_CHILDREN, args.key, "B11003"
+    )
+
+    print("\nEducation among 25-34 year olds (B15001):")
+    edu_young, edu_young_geo = fetch_table(
+        acs, B15001_25_34_TOTAL + B15001_25_34_BACHELORS_PLUS, args.key, "B15001"
+    )
 
     if not age:
         print("\nCould not fetch B01001 - aborting, since population is the basis for everything else.", file=sys.stderr)
@@ -513,6 +561,37 @@ def main():
                 label: to_number(st_row.get(code)) or 0 for code, label in B25024_CATEGORIES.items()
             }
 
+        val_row = lookup(value, value_geo) if value else None
+        if val_row:
+            rec["medianHomeValue"] = to_number(val_row.get(B25077_MEDIAN_VALUE))
+
+        tt_row = lookup(ttime, ttime_geo) if ttime else None
+        if tt_row:
+            counts = [(to_number(tt_row.get(code)) or 0, lo, hi) for code, lo, hi in B08303_BRACKETS]
+            workers = sum(n for n, _, _ in counts)
+            rec["commuteWorkers"] = workers
+            rec["commuteMedianMinutes"] = median_from_brackets(counts, workers)
+            rec["commute45Plus"] = total(tt_row, B08303_45_PLUS)
+
+        emp_row = lookup(employ, employ_geo) if employ else None
+        if emp_row:
+            civilian = to_number(emp_row.get(B23025_CIVILIAN_LF))
+            unemployed = to_number(emp_row.get(B23025_UNEMPLOYED))
+            rec["pop16Plus"] = to_number(emp_row.get(B23025_TOTAL_16_PLUS))
+            rec["inLaborForce"] = to_number(emp_row.get(B23025_IN_LABOR_FORCE))
+            rec["civilianLaborForce"] = civilian
+            rec["unemployed"] = unemployed
+
+        fam_row = lookup(families, families_geo) if families else None
+        if fam_row:
+            rec["families"] = to_number(fam_row.get(B11003_TOTAL_FAMILIES))
+            rec["familiesWithChildren"] = total(fam_row, B11003_WITH_OWN_CHILDREN)
+
+        young_row = lookup(edu_young, edu_young_geo) if edu_young else None
+        if young_row:
+            rec["edu25to34Total"] = total(young_row, B15001_25_34_TOTAL)
+            rec["edu25to34BachelorsPlus"] = total(young_row, B15001_25_34_BACHELORS_PLUS)
+
         ten_row = lookup(tenure, tenure_geo) if tenure else None
         if ten_row:
             rec["tenureTotal"] = to_number(ten_row.get(B25003_TOTAL))
@@ -545,7 +624,7 @@ def main():
         "meta": {
             # Bumped when the record shape changes, so the page can tell a
             # stale data file from a missing one and say which it is.
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             # So the sidebar's data-source table can say when this was pulled.
             "generated": datetime.date.today().isoformat(),
             "ageBracketLabels": {str(k): v for k, v in B01001_BRACKETS.items()},

@@ -224,9 +224,24 @@ work-from-home is the closest thing to an occupation signal at this geography;
 and year built carries LA's lead paint (pre-1978), asbestos (pre-1980) and
 soft-story (pre-1994) thresholds.
 
-The script also **probes** B08303, B23025, B11003 and B25077 without using
-them, so the run prints whether each is published at block group - a
-definitive answer rather than an assumption.
+`B25077` (owner-reported home value), `B08303` (travel time), `B23025`
+(employment), `B11003` (families with own children) and `B15001` (education by
+age) were probed first and all came back available at block group, so they are
+now fetched and shown too - as a **Households** section, extra **Work** rows,
+and a young-adult degree share under Education. Three of them are filterable:
+home value, median commute and families with children.
+
+**Median commute is interpolated, not published.** The Census gives no median
+travel time at block group, only B08303's thirteen bands, so the median is
+found inside whichever band it falls in. Taking the band's midpoint instead
+would quantise every block group in LA onto the same dozen values.
+
+**Owner-reported home value is not a rival to the assessor figures.** B25077
+covers houses, condos and townhouses together and is what owners *say* their
+home is worth; the roll's prices are single-family only and are assessed
+values at transfer. Where the two disagree sharply, that is usually a block
+group of long-held homes whose assessed values are frozen well below market -
+which is information, not an error.
 
 ### Optional: home prices from the Assessor roll
 
@@ -442,15 +457,16 @@ Detailed (B) tables go that deep. So:
 - `S0101` → **B01001** (Sex by Age). Complete replacement.
 - `S1501` → **B15003** (Educational Attainment, 25+). Gives "bachelor's or
   higher," but **not broken out by age bracket** - that cross-tab is B15001,
-  which the fetch script probes for and reports on, since it's unlikely to be
-  published at block group either.
+  which turned out to be published at block group after all, so the card also
+  carries the 25-34 degree share.
 
 **Age bands are 0-24 / 25-54 / 55+, not 0-25 / 25-55.** B01001's own
 brackets break exactly at 25 and 55, so these are the natural boundaries and
 nothing is double-counted.
 
 **Anything that isn't available at block group is labeled.** The fetch script
-probes each table, falls back to tract level only where it must, records
+tries each table at block group first, falls back to tract level only where it
+must, records
 which geography each table came from, and the UI marks those numbers
 "tract-level" rather than passing them off as block group data.
 

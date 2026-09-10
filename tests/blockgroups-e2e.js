@@ -196,6 +196,21 @@ const CENSUS_DATA = {
       ageBrackets: AGE_BRACKETS,
       female: 510,
       male: 490,
+      // The tables added last: home value as owners report it, commute time
+      // interpolated from B08303's bands, employment, families with children,
+      // and degrees among 25-34s.
+      medianHomeValue: 985000,
+      commuteWorkers: 400,
+      commuteMedianMinutes: 31.5,
+      commute45Plus: 80,
+      pop16Plus: 800,
+      inLaborForce: 520,
+      civilianLaborForce: 500,
+      unemployed: 30,
+      families: 200,
+      familiesWithChildren: 90,
+      edu25to34Total: 150,
+      edu25to34BachelorsPlus: 75,
       ethnicityAcsTotal: 1000,
       ethnicityAcs: {
         "Hispanic or Latino": 450,
@@ -1390,13 +1405,14 @@ async function main() {
       [...document.querySelectorAll("#detail-panel .key-figure")].map((el) => el.textContent.trim())
     );
     step(
-      "ZIP, household size, education % and both income figures are highlighted",
-      keyFigures.length === 5 &&
+      "the headline figures are highlighted, and only those",
+      // ZIP, household size, education %, both incomes, owner-reported home
+      // value and the median commute - the seven a house hunter scans for.
+      keyFigures.length === 7 &&
         keyFigures[0].startsWith("ZIP") &&
-        keyFigures.includes("3.40 people") &&
-        keyFigures.includes("30.0%") &&
-        keyFigures.includes("$85,000") &&
-        keyFigures.includes("$41,000"),
+        ["3.40 people", "30.0%", "$85,000", "$41,000", "$985,000", "31.5 min"].every((v) =>
+          keyFigures.includes(v)
+        ),
       JSON.stringify(keyFigures)
     );
     // Header order: ZIP first and loud, then the tract/block group name,
@@ -1625,6 +1641,26 @@ async function main() {
       "days on market is counted from the listing date, not copied from the file",
       Number(domText) >= 7,
       `card says ${domText} days; the export said 7 on 2026-09-09`
+    );
+    // 331 N Reese is $1,400,000 over 1,921 ft2 = $729/ft2. Block group A's most
+    // recent year with a figure is 2024 at $812/ft2, so this house is cheaper
+    // than its neighbourhood and must read as such.
+    const vsText = await page.locator("#house-card .house-vs").innerText();
+    step(
+      "the house card compares its price per square foot to the block group's",
+      /\$812/.test(vsText) && /2024/.test(vsText),
+      vsText.replace(/\s+/g, " ")
+    );
+    step(
+      "a house cheaper than its block group reads green, with the gap spelled out",
+      (await page.locator("#house-card .house-rates strong.cheaper").count()) === 1 &&
+        /10% below/.test(vsText),
+      vsText.replace(/\s+/g, " ")
+    );
+    step(
+      "the comparison uses the most recent year's sales, not the pooled five-year figure",
+      !/780/.test(vsText),
+      `pooled is $780.5/ft²; 2024 is $812 - ${vsText.replace(/\s+/g, " ")}`
     );
     step(
       "the card carries the Redfin link, opening in a new tab",
@@ -2014,6 +2050,49 @@ async function main() {
       priceCard.includes("210 single-family homes"),
       priceCard.replace(/\n/g, " ").match(/\d+ single-family homes.{0,40}/i)
     );
+    // --- The tables added last ---
+    const cardNow = await page.locator("#detail-panel").innerText();
+    step(
+      "median commute time is on the card, interpolated from B08303's bands",
+      /Median commute\D*31\.5 min/.test(cardNow),
+      cardNow.replace(/\s+/g, " ").match(/Median commute.{0,30}/)
+    );
+    step(
+      "the long-commute share is shown too, because a median hides the tail",
+      /45\+ min\D*20\.0%/.test(cardNow),
+      cardNow.replace(/\s+/g, " ").match(/45\+ min.{0,20}/)
+    );
+    step(
+      "unemployment is against the civilian labour force, not everyone 16+",
+      /Unemployment\D*6\.0%/.test(cardNow),
+      "30 of 500 civilian labour force = 6.0%, not 30 of 800 = 3.75%"
+    );
+    step(
+      "families with children under 18 are shown",
+      /Families with children under 18\D*45\.0%/.test(cardNow),
+      cardNow.replace(/\s+/g, " ").match(/Families with children.{0,20}/)
+    );
+    step(
+      "owner-reported median home value is shown, separately from the roll's prices",
+      /Median home value, owner-reported\D*\$985,000/.test(cardNow),
+      cardNow.replace(/\s+/g, " ").match(/Median home value.{0,40}/)
+    );
+    step(
+      "degrees among 25-34s are shown alongside the 25-and-over figure",
+      /among 25-34 year olds\D*50\.0%/.test(cardNow) && /Bachelor's degree or higher\D*30\.0%/.test(cardNow),
+      cardNow.replace(/\s+/g, " ").match(/among 25-34.{0,20}/)
+    );
+    const filterMetrics = await page.evaluate(() =>
+      [...document.querySelectorAll('#filter-rows select[id^="filter-metric-"] option')].map((o) => o.textContent.trim())
+    );
+    step(
+      "home value, commute and families with children are all filterable",
+      ["Median home value", "Median commute", "Families with children"].every((label) =>
+        filterMetrics.some((m) => m.includes(label))
+      ),
+      JSON.stringify(filterMetrics.filter((m) => /value|commute|children/i.test(m)))
+    );
+
     step(
       "the county-wide median line is gone from the card",
       !/county-wide/i.test(priceCard),

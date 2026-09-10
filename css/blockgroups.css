@@ -606,7 +606,12 @@ html, body {
   letter-spacing: 0.04em;
   vertical-align: 6px;
 }
-.house-rates { margin: 2px 0 6px; font-size: 0.82rem; color: var(--ink); }
+.house-rates { margin: 2px 0 4px; font-size: 0.82rem; color: var(--ink); }
+/* Cheaper than the neighbourhood is the good news, so it reads green. */
+.house-rates .cheaper, .house-vs .cheaper { color: #14663a; }
+.house-rates .dearer, .house-vs .dearer { color: #b3261e; }
+.house-vs { margin: 0 0 6px; font-size: 0.75rem; color: var(--muted); }
+.house-vs .cheaper, .house-vs .dearer { font-weight: 700; }
 .house-address { margin: 0 0 8px; font-size: 0.85rem; color: var(--muted); }
 #house-card table { width: 100%; border-collapse: collapse; }
 #house-card td { padding: 3px 0; border-bottom: 1px solid #f0f2f4; }
