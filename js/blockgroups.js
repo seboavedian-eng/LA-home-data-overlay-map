@@ -3239,6 +3239,10 @@ const BlockGroupApp = (() => {
             "block groups can show the same median household income while one is mostly owners and the other mostly renters."
         )}</td><td class="v">${owner.toFixed(1)}%</td></tr>`
       );
+      const renters = shareOf(record.renterOccupied, record.tenureTotal);
+      if (renters !== null) {
+        rows.push(`<tr><td class="k">Renter-occupied</td><td class="v">${renters.toFixed(1)}%</td></tr>`);
+      }
     }
     if (record.medianYearBuilt) {
       const pre80 = pre1980Share(record);
@@ -3253,7 +3257,28 @@ const BlockGroupApp = (() => {
         rows.push(`<tr><td class="k">Built before 1980</td><td class="v">${pre80.toFixed(0)}%</td></tr>`);
       }
     }
-    return `<div class="section-label">Housing stock</div><table>${rows.join("")}</table>`;
+    return `<div class="section-label">Housing stock</div><table>${rows.join("")}</table>${yearBuiltBars(record)}`;
+  }
+
+  // The decade distribution behind the median year built. A median of 1962
+  // describes a street of post-war houses and a street that is half 1920s and
+  // half 2000s identically; this does not.
+  function yearBuiltBars(record) {
+    const bins = record.yearBuiltBins;
+    if (!bins) return "";
+    const units = record.yearBuiltTotal || Object.values(bins).reduce((a, b) => a + b, 0);
+    if (!units) return "";
+    const rows = Object.entries(bins)
+      .filter(([, n]) => n > 0)
+      .map(([label, n]) => barRow(label, n, units))
+      .join("");
+    if (!rows) return "";
+    return `<div class="sub-label">When it was built${infoIcon(
+      "ACS B25034, as a share of the " +
+        Utils.fmtNumber(units) +
+        " housing units here. The median year alone cannot tell a uniform post-war tract from a street that is half " +
+        "pre-war and half new build - these are very different places to buy in."
+    )}</div>${rows}`;
   }
 
   function commuteRows(record) {
@@ -3288,6 +3313,15 @@ const BlockGroupApp = (() => {
                 "The share of commuters travelling three quarters of an hour or more each way. A median hides this: two " +
                   "block groups can share a median while one has a long tail of hour-and-a-half drives."
               )}</td><td class="v">${longCommuteShare(record).toFixed(1)}%</td></tr>`
+        }
+        ${
+          laborForceParticipation(record) === null
+            ? ""
+            : `<tr><td class="k">In the labour force${infoIcon(
+                "ACS B23025: the share of everyone 16 and over who is working or looking for work. It is low where a " +
+                  "block group is full of retirees or students, which is a different kind of quiet from a high " +
+                  "unemployment rate - read the two together."
+              )}</td><td class="v">${laborForceParticipation(record).toFixed(1)}%</td></tr>`
         }
         ${
           unemploymentRate(record) === null
@@ -3335,6 +3369,10 @@ const BlockGroupApp = (() => {
 
   function longCommuteShare(record) {
     return shareOf(record.commute45Plus || 0, record.commuteWorkers);
+  }
+
+  function laborForceParticipation(record) {
+    return shareOf(record.inLaborForce, record.pop16Plus);
   }
 
   function unemploymentRate(record) {
@@ -4626,28 +4664,46 @@ const BlockGroupApp = (() => {
   // Live services report as live; the files report the date they were built,
   // read from the files themselves rather than typed in here, so this table
   // cannot drift from what is actually loaded.
+  // Every dataset the page touches, what is in it, and where it actually
+  // surfaces. The "used" column is the point: it is the thing that goes stale
+  // silently, and writing it down is what stopped four block-group fields
+  // being fetched into a file and never shown.
+  //
+  // Columns: [id, source, what it includes, when it loaded, where it is used]
   const SOURCE_ROWS = [
-    ["Block group, tract & ZIP borders", "Census TIGERweb boundary service", () => "live"],
-    ["Basemap", "OpenFreeMap vector tiles (OpenStreetMap data)", () => "live"],
-    ["Population, age, sex, ethnicity", "ACS 5-year B01001 / B03002, and 2020 Census P2", () => censusDate()],
-    ["Education & income", "ACS 5-year B15003, B19013, B19301, B19001", () => censusDate()],
-    ["Housing stock, tenure, commute", "ACS 5-year B25024, B25003, B08301, B25035 / B25034", () => censusDate()],
-    ["Household size", "ACS 5-year B25010", () => censusDate()],
-    ["Home prices & sales", "LA County Assessor roll, assessed value at each transfer", () => metaDate(parcelMeta)],
-    [
-      "Listings for sale",
-      "Redfin 'Download All' exports, read from raw-data/redfin-listings/",
-      () => (listingsMeta && listingsMeta.latestDownloadLabel) || "not loaded",
-    ],
-    ["Schools & attendance zones", "CA Dept of Education sites; LAUSD attendance boundaries", () => "live"],
-    ["Pollution burden", "CalEnviroScreen 4.0 (OEHHA), by census tract", () => "live"],
-    ["Fire hazard", "CAL FIRE / OSFM Fire Hazard Severity Zones", () => "live"],
-    ["Flood zones", "FEMA National Flood Hazard Layer", () => "live"],
-    ["Liquefaction & landslide", "CA Geological Survey seismic hazard zones", () => "live"],
-    ["Transportation noise", "BTS / DOT National Transportation Noise Map", () => "live"],
-    ["Wind speed", "Global Wind Atlas 3 (DTU / World Bank)", () => metaDate(windGrid && windGrid.meta)],
-    ["Address search & pins", "Nominatim (OpenStreetMap)", () => "live"],
-    ["Commute times", "OpenRouteService", () => "live"],
+    ["TIGERweb", "US Census Bureau", "Block group, tract and ZCTA outlines", () => "live", "Every polygon on the map; the ZIP on the card"],
+    ["OpenFreeMap", "OpenStreetMap data", "Vector basemap tiles", () => "live", "The map background (Esri raster is the fallback)"],
+    ["B01001", "ACS 5-year", "Population by sex and age, 23 brackets", () => censusDate(), "Card: Age, Sex. Filters: population, six age bands"],
+    ["B03002", "ACS 5-year", "Hispanic origin by race, 8 groups", () => censusDate(), "Card: Ethnicity (default source). Filters: eight ethnicity shares"],
+    ["P2", "2020 Census", "Same 8 groups, full count not a survey", () => censusDate(), "Card: Ethnicity when you switch source. Same eight filters"],
+    ["B15003", "ACS 5-year", "Educational attainment, 25 and over", () => censusDate(), "Card: Education. Filter: bachelor's or higher"],
+    ["B15001", "ACS 5-year", "Education by sex by age", () => censusDate(), "Card: degree share among 25-34 year olds"],
+    ["B19013", "ACS 5-year", "Median household income", () => censusDate(), "Card: Income. Filter: median household income"],
+    ["B19301", "ACS 5-year", "Per-capita income", () => censusDate(), "Card: Income. Filter: per-capita income"],
+    ["B19001", "ACS 5-year", "Households across 16 income brackets", () => censusDate(), "Card: the income bracket bars"],
+    ["B25010", "ACS 5-year", "Average household size", () => censusDate(), "Card: header. Filter: household size"],
+    ["B25024", "ACS 5-year", "Units in structure, detached to 50+", () => censusDate(), "Card: Housing stock. Filter: detached share"],
+    ["B25003", "ACS 5-year", "Tenure: owner vs renter occupied", () => censusDate(), "Card: Housing stock (both shares). Filter: owner-occupied"],
+    ["B25035", "ACS 5-year", "Median year structure built", () => censusDate(), "Card: Housing stock. Filter: median year built"],
+    ["B25034", "ACS 5-year", "Year built across 10 decades", () => censusDate(), "Card: the 'when it was built' bars. Filter: pre-1980 share"],
+    ["B25077", "ACS 5-year", "Median value, owner-REPORTED, all owner-occupied units", () => censusDate(), "Card: Households. Filter: median home value"],
+    ["B08301", "ACS 5-year", "Means of transport to work", () => censusDate(), "Card: Work (home, walk, transit). Filter: work-from-home share"],
+    ["B08303", "ACS 5-year", "Travel time to work, 13 bands", () => censusDate(), "Card: Work - median commute (interpolated) and the 45+ min share. Filter: median commute"],
+    ["B23025", "ACS 5-year", "Employment status, 16 and over", () => censusDate(), "Card: Work - labour force participation and unemployment"],
+    ["B11003", "ACS 5-year", "Family type by presence of own children", () => censusDate(), "Card: Households. Filter: families with children"],
+    ["Assessor roll", "LA County", "Every parcel: assessed values, recording date, base year, size, beds, baths", () => metaDate(parcelMeta), "Card: the year-by-year Home prices table. Filters: median price, price per ft². House card: the block group comparison"],
+    ["Assessor roll (sales)", "LA County", "One row per transfer behind each count", () => metaDate(parcelMeta), "The panel that opens when you click a sales count"],
+    ["Redfin exports", "raw-data/redfin-listings/", "Active listings: price, size, lot, beds, baths, days on market", () => (listingsMeta && listingsMeta.latestDownloadLabel) || "not loaded", "The red dots on a selected block group, and the house card"],
+    ["CA school sites", "CA Dept of Education", "Every public school, with level", () => "live", "The school dots, and the assigned schools on the card"],
+    ["LAUSD boundaries", "LAUSD / SABS", "Attendance zones and district outlines", () => "live", "Assigned schools; clicking a dot outlines its district"],
+    ["CalEnviroScreen 4.0", "OEHHA", "Pollution burden percentile by tract", () => "live", "Pollution toggle, and the Pollution burden card rows"],
+    ["FHSZ", "CAL FIRE / OSFM", "Fire hazard severity zones", () => "live", "Fire toggle and its legend"],
+    ["NFHL", "FEMA", "Flood zones, 1% and 0.2% annual chance", () => "live", "Flood toggle, and the Flood card rows"],
+    ["Seismic hazard zones", "CA Geological Survey", "Liquefaction and landslide zones", () => "live", "Liquefaction & landslide toggle"],
+    ["National Transportation Noise Map", "BTS / DOT", "Modelled aviation, road and rail noise", () => "live", "The two noise toggles, and the Aviation noise card rows"],
+    ["Global Wind Atlas 3", "DTU / World Bank", "Mean wind speed at 100 m", () => metaDate(windGrid && windGrid.meta), "Wind toggle, and the Wind card rows"],
+    ["Nominatim", "OpenStreetMap", "Address search and reverse geocoding", () => "live", "The address box and the dropped pin"],
+    ["OpenRouteService", "HeiGIT", "Driving directions and duration", () => "live", "Commute time from the pin to your destination"],
   ];
 
   function metaDate(meta) {
@@ -4666,15 +4722,17 @@ const BlockGroupApp = (() => {
     const box = document.getElementById("source-table");
     if (!box) return;
     box.innerHTML = `<table class="source-table">
-      <thead><tr><th>What</th><th>Where from</th><th>Updated</th></tr></thead>
+      <thead><tr><th>Table</th><th>Source</th><th>What's in it</th><th>Loaded</th><th>Used where</th></tr></thead>
       <tbody>${SOURCE_ROWS.map(
-        ([what, where, when]) =>
-          `<tr><td>${what}</td><td class="dim">${where}</td><td class="when">${when()}</td></tr>`
+        ([id, source, contains, when, used]) =>
+          `<tr><td class="src-id">${id}</td><td class="dim">${source}</td><td class="dim">${contains}</td>` +
+          `<td class="when">${when()}</td><td class="dim">${used || '<span class="unused">not used yet</span>'}</td></tr>`
       ).join("")}</tbody>
     </table>
     <p class="src-note">"Live" means the layer is fetched from the publisher each time you turn it on,
       so it is as current as they are. A date means the figure came from a file on your disk, built on
-      that day - re-run the matching script to refresh it.</p>`;
+      that day - re-run the matching script to refresh it. ACS figures are 5-year averages, so they
+      describe roughly the middle of that window rather than today.</p>`;
   }
 
   // --- Basemap ------------------------------------------------------------

@@ -678,3 +678,10 @@ html, body {
 .source-table td { padding: 3px 4px 3px 0; border-bottom: 1px solid #f0f2f4; vertical-align: top; }
 .source-table td.dim { color: var(--muted); }
 .source-table td.when { white-space: nowrap; font-weight: 600; }
+
+/* The source table gained two columns, so it needs room and its own scroll. */
+#source-table { overflow-x: auto; }
+.source-table { min-width: 640px; }
+.source-table td.src-id { font-weight: 700; white-space: nowrap; }
+.source-table td.when { white-space: nowrap; }
+.source-table .unused { color: #b3261e; font-weight: 600; }

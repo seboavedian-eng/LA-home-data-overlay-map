@@ -480,9 +480,14 @@ def main():
     read = sfr_rows = 0
     unplaced = 0
     stale = 0
+    # Counted as DISTINCT (AIN, recording date) pairs, not as rows. The
+    # multi-year export repeats one recording in every roll year that knows
+    # about it, so counting rows made "dropped" look several times larger than
+    # "kept" - which are deduplicated - and the two were not comparable.
     undated = 0
-    no_reassessment = 0
-    no_base_year = 0
+    no_reassessment = set()
+    no_base_year = set()
+    roll_years = set()
     use_code_kept = {}
     use_code_dropped = {}
 
@@ -569,6 +574,7 @@ def main():
             if year is None:
                 undated += 1
                 continue
+            recorded_key = (ain, recording_key(row.get(cols["sale_date"])))
             if year < args.from_year:
                 continue
 
@@ -579,9 +585,9 @@ def main():
             # assessed value in as though it were a price.
             base = base_year(row, cols)
             if base is None:
-                no_base_year += 1
+                no_base_year.add(recorded_key)
             elif abs(base - year) > BASE_YEAR_SLACK:
-                no_reassessment += 1
+                no_reassessment.add(recorded_key)
                 continue
 
             sqft_value = to_float(row.get(cols["sqft"])) if cols.get("sqft") else None
@@ -592,6 +598,8 @@ def main():
                     continue
 
             roll = to_float(row.get(cols.get("roll_year"))) or 0
+            if roll:
+                roll_years.add(int(roll))
             recorded = str(row.get(cols["sale_date"]) or "").strip()
             key = (ain, recorded)
             existing = transactions.get(key)
@@ -617,11 +625,19 @@ def main():
     print(f"  Use codes dropped (top few):     {top_codes(use_code_dropped) or 'none'}")
     if stale:
         print(f"  {stale:,} transfers dropped as stale values (price per sq ft outside the plausible band)")
+    kept_transfers = len(transactions)
+    dropped = len(no_reassessment)
+    considered = kept_transfers + dropped
     print("\n  Did the recording actually reassess the parcel?")
-    print(f"    {no_reassessment:,} dropped - deed recorded but the base year did not move (no sale)")
-    print(f"    {no_base_year:,} kept with no base year on file to check against")
+    print("  (distinct recordings, not rows - one recording appears in every roll year that knows about it)")
+    print(
+        f"    {dropped:,} dropped - deed recorded but the base year did not move, so no sale"
+        + (f" ({dropped / considered * 100:.0f}% of recordings since {args.from_year})" if considered else "")
+    )
+    print(f"    {kept_transfers:,} kept as genuine changes of ownership")
+    print(f"    {len(no_base_year):,} had no base year on file to check against, and were kept")
     if undated:
-        print(f"    {undated:,} dropped - recording date could not be read")
+        print(f"    {undated:,} rows dropped - recording date could not be read")
 
     if not transactions:
         raise ParcelDataError(
@@ -753,7 +769,19 @@ def main():
     print(f"  {len(records):,} block groups have at least one transfer")
     if unplaced:
         print(f"  {unplaced:,} parcels fell outside every LA County block group (county edge, bad coordinates)")
-    print("\n  Transfers per year, county-wide (2025 is short because those sales land in the 2026 roll):")
+    # The newest roll in the file is what caps the newest sale year: a sale is
+    # enrolled in the FOLLOWING year's roll, so a file whose newest roll is
+    # 2024 cannot contain 2024 sales at all. Printing the roll years turns a
+    # baffling missing year into an obvious one.
+    if roll_years:
+        newest = max(roll_years)
+        print(f"\n  Roll years in this file: {', '.join(str(y) for y in sorted(roll_years))}")
+        print(
+            f"  The newest is {newest}, so the last year that can be complete is {newest - 1}."
+            f" Sales from {newest} onward are not in this export yet - download a newer roll to get them."
+        )
+
+    print("\n  Transfers per year, county-wide:")
     for year, row in county_by_year.items():
         print(f"    {year}: {row['n']:>7,} transfers, median ${row['median']:,}")
     print(

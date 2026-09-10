@@ -237,6 +237,8 @@ const CENSUS_DATA = {
       tenureTotal: 400,
       ownerOccupied: 300,
       renterOccupied: 100,
+      yearBuiltBins: { "1950 to 1959": 400, "1960 to 1969": 300, "2000 to 2009": 300 },
+      renterOccupied: 100,
       workersTotal: 600,
       workedFromHome: 120,
       walkedToWork: 30,
@@ -1958,20 +1960,56 @@ async function main() {
       )
     );
     step(
-      "the sources table lists every layer with a one-line description",
-      sourceRows.length >= 15 && sourceRows.every((r) => r[0] && r[1]),
+      "the sources table lists every dataset with its table number and contents",
+      sourceRows.length >= 30 && sourceRows.every((r) => r[0] && r[1] && r[2]),
       `${sourceRows.length} sources listed`
     );
     step(
+      "every ACS table the fetch script pulls has a row, by table number",
+      ["B01001", "B03002", "B15003", "B15001", "B19013", "B19301", "B19001", "B25010",
+       "B25024", "B25003", "B25035", "B25034", "B25077", "B08301", "B08303", "B23025",
+       "B11003", "P2"].every((id) => sourceRows.some((r) => r[0] === id)),
+      JSON.stringify(sourceRows.map((r) => r[0]).filter((id) => /^B\d|^P2$/.test(id)))
+    );
+    step(
+      "every row says where on the page it is used, so nothing is fetched and forgotten",
+      sourceRows.every((r) => r[4] && !/not used yet/i.test(r[4])),
+      JSON.stringify(sourceRows.filter((r) => !r[4] || /not used/i.test(r[4])).map((r) => r[0]))
+    );
+    step(
       "live services say live, and file-backed ones give the date they were built",
-      sourceRows.some((r) => r[2] === "live") &&
-        sourceRows.some((r) => /2026-09-09/.test(r[2])),
-      JSON.stringify(sourceRows.filter((r) => /listing|Home prices/i.test(r[0])).map((r) => [r[0], r[2]]))
+      sourceRows.some((r) => r[3] === "live") &&
+        sourceRows.some((r) => /2026-09-09/.test(r[3])),
+      JSON.stringify(sourceRows.filter((r) => /redfin|assessor/i.test(r[0])).map((r) => [r[0], r[3]]))
     );
     step(
       "the listings row names Redfin as the source",
-      sourceRows.some((r) => /listings/i.test(r[0]) && /redfin/i.test(r[1])),
-      JSON.stringify(sourceRows.find((r) => /listings/i.test(r[0])))
+      sourceRows.some((r) => /redfin/i.test(r[0]) || /redfin/i.test(r[1])),
+      JSON.stringify(sourceRows.find((r) => /redfin/i.test(r[0]) || /redfin/i.test(r[1])))
+    );
+    // Ethnicity is on the card AND filterable - eight groups, following
+    // whichever source is selected. This is here so that stays true.
+    const metricsHere = await page.evaluate(() =>
+      [...document.querySelectorAll('#filter-rows select[id^="filter-metric-"] option')].map((o) =>
+        o.textContent.trim()
+      )
+    );
+    const cardHere = await page.locator("#detail-panel").innerText();
+    step(
+      "every ethnicity group is offered as a filter",
+      [
+        "Hispanic or Latino", "White (non-Hispanic)", "Black (non-Hispanic)", "Asian (non-Hispanic)",
+        "American Indian / Alaska Native (non-Hispanic)", "Native Hawaiian / Pacific Islander (non-Hispanic)",
+        "Two or more races (non-Hispanic)", "Some other race (non-Hispanic)",
+      ].every((n) => metricsHere.some((m) => m.startsWith(n))),
+      `${metricsHere.filter((m) => /Hispanic/.test(m)).length} ethnicity filters offered`
+    );
+    step(
+      "and the card shows renter share, labour force participation and the build decades",
+      /Renter-occupied\D*25\.0%/.test(cardHere) &&
+        /In the labour force\D*65\.0%/.test(cardHere) &&
+        /when it was built/i.test(cardHere),
+      cardHere.replace(/\s+/g, " ").match(/Renter-occupied.{0,20}|In the labour force.{0,20}/g)
     );
 
     // --- The sales behind a count ---
