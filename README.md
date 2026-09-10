@@ -675,6 +675,26 @@ to the requested box, that negative sentinels become nulls instead of
 negative wind speeds, and that a projected or ungeoreferenced file is
 rejected with an actionable message. No GWA download is needed to run it.
 
+## Keeping it consistent
+
+Two rules are enforced by tests rather than remembered.
+
+**Every card row goes through one helper, and the helper requires a source.**
+`cardRow(label, value, tip)` will not let a row be built without an explanation
+of where its number came from - a missing one is reported to the console and
+the "no page errors" test fails. Rows used to be hand-written in forty-one
+places, which is exactly why explanations kept getting left off. Section and
+sub headings go through `sectionLabel` / `subLabel` the same way.
+
+**Every field we fetch has to reach a card.** `tests/test_data_coverage.py`
+reads what the fetch scripts emit and fails if the page never mentions it. This
+caught five fields that were being computed, written to disk and silently never
+shown. Add a column to a data file without wiring it up and the test tells you.
+
+```
+python3 tests/test_data_coverage.py
+```
+
 ## Project layout
 
 ```
