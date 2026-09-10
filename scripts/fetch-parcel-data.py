@@ -64,6 +64,7 @@ import csv
 import datetime
 import json
 import os
+import re
 import statistics
 import sys
 import urllib.error
@@ -96,10 +97,17 @@ COLUMNS = {
     "improvement_value": ["Improvement Value", "ImprovementValue", "Roll_ImpValue"],
     "total_value": ["Total Value", "TotalValue", "Roll_TotalValue", "Taxable Value", "TaxableValue"],
     "sale_date": ["Recording Date", "RecordingDate", "RECORDINGDATE", "SaleDate", "LastSaleDate"],
-    "base_year": ["Improvement Base Year", "Land Base Year", "ImpBaseYear", "LandBaseYear"],
+    # Land and improvement base years are kept apart on purpose. A change of
+    # ownership resets BOTH; new construction resets only the improvement
+    # half. So the land base year is the cleaner "did this parcel actually
+    # change hands" signal, and the reassessment test below leans on it.
+    "base_year_land": ["Land Base Year", "LandBaseYear"],
+    "base_year_imp": ["Improvement Base Year", "ImpBaseYear"],
     "sqft": ["Square Footage", "SQFTmain", "SqFtMain", "BuildingSqFt", "MainSqFt"],
     "year_built": ["Year Built", "YearBuilt", "Effective Year", "EffectiveYearBuilt"],
     "units": ["Number of Units", "Units", "UnitsCount"],
+    "beds": ["Number of Bedrooms", "Bedrooms", "Beds"],
+    "baths": ["Number of Bathrooms", "Bathrooms", "Baths"],
     "ain": ["AIN", "Assessor ID", "APN", "ParcelID"],
     # Not present in the 2021-2025 export. Kept so a future roll that carries
     # lot area is picked up without a code change.
@@ -111,10 +119,25 @@ COLUMNS = {
     "total_only": ["Total Value", "TotalValue"],
 }
 
-# LA County use codes: the leading "01" is single-family residence. The text
-# column is checked too, because some exports carry only that.
+# How a single-family parcel is recognised.
+#
+# The roll's own "Property Use Type" label is authoritative here. The numeric
+# Property Use Code was tried first and is NOT reliable in this export - its
+# digits do not consistently mean what the county's code table says - so the
+# code is now only a fallback for a file that has no type column at all.
+SFR_TYPE_PATTERNS = (
+    re.compile(r"\bSFR\b", re.IGNORECASE),
+    re.compile(r"single\s*fam", re.IGNORECASE),
+)
 SFR_CODE_PREFIX = "01"
-SFR_TEXT = "single family"
+
+# A deed recorded in year N that really was a sale shows a base year of about
+# N: Proposition 13 resets the base on a change of ownership. If the base year
+# is still years earlier, the recording moved paper but triggered no
+# reassessment - a trust or inter-spousal transfer, a correction, a lender
+# document - and the assessed value attached to it is the OLD owner's, not a
+# price. One year of slack: a December recording lands on the following roll.
+BASE_YEAR_SLACK = 1
 
 # Below this, a "sale" is a transfer rather than a market transaction: family
 # quitclaims, corrections and $1 grants are all over the roll. It also catches
@@ -286,31 +309,60 @@ def to_float(value):
         return None
 
 
-def sale_year(value):
-    """Recording dates appear as 20240115, 2024-01-15 or 01/15/2024."""
+# The roll writes recording dates several ways, and the county's own portal
+# export uses the one with a time on the end: "11/16/2023 8:00:00 AM". An
+# earlier version of this script stripped non-digits and looked for an 8-digit
+# run, which that format defeats - it yields 1116202380000 - so every date
+# silently failed to parse and the year fell back to the BASE year instead.
+# That is why a "2022" row could list recordings from 2021 and 2023: the rows
+# were bucketed by assessment base year, not by when the deed was recorded.
+DATE_FORMATS = (
+    # 2023-07-02, with or without a trailing time
+    (re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)"), (1, 2, 3)),
+    # 11/16/2023 or 11-16-2023, with or without a trailing time
+    (re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\d)"), (3, 1, 2)),
+    # 20240115
+    (re.compile(r"^(\d{4})(\d{2})(\d{2})$"), (1, 2, 3)),
+)
+
+
+def parse_recording_date(value):
+    """The recording date as (year, month, day), or None if unreadable."""
     text = str(value or "").strip()
     if not text:
         return None
-    digits = "".join(ch for ch in text if ch.isdigit())
-    if len(digits) == 8:
-        # Either YYYYMMDD or MMDDYYYY - the year is whichever end looks like one.
-        head, tail = digits[:4], digits[4:]
-        if 1900 <= int(head) <= 2100:
-            return int(head)
-        if 1900 <= int(tail) <= 2100:
-            return int(tail)
-    if len(digits) >= 4:
-        for chunk in (digits[:4], digits[-4:]):
-            if 1900 <= int(chunk) <= 2100:
-                return int(chunk)
+    for pattern, (yi, mi, di) in DATE_FORMATS:
+        m = pattern.match(text)
+        if not m:
+            continue
+        year, month, day = int(m.group(yi)), int(m.group(mi)), int(m.group(di))
+        if 1900 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31:
+            return year, month, day
     return None
 
 
+def recording_key(value):
+    """YYYYMMDD, so the page has one date format to render rather than four."""
+    parts = parse_recording_date(value)
+    return f"{parts[0]:04d}{parts[1]:02d}{parts[2]:02d}" if parts else ""
+
+
+def sale_year(value):
+    parts = parse_recording_date(value)
+    return parts[0] if parts else None
+
+
 def is_single_family(row, cols):
-    code = str(row.get(cols["use_code"], "") or "").strip()
-    text = str(row.get(cols.get("use_type"), "") or "").lower()
-    if not (code.startswith(SFR_CODE_PREFIX) or SFR_TEXT in text):
-        return False
+    text = str(row.get(cols.get("use_type"), "") or "").strip() if cols.get("use_type") else ""
+    if text:
+        # The roll's own label decides. The numeric code is not consulted at
+        # all when a type column exists, because its digits misclassify.
+        if not any(p.search(text) for p in SFR_TYPE_PATTERNS):
+            return False
+    else:
+        code = str(row.get(cols["use_code"], "") or "").strip()
+        if not code.startswith(SFR_CODE_PREFIX):
+            return False
     # A single-family parcel holds one unit. Where the roll says otherwise -
     # a duplex miscoded, or a lot with a second house on it - it is not the
     # thing being priced here.
@@ -334,12 +386,32 @@ def assessed_value(row, cols):
 
 
 def transfer_year(row, cols):
-    """When this parcel's current value was set - by deed, else by base year."""
-    year = sale_year(row.get(cols["sale_date"])) if cols.get("sale_date") else None
-    if year:
-        return year
-    base = to_float(row.get(cols.get("base_year"))) if cols.get("base_year") else None
-    return int(base) if base and 1900 < base < 2100 else None
+    """
+    The year the deed was RECORDED - nothing else.
+
+    This used to fall back to the assessment base year when the date would not
+    parse, which mixed two different things into one column and put recordings
+    from several years inside a single year's bucket. A row whose recording
+    date cannot be read now has no year, and is dropped rather than guessed at.
+    """
+    return sale_year(row.get(cols["sale_date"])) if cols.get("sale_date") else None
+
+
+def base_year(row, cols):
+    """
+    The base year Proposition 13 set, preferring the land half.
+
+    New construction resets the improvement base year without any change of
+    ownership, so improvement alone would call a big remodel a sale. Land moves
+    only when the parcel changes hands.
+    """
+    for key in ("base_year_land", "base_year_imp"):
+        if not cols.get(key):
+            continue
+        value = to_float(row.get(cols[key]))
+        if value and 1900 < value < 2100:
+            return int(value)
+    return None
 
 
 def percentile(sorted_values, fraction):
@@ -408,6 +480,9 @@ def main():
     read = sfr_rows = 0
     unplaced = 0
     stale = 0
+    undated = 0
+    no_reassessment = 0
+    no_base_year = 0
     use_code_kept = {}
     use_code_dropped = {}
 
@@ -419,8 +494,8 @@ def main():
             cols[key] = find_column(header, COLUMNS[key], key.replace("_", " "))
         for key in (
             "use_type", "land_value", "improvement_value", "total_value",
-            "base_year", "sqft", "year_built", "units", "ain", "roll_year", "lot_sqft",
-            "address", "exemption", "total_only",
+            "base_year_land", "base_year_imp", "sqft", "year_built", "units", "ain",
+            "roll_year", "lot_sqft", "address", "exemption", "total_only", "beds", "baths",
         ):
             try:
                 cols[key] = find_column(header, COLUMNS[key], key)
@@ -491,7 +566,22 @@ def main():
             if price is None or price < MIN_SALE_PRICE or price > MAX_SALE_PRICE:
                 continue
             year = transfer_year(row, cols)
-            if year is None or year < args.from_year:
+            if year is None:
+                undated += 1
+                continue
+            if year < args.from_year:
+                continue
+
+            # Did this recording actually reassess the parcel? The roll has no
+            # column saying "this was a sale" - so this is the test that stands
+            # in for one. Without it the table counts trust transfers and
+            # corrections as sales, carrying the previous owner's decades-old
+            # assessed value in as though it were a price.
+            base = base_year(row, cols)
+            if base is None:
+                no_base_year += 1
+            elif abs(base - year) > BASE_YEAR_SLACK:
+                no_reassessment += 1
                 continue
 
             sqft_value = to_float(row.get(cols["sqft"])) if cols.get("sqft") else None
@@ -508,13 +598,15 @@ def main():
             if existing is None or roll < existing[0]:
                 detail = {
                     "address": str(row.get(cols["address"]) or "").strip() if cols.get("address") else "",
-                    "recorded": recorded,
+                    "recorded": recording_key(recorded),
                     "sqft": sqft_value,
                     "land": to_float(row.get(cols["land_value"])) if cols.get("land_value") else None,
                     "improvement": to_float(row.get(cols["improvement_value"])) if cols.get("improvement_value") else None,
                     "exemption": to_float(row.get(cols["exemption"])) if cols.get("exemption") else None,
                     "total": to_float(row.get(cols["total_only"])) if cols.get("total_only") else None,
                     "yearBuilt": to_float(row.get(cols["year_built"])) if cols.get("year_built") else None,
+                    "beds": to_float(row.get(cols["beds"])) if cols.get("beds") else None,
+                    "baths": to_float(row.get(cols["baths"])) if cols.get("baths") else None,
                 }
                 transactions[key] = (roll, price, sqft_value, geoid, year, detail)
 
@@ -524,7 +616,12 @@ def main():
     print(f"\n  Use codes KEPT as single-family: {top_codes(use_code_kept) or 'none'}")
     print(f"  Use codes dropped (top few):     {top_codes(use_code_dropped) or 'none'}")
     if stale:
-        print(f"  {stale:,} transfers dropped as stale values (excluded transfers, no reassessment)")
+        print(f"  {stale:,} transfers dropped as stale values (price per sq ft outside the plausible band)")
+    print("\n  Did the recording actually reassess the parcel?")
+    print(f"    {no_reassessment:,} dropped - deed recorded but the base year did not move (no sale)")
+    print(f"    {no_base_year:,} kept with no base year on file to check against")
+    if undated:
+        print(f"    {undated:,} dropped - recording date could not be read")
 
     if not transactions:
         raise ParcelDataError(
@@ -548,8 +645,14 @@ def main():
                 detail["land"],
                 detail["improvement"],
                 detail["exemption"],
-                detail["total"] if detail["total"] is not None else round(price),
+                # The assessed value this row is priced on - land plus
+                # improvements. NOT the roll's "Total Value" column, which also
+                # carries fixtures and personal property, so the number in the
+                # table and the number behind the median are the same number.
+                round(price),
                 detail["yearBuilt"],
+                detail["beds"],
+                detail["baths"],
             ]
         )
 
@@ -620,7 +723,10 @@ def main():
     sales_payload = {
         "meta": {
             "schemaVersion": 1,
-            "columns": ["address", "recorded", "sqft", "land", "improvement", "exemption", "total", "yearBuilt"],
+            "columns": [
+                "address", "recorded", "sqft", "land", "improvement", "exemption",
+                "assessed", "yearBuilt", "beds", "baths",
+            ],
             "source": payload["meta"]["source"],
             "generated": payload["meta"]["generated"],
             "note": (

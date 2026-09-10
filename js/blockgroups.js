@@ -1102,12 +1102,6 @@ const BlockGroupApp = (() => {
       })
       .join("");
 
-    const countyRow = yearKeys.length
-      ? `<p class="src-note">County-wide median that year: ${yearKeys
-          .map((y) => `${y} ${shortMoney(county[y] && county[y].median)}`)
-          .join(" &middot; ")}</p>`
-      : "";
-
     return `
       <div class="section-label">Home prices${infoIcon(
         "Single-family homes only, by the year their deed was recorded. The public roll carries no sale price, " +
@@ -1144,8 +1138,7 @@ const BlockGroupApp = (() => {
       </table>
       <p class="src-note">${
         rec.sfhTotal ? `Turnover is against ${Utils.fmtNumber(rec.sfhTotal)} single-family homes in this block group. ` : ""
-      }The latest year is short: sales are recorded in the following year's roll.</p>
-      ${countyRow}`;
+      }The latest year is short: sales are recorded in the following year's roll.</p>`;
   }
 
   // --- Listings (Redfin downloads) ----------------------------------------
@@ -1754,13 +1747,16 @@ const BlockGroupApp = (() => {
     return n === null || n === undefined || n === "" ? "-" : Utils.fmtCurrency(n);
   }
 
+  // The script now writes every recording date as YYYYMMDD, whatever the roll
+  // handed it - including the "11/16/2023 8:00:00 AM" the county's own export
+  // uses. Rendered MM-DD-YYYY, with no time: the roll records a day, and the
+  // 8:00:00 AM on every row is an artefact of the export, not a fact.
   function readableDate(raw) {
     const digits = String(raw || "").replace(/\D/g, "");
-    if (digits.length === 8) {
+    if (digits.length >= 8) {
       const year = digits.slice(0, 4);
-      // The roll writes YYYYMMDD; anything else is left as it came.
       if (Number(year) > 1900 && Number(year) < 2100) {
-        return `${year}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+        return `${digits.slice(4, 6)}-${digits.slice(6, 8)}-${year}`;
       }
     }
     return raw || "-";
@@ -1808,6 +1804,7 @@ const BlockGroupApp = (() => {
           <td class="num">${money(r[4])}</td>
           <td class="num">${r[5] ? `-${money(r[5])}` : "-"}</td>
           <td class="num total">${money(r[6])}</td>
+          <td class="num">${r[2] && r[6] ? money(Math.round(r[6] / r[2])) : "-"}</td>
         </tr>`
       )
       .join("");
@@ -1817,17 +1814,19 @@ const BlockGroupApp = (() => {
         <button class="sales-close" type="button">&times;</button>
         <h3>${label} &middot; ${year}</h3>
         <p class="src-note">${rows.length} single-family transfer${rows.length === 1 ? "" : "s"} recorded that year,
-          dearest first. Land and improvement are the assessed values set at the transfer; the exemption is what is
-          subtracted from them to reach the taxable value.</p>
+          dearest first. Land and improvement are the assessed values set at the transfer, and Assessed is the two
+          added together - the figure the median on the card is built from. The exemption is what comes off them to
+          reach the taxable value, and does not change the price.</p>
         <div class="sales-scroll">
           <table class="sales-table">
             <thead>
               <tr>
                 <th>Address</th><th>Recorded</th><th>Sq ft</th><th>Built</th>
-                <th>Land</th><th>Improvement</th><th>Exemption</th><th>Total</th>
+                <th>Land</th><th>Improvement</th><th>Exemption</th>
+                <th>Assessed</th><th>$/ft&sup2;</th>
               </tr>
             </thead>
-            <tbody>${body || '<tr><td colspan="8">No sales recorded for this year.</td></tr>'}</tbody>
+            <tbody>${body || '<tr><td colspan="9">No sales recorded for this year.</td></tr>'}</tbody>
           </table>
         </div>
       </div>`;

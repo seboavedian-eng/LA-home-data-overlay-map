@@ -309,16 +309,19 @@ async function main() {
     salesPath,
     JSON.stringify({
       meta: {
-        columns: ["address", "recorded", "sqft", "land", "improvement", "exemption", "total", "yearBuilt"],
+        columns: [
+          "address", "recorded", "sqft", "land", "improvement", "exemption",
+          "assessed", "yearBuilt", "beds", "baths",
+        ],
       },
       byBlockGroup: {
         "060372011001": {
           "2021": [
-            ["123 N Spring St, Los Angeles", "20210415", 1480, 620000, 430000, 7000, 1050000, 1948],
-            ["77 Bunker Hill Rd, Los Angeles", "20210902", 2100, 900000, 500000, 0, 1400000, 1962],
-            ["9 Olive Ct, Los Angeles", "20211118", 1150, 500000, 380000, 7000, 880000, 1939],
+            ["123 N Spring St, Los Angeles", "20210415", 1480, 620000, 430000, 7000, 1050000, 1948, 3, 2],
+            ["77 Bunker Hill Rd, Los Angeles", "20210902", 2100, 900000, 500000, 0, 1400000, 1962, 4, 3],
+            ["9 Olive Ct, Los Angeles", "20211118", 1150, 500000, 380000, 7000, 880000, 1939, 2, 1],
           ],
-          "2024": [["55 Hill St, Los Angeles", "20240220", 1600, 800000, 510000, 7000, 1310000, 1971]],
+          "2024": [["55 Hill St, Los Angeles", "20240220", 1600, 800000, 510000, 7000, 1310000, 1971, 3, 2]],
         },
       },
     })
@@ -1907,15 +1910,24 @@ async function main() {
       `${salesRows.length} rows for 2021 (2024 has 1)`
     );
     step(
-      "each row carries address, date, size, year built and the values that net to the total",
+      "each row carries address, date, size, year built and the values behind the assessed total",
       salesRows[0][0].includes("Bunker Hill") &&
-        salesRows[0][1] === "2021-09-02" &&
         salesRows[0][2] === "2,100" &&
         salesRows[0][3] === "1962" &&
         salesRows[0][4] === "$900,000" &&
         salesRows[0][5] === "$500,000" &&
         salesRows[0][7] === "$1,400,000",
       JSON.stringify(salesRows[0])
+    );
+    step(
+      "the recording date is a date, MM-DD-YYYY, with no time on it",
+      salesRows[0][1] === "09-02-2021",
+      salesRows[0][1]
+    );
+    step(
+      "each row shows its own price per square foot",
+      salesRows[0][8] === "$667",
+      `${salesRows[0][8]} from $1,400,000 over 2,100 ft²`
     );
     step(
       "rows are dearest first, so the top of the range is the first thing read",
@@ -1953,9 +1965,9 @@ async function main() {
       priceCard.replace(/\n/g, " ").match(/\d+ single-family homes.{0,40}/i)
     );
     step(
-      "the county median for each year is shown for comparison",
-      priceCard.includes("2021 $800k") && priceCard.includes("2024 $950k"),
-      priceCard.replace(/\n/g, " ").match(/County-wide.{0,60}/i)
+      "the county-wide median line is gone from the card",
+      !/county-wide/i.test(priceCard),
+      priceCard.replace(/\n/g, " ").match(/County-wide.{0,60}/i) || "absent"
     );
     await page.evaluate(() => {
       BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {

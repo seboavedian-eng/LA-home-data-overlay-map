@@ -40,7 +40,8 @@ cols = {
     "improvement_value": "Improvement Value",
     "total_value": "Taxable Value",
     "sale_date": "Recording Date",
-    "base_year": "Improvement Base Year",
+    "base_year_land": "Land Base Year",
+    "base_year_imp": "Improvement Base Year",
     "sqft": "Square Footage",
 }
 
@@ -105,15 +106,18 @@ check(
     fetch_parcel.transfer_year(parcel(), cols) == 2024,
     str(fetch_parcel.transfer_year(parcel(), cols)),
 )
+# The base year must NEVER stand in for a recording date. It used to, whenever
+# the date failed to parse, which silently bucketed rows by assessment year and
+# put recordings from three different years inside one year's row.
 check(
-    "with no recording date it falls back to the base year",
+    "with no recording date there is no transfer year - the base year is not a substitute",
     fetch_parcel.transfer_year(
-        parcel(**{"Recording Date": "", "Improvement Base Year": "2022"}), cols
-    ) == 2022,
+        parcel(**{"Recording Date": "", "Improvement Base Year": "2022", "Land Base Year": "2022"}), cols
+    ) is None,
 )
 check(
-    "a parcel with neither is skipped rather than assumed recent",
-    fetch_parcel.transfer_year(parcel(**{"Recording Date": ""}), cols) is None,
+    "an unparseable recording date is dropped rather than guessed at",
+    fetch_parcel.transfer_year(parcel(**{"Recording Date": "N/A", "Land Base Year": "2019"}), cols) is None,
 )
 check(
     "the price-per-sqft band is wide enough for LA but excludes stale values",
@@ -128,6 +132,86 @@ check("ISO parses", fetch_parcel.sale_year("2023-07-02") == 2023, str(fetch_parc
 check("US format parses", fetch_parcel.sale_year("01/15/2022") == 2022, str(fetch_parcel.sale_year("01/15/2022")))
 check("an empty date is not a year", fetch_parcel.sale_year("") is None)
 check("junk is not a year", fetch_parcel.sale_year("N/A") is None)
+# The format the county's own portal export actually uses. Stripping non-digits
+# and looking for an 8-digit run yields 1116202380000 and fails - which is what
+# made every date fall back to the base year.
+check(
+    "US format WITH A TIME parses - the format the real export uses",
+    fetch_parcel.sale_year("11/16/2023 8:00:00 AM") == 2023,
+    str(fetch_parcel.sale_year("11/16/2023 8:00:00 AM")),
+)
+check(
+    "ISO with a time parses",
+    fetch_parcel.sale_year("2022-04-15T00:00:00.000Z") == 2022,
+    str(fetch_parcel.sale_year("2022-04-15T00:00:00.000Z")),
+)
+check(
+    "the day and month survive, not just the year",
+    fetch_parcel.parse_recording_date("11/16/2023 8:00:00 AM") == (2023, 11, 16),
+    str(fetch_parcel.parse_recording_date("11/16/2023 8:00:00 AM")),
+)
+check(
+    "a US date is read month-first, not day-first",
+    fetch_parcel.parse_recording_date("4/15/2022 7:00:00 AM") == (2022, 4, 15),
+    str(fetch_parcel.parse_recording_date("4/15/2022 7:00:00 AM")),
+)
+check(
+    "every format lands on one canonical YYYYMMDD for the page to render",
+    fetch_parcel.recording_key("11/16/2023 8:00:00 AM") == "20231116"
+    and fetch_parcel.recording_key("2023-11-16") == "20231116"
+    and fetch_parcel.recording_key("20231116") == "20231116",
+    fetch_parcel.recording_key("11/16/2023 8:00:00 AM"),
+)
+check("an unreadable date has no key", fetch_parcel.recording_key("N/A") == "")
+
+# --- Which rows are single-family -------------------------------------------
+# The Property Use Type label decides. The numeric code's digits misclassify in
+# the real export, so they are only consulted when there is no type column.
+check(
+    "Property Use Type SFR is single family",
+    fetch_parcel.is_single_family(parcel(**{"Property Use Type": "SFR"}), cols),
+)
+check(
+    "the type column overrides a use code that disagrees",
+    fetch_parcel.is_single_family(parcel(**{"Property Use Type": "SFR", "Property Use Code": "0500"}), cols),
+)
+check(
+    "a non-SFR type is dropped even when the code says 01xx",
+    not fetch_parcel.is_single_family(
+        parcel(**{"Property Use Type": "CND", "Property Use Code": "0100"}), cols
+    ),
+)
+check(
+    "SFR is matched as a word, not as a substring of something else",
+    not fetch_parcel.is_single_family(parcel(**{"Property Use Type": "TRANSFRONTIER"}), cols),
+)
+check(
+    "with no type column at all the use code is still honoured",
+    fetch_parcel.is_single_family(parcel(**{"Property Use Type": ""}), cols),
+)
+
+# --- Did the recording actually reassess the parcel? ------------------------
+# The roll carries no "this was a sale" flag. Proposition 13 supplies one:
+# a real change of ownership resets the base year to about the recording year.
+check(
+    "a base year matching the recording year reads as a reassessment",
+    fetch_parcel.base_year(parcel(**{"Land Base Year": "2024"}), cols) == 2024,
+)
+check(
+    "the LAND base year wins - new construction moves only the improvement half",
+    fetch_parcel.base_year(
+        parcel(**{"Land Base Year": "2015", "Improvement Base Year": "2023"}), cols
+    ) == 2015,
+    "a big remodel is not a sale",
+)
+check(
+    "a blank base year is absent, not zero",
+    fetch_parcel.base_year(parcel(**{"Land Base Year": "", "Improvement Base Year": ""}), cols) is None,
+)
+check(
+    "one year of slack, because a December deed lands on the next roll",
+    fetch_parcel.BASE_YEAR_SLACK == 1,
+)
 
 # --- Money ------------------------------------------------------------------
 check("currency formatting is stripped", fetch_parcel.to_float("$1,250,000") == 1250000.0)
@@ -214,18 +298,32 @@ out_path = os.path.join(tmp, "out.json")
 FIELDS = [
     "AIN", "Roll Year", "Property Use Code", "Property Use Type", "Number of Units",
     "Land Value", "Improvement Value", "Recording Date", "Square Footage",
-    "Location Latitude", "Location Longitude", "Year Built",
+    "Location Latitude", "Location Longitude", "Year Built", "Land Base Year",
+    "Improvement Base Year", "Number of Bedrooms", "Number of Bathrooms",
 ]
 
 
-def row(ain, roll, land, imp, lat=34.05, lon=-118.25, recorded="20240115", sqft="1500", use="0100"):
+def row(
+    ain, roll, land, imp, lat=34.05, lon=-118.25, recorded="20240115", sqft="1500",
+    use="SFR", base=None,
+):
+    # Recording dates are written the way the county's portal export writes
+    # them - M/D/YYYY with a time - because that is the format that used to
+    # defeat the parser and silently send every row to its base year.
+    stamp = recorded
+    if len(recorded) == 8 and recorded.isdigit():
+        stamp = f"{int(recorded[4:6])}/{int(recorded[6:8])}/{recorded[:4]} 8:00:00 AM"
+    # By default the base year matches the recording year: a real sale.
+    base_year = base if base is not None else recorded[:4]
     return {
-        "AIN": ain, "Roll Year": roll, "Property Use Code": use,
-        "Property Use Type": "Single Family Residence" if use.startswith("01") else "Condominium",
+        "AIN": ain, "Roll Year": roll, "Property Use Code": "0100" if use == "SFR" else "0500",
+        "Property Use Type": use,
         "Number of Units": "1",
-        "Land Value": land, "Improvement Value": imp, "Recording Date": recorded,
+        "Land Value": land, "Improvement Value": imp, "Recording Date": stamp,
         "Square Footage": sqft, "Location Latitude": lat, "Location Longitude": lon,
-        "Year Built": "1955",
+        "Year Built": "1955", "Land Base Year": base_year,
+        "Improvement Base Year": base_year,
+        "Number of Bedrooms": "3", "Number of Bathrooms": "2",
     }
 
 
@@ -245,8 +343,14 @@ with open(csv_path, "w", newline="", encoding="utf-8") as fh:
     writer.writerow(row("666", "2025", "700000", "700000", recorded="20240220"))
     writer.writerow(row("777", "2025", "800000", "800000", recorded="20240320"))
     writer.writerow(row("888", "2025", "900000", "900000", recorded="20240420"))
-    # A condo: excluded by use code.
-    writer.writerow(row("333", "2025", "400000", "400000", use="0500"))
+    # A condo: excluded by its Property Use Type, not by its use code.
+    writer.writerow(row("333", "2025", "400000", "400000", use="CND"))
+    # The case that started all this. A house bought in 2015, whose deed was
+    # re-recorded in 2023 - into a trust, say. No change of ownership, so
+    # Proposition 13 never reset it and the value on the row is still the 2015
+    # owner's, trended. Counted as a 2023 sale it is a fiction: a nine-year-old
+    # price filed under this year. The base year gives it away.
+    writer.writerow(row("999", "2025", "700000", "700000", recorded="20230820", base="2015"))
     # A long-held house: recorded in 1994. It never sold in the window, but it
     # still counts toward the block group's single-family total.
     writer.writerow(row("444", "2025", "60000", "40000", recorded="19940301"))
@@ -308,21 +412,38 @@ check(
 )
 check(
     "every single-family parcel counts toward the total, sold or not",
-    # 111, 222, 444 (last sold 1994), 666, 777, 888 - the condo does not.
-    bg1.get("sfhTotal") == 6,
+    # 111, 222, 444 (last sold 1994), 666, 777, 888, 999 (re-recorded, never
+    # sold) - the condo does not. A house that did not sell is still a house.
+    bg1.get("sfhTotal") == 7,
     f"sfhTotal={bg1.get('sfhTotal')}",
 )
 check(
     "turnover is sales that year over the block group's single-family stock",
-    abs(years.get("2024", {}).get("turnover", 0) - (5 / 6 * 100)) < 0.05,
-    f"turnover={years.get('2024', {}).get('turnover')}% (5 of 6 houses)",
+    abs(years.get("2024", {}).get("turnover", 0) - (5 / 7 * 100)) < 0.05,
+    f"turnover={years.get('2024', {}).get('turnover')}% (5 of 7 houses)",
 )
 check(
     "price per square foot is a median of the year's transactions",
     years.get("2024", {}).get("ppsf") == round(1400000 / 1500, 1),
     f"ppsf={years.get('2024', {}).get('ppsf')}",
 )
-check("the condo is excluded", bg1.get("sfhTotal") == 6)
+check("the condo is excluded by its Property Use Type", bg1.get("sfhTotal") == 7)
+# The heart of it: a deed recorded in 2023 that reassessed nothing is not a
+# 2023 sale, and must not appear as one at any price.
+check(
+    "a re-recorded deed that triggered no reassessment is not counted as a sale",
+    "2023" not in years,
+    f"years present: {sorted(years)}",
+)
+check(
+    "...and its stale value never reaches a median",
+    all(
+        y.get("median") != 1400000 or year == "2024"
+        for year, y in years.items()
+    )
+    and bg1.get("saleCount") == 6,
+    f"saleCount={bg1.get('saleCount')} (5 in 2024, 1 in 2022; the 2023 re-recording excluded)",
+)
 check("the second block group is kept separate", bg2.get("saleCount") == 1, str(bg2))
 check(
     "the pooled figures survive for the map's filters",
