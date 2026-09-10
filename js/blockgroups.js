@@ -1020,14 +1020,19 @@ const BlockGroupApp = (() => {
     if (score === null) return "";
     const bucket = pollutionBucket(score);
     return `
-      <div class="section-label">Pollution burden${infoIcon(
-        "CalEnviroScreen 4.0, from OEHHA. The score is a percentile against every other California census tract, not an absolute measure: 90 means this tract scores worse than 90% of the state. It is reported for the whole tract, so every block group inside it shares one value."
-      )}</div>
+      ${sectionLabel(`Pollution burden`, "CalEnviroScreen 4.0, from OEHHA. The score is a percentile against every other California census tract, not an absolute measure: 90 means this tract scores worse than 90% of the state. It is reported for the whole tract, so every block group inside it shares one value.")}
       <table>
-        <tr><td class="k">CalEnviroScreen score${infoIcon(
-          "OEHHA CalEnviroScreen 4.0, published by census TRACT, so every block group inside a tract shares one score. It is a percentile against the whole state: 87 means more burdened than 87% of California tracts, not that 87% of anything is polluted."
-        )}</td><td class="v">${score.toFixed(1)}th pct</td></tr>
-        <tr><td class="k">Band</td><td class="v">${bucket ? bucket.label : "Unknown"}</td></tr>
+        ${cardRow(
+      "CalEnviroScreen score",
+      `${score.toFixed(1)}th pct`,
+      "OEHHA CalEnviroScreen 4.0, published by census TRACT, so every block group inside a tract shares one score. It is a percentile against the whole state: 87 means more burdened than 87% of California tracts, not that 87% of anything is polluted."
+    )}
+        ${cardRow(
+          "Band",
+          bucket ? bucket.label : "Unknown",
+          "Which fifth of California's tracts this score falls in. The bands are quintiles of the STATEWIDE " +
+            "distribution, so 'least burdened' means least burdened in California, not clean in absolute terms."
+        )}
       </table>`;
   }
 
@@ -1084,12 +1089,20 @@ const BlockGroupApp = (() => {
     // say what is actually missing instead.
     if (!yearKeys.length) {
       return `
-        <div class="section-label">Home prices</div>
+        ${sectionLabel(`Home prices`)}
         <table>
-          <tr><td class="k">Median home price${infoIcon(
-          "The pooled figure from the assessor roll across every year in the file, shown when the per-year table is not available. Re-run scripts/fetch-parcel-data.py to get the year-by-year table instead."
-        )}</td><td class="v key-figure">${Utils.fmtCurrency(rec.medianSalePrice)}</td></tr>
-          <tr><td class="k">Based on</td><td class="v">${rec.saleCount || 0} sale${rec.saleCount === 1 ? "" : "s"}</td></tr>
+          ${cardRow(
+      "Median home price",
+      `${Utils.fmtCurrency(rec.medianSalePrice)}`,
+      "The pooled figure from the assessor roll across every year in the file, shown when the per-year table is not available. Re-run scripts/fetch-parcel-data.py to get the year-by-year table instead.",
+      { key: true }
+    )}
+          ${cardRow(
+            "Based on",
+            `${rec.saleCount || 0} sale${rec.saleCount === 1 ? "" : "s"}${rec.thin ? " - a thin sample" : ""}`,
+            "How many transfers the median rests on, pooled across every year in the parcel file. Fewer than a " +
+              "handful and it is one or two houses rather than a market rate, which is what 'a thin sample' marks."
+          )}
         </table>
         <p class="src-note">This parcel file predates the year-by-year table. Re-run
           <code>${fetchCommand().replace("fetch-blockgroup-data.py", "fetch-parcel-data.py")}</code>
@@ -1115,13 +1128,11 @@ const BlockGroupApp = (() => {
       .join("");
 
     return `
-      <div class="section-label">Home prices${infoIcon(
-        "Single-family homes only, by the year their deed was recorded. The public roll carries no sale price, " +
+      ${sectionLabel(`Home prices`, "Single-family homes only, by the year their deed was recorded. The public roll carries no sale price, " +
           "so these are assessed values - which works because Proposition 13 resets a property's assessed value to " +
           "its purchase price when it sells. Each sale is taken from the roll year closest to it, so the figure sits " +
           "within a percent or two of what was actually paid. Condos, townhouses and anything with more than one " +
-          "unit are excluded."
-      )}</div>
+          "unit are excluded.")}
       <table class="price-table">
         <thead>
           <tr>
@@ -1691,8 +1702,9 @@ const BlockGroupApp = (() => {
     const perSqft = listing.sqft ? listing.price / listing.sqft : null;
     const perLot = listing.lotSqft ? listing.price / listing.lotSqft : null;
     const bgPpsf = blockGroupPricePerSqft();
-    const row = (k, v) => (v === null || v === undefined || v === "" ? "" : `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`);
     const esc = Utils.escapeHTML;
+    const lastSeen = (listing.lastSeen || "").slice(0, 10);
+    const stale = listingsMeta && listingsMeta.latestDownload && listing.lastSeen < listingsMeta.latestDownload;
 
     return `
       <button class="house-close" type="button">&times;</button>
@@ -1729,31 +1741,37 @@ const BlockGroupApp = (() => {
           : ""
       }
       <p class="house-address">${esc(listing.address)}${listing.city ? `, ${esc(listing.city)}` : ""} ${esc(listing.zip)}</p>
-      <table>
-        ${row(
-          `Days on market${infoIcon(
-            "Counted forward from the day this home was listed, which is the download date minus the days-on-market " +
-              "in the file. The number in a Redfin export is only true on the day it was downloaded - by tomorrow it is " +
-              "already one day short."
-          )}`,
-          dom === null ? null : `${dom} day${dom === 1 ? "" : "s"}`
-        )}
-        ${row(
-          `In your list since${infoIcon(
-            "The first download of yours this home appeared in. It is kept in this browser, so it survives deleting " +
-              "the old CSVs - which is what makes it useful for spotting a listing that has gone stale in your list."
-          )}`,
-          note.added ? `${note.added.slice(0, 10)}${held === null ? "" : ` (${held} day${held === 1 ? "" : "s"})`}` : null
-        )}
-        ${row("Sq ft", listing.sqft ? Utils.fmtNumber(listing.sqft) : null)}
-        ${row("Lot size", listing.lotSqft ? `${Utils.fmtNumber(listing.lotSqft)} ft²` : null)}
-        ${row("Beds", listing.beds)}
-        ${row("Baths", listing.baths)}
-        ${row("Property type", esc(listing.type))}
-        ${row("Year built", listing.yearBuilt ? String(listing.yearBuilt) : null)}
-        ${row("HOA", listing.hoa ? `${Utils.fmtCurrency(listing.hoa)}/mo` : null)}
-        ${row("Status", esc(listing.status))}
-      </table>
+      ${cardTable([
+        cardRow(
+          "Days on market",
+          dom === null ? null : `${dom} day${dom === 1 ? "" : "s"}`,
+          "Counted forward from the day this home was listed, which is the download date minus the days-on-market in " +
+            "the file. The number in a Redfin export is only true on the day it was downloaded - by tomorrow it is " +
+            "already one day short."
+        ),
+        cardRow(
+          "In your list since",
+          note.added ? `${note.added.slice(0, 10)}${held === null ? "" : ` (${held} day${held === 1 ? "" : "s"})`}` : null,
+          "The first download of yours this home appeared in. Kept in this browser, so it survives deleting the old " +
+            "CSVs - which is what makes it useful for spotting a listing that has gone stale in your list."
+        ),
+        cardRow(
+          "Last seen in a download",
+          lastSeen ? `${lastSeen}${stale ? " - not in your newest file" : ""}` : null,
+          "The most recent of your downloads that still contained this home. If it is older than your newest file, " +
+            "the home has stopped being published - usually because it sold or was withdrawn. That is a stronger " +
+            "signal than anything in the row itself.",
+          { key: !!stale }
+        ),
+        cardRow("Sq ft", listing.sqft ? Utils.fmtNumber(listing.sqft) : null, "Interior floor area as the listing agent entered it into the MLS. Agents measure differently and the county's own figure often disagrees - the sales table under Home prices shows what the assessor has for nearby houses."),
+        cardRow("Lot size", listing.lotSqft ? `${Utils.fmtNumber(listing.lotSqft)} ft²` : null, "Lot area from the Redfin export. Above an acre Redfin switches the column to acres without renaming it, so anything under 100 is read as acres and converted here."),
+        cardRow("Beds", listing.beds, "Bedrooms as listed. What counts as a bedroom is the agent's judgement - a converted garage or a windowless den often appears here."),
+        cardRow("Baths", listing.baths, "Bathrooms as listed, where a half is a toilet and basin with no bath or shower."),
+        cardRow("Property type", esc(listing.type), "Redfin's own category. Worth checking against the block group's detached-house share: a townhouse in a street of detached homes prices differently."),
+        cardRow("Year built", listing.yearBuilt ? String(listing.yearBuilt) : null, "As listed. Before 1978 means lead paint is likely, before 1980 asbestos, before 1994 pre-Northridge soft storey - the same thresholds the block group's build-decade bars use."),
+        cardRow("HOA", listing.hoa ? `${Utils.fmtCurrency(listing.hoa)}/mo` : null, "Monthly homeowners' association dues from the listing. Blank means none was stated, which is not the same as none being charged."),
+        cardRow("Status", esc(listing.status), "The listing status at the moment the file was downloaded - Active, Pending, Contingent and so on. It is a snapshot, not live."),
+      ])}
       <p class="house-links">
         <a href="${esc(listing.url) || "#"}" target="_blank" rel="noopener">Open on Redfin &rarr;</a>
         ${listing.mls ? `<span class="src-note">${esc(listing.source || "MLS")} #${esc(listing.mls)}</span>` : ""}
@@ -1936,6 +1954,8 @@ const BlockGroupApp = (() => {
           <td>${readableDate(r[1])}</td>
           <td class="num">${r[2] ? Utils.fmtNumber(r[2]) : "-"}</td>
           <td class="num">${r[7] || "-"}</td>
+          <td class="num">${r[8] || "-"}</td>
+          <td class="num">${r[9] || "-"}</td>
           <td class="num">${money(r[3])}</td>
           <td class="num">${money(r[4])}</td>
           <td class="num">${r[5] ? `-${money(r[5])}` : "-"}</td>
@@ -1957,12 +1977,28 @@ const BlockGroupApp = (() => {
           <table class="sales-table">
             <thead>
               <tr>
-                <th>Address</th><th>Recorded</th><th>Sq ft</th><th>Built</th>
-                <th>Land</th><th>Improvement</th><th>Exemption</th>
-                <th>Assessed</th><th>$/ft&sup2;</th>
+                <th>Address${infoIcon("The property address as the assessor records it (Property Location).")}</th>
+                <th>Recorded${infoIcon(
+                  "The day the deed was recorded, which is what this year's row is built from - not the day the deal was agreed."
+                )}</th>
+                <th>Sq ft${infoIcon("Building square footage from the roll. It is the county's own measurement, which often differs from a listing agent's.")}</th>
+                <th>Built${infoIcon("Year built from the roll.")}</th>
+                <th>Beds${infoIcon("Bedrooms as the assessor records them, which is a valuation record rather than a marketing one - it will not count a converted garage the way a listing does.")}</th>
+                <th>Baths${infoIcon("Bathrooms as the assessor records them.")}</th>
+                <th>Land${infoIcon("The assessed LAND value set at this transfer.")}</th>
+                <th>Improvement${infoIcon("The assessed value of the buildings, set at the same transfer.")}</th>
+                <th>Exemption${infoIcon(
+                  "What comes off land plus improvements to reach the taxable value - the homeowners' exemption is $7,000. It does not change the price."
+                )}</th>
+                <th>Assessed${infoIcon(
+                  "Land plus improvements: the figure this row is priced on, and what the median on the card is built from. " +
+                    "It is an ASSESSMENT, not a sale price - but Proposition 13 reset it to the purchase price at this transfer, " +
+                    "so for the year it changed hands the two are close."
+                )}</th>
+                <th>$/ft&sup2;${infoIcon("Assessed value over building square footage. Blank where the roll carries no floor area.")}</th>
               </tr>
             </thead>
-            <tbody>${body || '<tr><td colspan="9">No sales recorded for this year.</td></tr>'}</tbody>
+            <tbody>${body || '<tr><td colspan="11">No sales recorded for this year.</td></tr>'}</tbody>
           </table>
         </div>
       </div>`;
@@ -2168,16 +2204,24 @@ const BlockGroupApp = (() => {
     const zone = floodZoneOf(hit.properties) || "?";
     const cls = floodClass(hit.properties);
     return `
-      <div class="section-label">Flood${infoIcon(
-        "FEMA National Flood Hazard Layer, read at the centre of this block group. Zones A and AE are the 1% annual chance " +
+      ${sectionLabel(`Flood`, "FEMA National Flood Hazard Layer, read at the centre of this block group. Zones A and AE are the 1% annual chance " +
           "(\"100-year\") floodplain, where a federally-backed mortgage requires flood insurance. A block group can straddle " +
-          "two zones, and the zone for a specific address is what the lender actually uses."
-      )}</div>
+          "two zones, and the zone for a specific address is what the lender actually uses.")}
       <table>
-        <tr><td class="k">FEMA zone${infoIcon(
-          "FEMA National Flood Hazard Layer, read at this block group's centre. A, AE, V and VE are the 1% annual chance floodplain, where a federally-backed mortgage requires flood insurance. It is the centre point only - a large block group can straddle a boundary."
-        )}</td><td class="v${inHighRiskFlood(hit.properties) ? " key-figure" : ""}">${zone}</td></tr>
-        <tr><td class="k">Meaning</td><td class="v">${cls ? cls.label.split(" - ").slice(1).join(" - ") || cls.label : "Unclassified"}</td></tr>
+        ${cardRow(
+          "FEMA zone",
+          zone,
+          "FEMA National Flood Hazard Layer, read at this block group's centre. A, AE, V and VE are the 1% annual " +
+            "chance floodplain, where a federally-backed mortgage requires flood insurance. It is the centre point " +
+            "only - a large block group can straddle a boundary.",
+          { key: inHighRiskFlood(hit.properties) }
+        )}
+        ${cardRow(
+          "Meaning",
+          cls ? cls.label.split(" - ").slice(1).join(" - ") || cls.label : "Unclassified",
+          "What FEMA's zone letter means in plain terms. 'Unclassified' means no flood-hazard polygon covers this " +
+            "point at all - which is not the same as being told there is no flood risk."
+        )}
       </table>`;
   }
 
@@ -2503,20 +2547,27 @@ const BlockGroupApp = (() => {
     const db = noiseByGeoid[geoidOf(props)];
     if (db === undefined) return "";
     if (db === null) {
-      return `<div class="section-label">Aviation noise</div><p class="src-note">No modelled aviation noise at this point (below the map's floor).</p>`;
+      return `${sectionLabel(`Aviation noise`)}<p class="src-note">No modelled aviation noise at this point (below the map's floor).</p>`;
     }
     const band = noiseBand(db);
     return `
-      <div class="section-label">Aviation noise${infoIcon(
-        "BTS/DOT National Transportation Noise Map, aircraft only. Published as a 24-hour A-weighted average (LAeq) - " +
+      ${sectionLabel(`Aviation noise`, "BTS/DOT National Transportation Noise Map, aircraft only. Published as a 24-hour A-weighted average (LAeq) - " +
           "NOT as DNL, so it carries no 10 dB night-time penalty and is not directly comparable with HUD's 65 dB DNL limit. " +
-          "An airport with night operations feels worse than this number implies."
-      )}</div>
+          "An airport with night operations feels worse than this number implies.")}
       <table>
-        <tr><td class="k">Modelled level${infoIcon(
-          "BTS/DOT National Transportation Noise Map, aircraft only, read at this block group's centre. It is a 24-hour A-weighted average (LAeq) with NO night-time penalty, so it is not comparable with the 65 dB DNL threshold HUD uses - an airport that flies at night feels worse than this."
-        )}</td><td class="v">${db.toFixed(0)} dB LAeq</td></tr>
-        <tr><td class="k">Band</td><td class="v">${band ? band.label : "Unknown"}</td></tr>
+        ${cardRow(
+          "Modelled level",
+          `${db.toFixed(0)} dB LAeq`,
+          "BTS/DOT National Transportation Noise Map, aircraft only, read at this block group's centre. A 24-hour " +
+            "A-weighted average (LAeq) with NO night-time penalty, so it is not comparable with the 65 dB DNL " +
+            "threshold HUD uses - an airport that flies at night feels worse than this."
+        )}
+        ${cardRow(
+          "Band",
+          band ? band.label : "Unknown",
+          "The decibel band this level falls in, matching the map legend. Bands come from the service's own legend " +
+            "wherever it publishes one, so the colour and this row cannot disagree."
+        )}
       </table>`;
   }
 
@@ -2565,6 +2616,30 @@ const BlockGroupApp = (() => {
     });
   }
 
+  // What each field in a school's popup actually is.
+  const SCHOOL_FIELD_TIPS = {
+    District: "The district that operates this school, from the CA Department of Education listing. Attendance boundaries are set by the district, not the school.",
+    Grades: "The grade span this school serves, as the state records it. A K-8 school covers what would elsewhere be two separate schools.",
+    Level: "Elementary, middle or high, derived from the grade span - the state does not publish a single tidy level field.",
+    City: "The city the school sits in, which is not necessarily the city of the homes it serves.",
+  };
+
+  // A level row, used both on the address card (the exact point) and on the
+  // block group card (the block group's centre) - the two differ only in what
+  // the answer is read at, which is exactly what the source note has to say.
+  function schoolLevelRow(hit, readAt) {
+    const level = zoneLevel(hit.layer);
+    const dot = `<span class="school-dot" style="background:${
+      BG_CONFIG.SCHOOL_LEVEL_COLORS[level] || BG_CONFIG.SCHOOL_LEVEL_COLORS.other
+    }"></span>`;
+    return cardRow(
+      `${dot}${level.replace(/^./, (c) => c.toUpperCase())}`,
+      hit.name,
+      `The ${level} school whose LAUSD attendance boundary contains ${readAt}. Magnets, charters, permits and Zones ` +
+        "of Choice are not address-based at all, so this is the default assignment rather than a guarantee."
+    );
+  }
+
   function schoolPopup(props) {
     const F = BG_CONFIG.SCHOOL_POINTS.FIELDS;
     const name = Utils.pickField(props, F.name) || "School";
@@ -2575,7 +2650,7 @@ const BlockGroupApp = (() => {
       ["City", Utils.pickField(props, F.city)],
     ]
       .filter(([, v]) => v !== undefined && v !== null && v !== "")
-      .map(([k, v]) => `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`)
+      .map(([k, v]) => cardRow(k, v, SCHOOL_FIELD_TIPS[k] || "From the CA Department of Education's public school listing."))
       .join("");
     return `<div class="school-popup"><strong>${name}</strong><table>${rows}</table>
       <p class="src-note">Its district is outlined on the map.</p>
@@ -2755,15 +2830,7 @@ const BlockGroupApp = (() => {
     if (status === "loading") {
       schoolHtml = '<p class="src-note">Looking up the assigned schools&hellip;</p>';
     } else if (schools && schools.length) {
-      schoolHtml = `<table>${schools
-        .map(
-          (h) =>
-            `<tr><td class="k"><span class="school-dot" style="background:${
-              BG_CONFIG.SCHOOL_LEVEL_COLORS[zoneLevel(h.layer)] || BG_CONFIG.SCHOOL_LEVEL_COLORS.other
-            }"></span>${zoneLevel(h.layer).replace(/^./, (c) => c.toUpperCase())}</td>` +
-            `<td class="v">${h.name}</td></tr>`
-        )
-        .join("")}</table>
+      schoolHtml = `${cardTable(schools.map((h) => schoolLevelRow(h, "this exact point")))}
         <p class="src-note">From LAUSD's published attendance boundaries, read at this exact point.
         Magnets, charters, permits and Zones of Choice are not address-based, so confirm with
         <a href="https://rsi.lausd.net/ResidentSchoolIdentifier/" target="_blank" rel="noopener">LAUSD's Resident School Identifier</a>.</p>`;
@@ -2778,11 +2845,9 @@ const BlockGroupApp = (() => {
         <p class="card-zip key-figure">This address</p>
         <h3>${address}</h3>
         <p class="geoid">${lat.toFixed(5)}, ${lon.toFixed(5)}</p>
-        <div class="section-label">Assigned schools${infoIcon(
-          "The school each level assigns to this exact point, from the district's own attendance boundaries. " +
+        ${sectionLabel(`Assigned schools`, "The school each level assigns to this exact point, from the district's own attendance boundaries. " +
             "This is the address-level answer - the block group card can only report the zone at the block " +
-            "group's centre, and a block group can straddle two zones."
-        )}</div>
+            "group's centre, and a block group can straddle two zones.")}
         ${schoolHtml}
       </div>`;
   }
@@ -2856,33 +2921,25 @@ const BlockGroupApp = (() => {
     const hits = schoolsByGeoid[geoid];
     if (hits === undefined) return "";
     if (hits === null) {
-      return `<div class="section-label">Schools</div><p class="src-note">Looking up assigned schools&hellip;</p>`;
+      return `${sectionLabel(`Schools`)}<p class="src-note">Looking up assigned schools&hellip;</p>`;
     }
     if (!hits.length) {
-      return `<div class="section-label">Schools${infoIcon(
-        "Assigned-school boundaries are published by each district, and only LAUSD's are wired up here. " +
-          "Outside LAUSD - Long Beach, Pasadena, Glendale, Santa Monica-Malibu and the rest - no boundary is shown rather than a guess."
-      )}</div><p class="src-note">No published attendance boundary covers this block group.</p>`;
+      return `${sectionLabel(`Schools`, "Assigned-school boundaries are published by each district, and only LAUSD's are wired up here. " +
+          "Outside LAUSD - Long Beach, Pasadena, Glendale, Santa Monica-Malibu and the rest - no boundary is shown rather than a guess.")}<p class="src-note">No published attendance boundary covers this block group.</p>`;
     }
 
     const rows = hits
-      .map(
-        (h) =>
-          `<tr><td class="k"><span class="school-dot" style="background:${
-            BG_CONFIG.SCHOOL_LEVEL_COLORS[zoneLevel(h.layer)] || BG_CONFIG.SCHOOL_LEVEL_COLORS.other
-          }"></span>${zoneLevel(h.layer).replace(/^./, (c) => c.toUpperCase())}${infoIcon(
-            `The ${zoneLevel(h.layer)} school whose LAUSD attendance boundary contains this block group's CENTRE. ` +
-              "An address at the edge can fall in a neighbouring zone - drop a pin on the house itself for the answer that counts."
-          )}</td>` +
-          `<td class="v">${h.name}</td></tr>`
+      .map((h) =>
+        schoolLevelRow(
+          h,
+          "this block group's CENTRE - an address at the edge can fall in a neighbouring zone, so drop a pin on the house itself for the answer that counts"
+        )
       )
       .join("");
 
-    return `<div class="section-label">Schools${infoIcon(
-      "The school whose attendance boundary contains the centre of this block group (LAUSD's own boundaries). " +
+    return `${sectionLabel(`Schools`, "The school whose attendance boundary contains the centre of this block group (LAUSD's own boundaries). " +
         "A large block group can straddle two zones, and magnet, charter and permit options are not attendance-based at all - " +
-        "so treat this as the default assignment, not a guarantee."
-    )}</div><table>${rows}</table>`;
+        "so treat this as the default assignment, not a guarantee.")}<table>${rows}</table>`;
   }
 
   // --- Wind (Global Wind Atlas 3) -----------------------------------------
@@ -2999,14 +3056,18 @@ const BlockGroupApp = (() => {
     const bucket = windBucket(speed);
     const height = (windGrid.meta && windGrid.meta.height) || "100 m";
     return `
-      <div class="section-label">Wind${infoIcon(
-        `Mean wind speed ${height} above ground, from Global Wind Atlas 3 (DTU/World Bank). A long-run climatological average at 250 m resolution, sampled at this block group's centre - not a forecast and not a Santa Ana gust figure.`
-      )}</div>
+      ${sectionLabel(`Wind`, `Mean wind speed ${height} above ground, from Global Wind Atlas 3 (DTU/World Bank). A long-run climatological average at 250 m resolution, sampled at this block group's centre - not a forecast and not a Santa Ana gust figure.`)}
       <table>
-        <tr><td class="k">Mean wind speed${infoIcon(
-          "Global Wind Atlas 3, mean wind speed 100 m above ground, sampled at this block group. A long-run average at height rather than what you feel in the garden - useful for comparing exposed ridges against sheltered basins."
-        )}</td><td class="v">${speed.toFixed(1)} m/s</td></tr>
-        <tr><td class="k">Band</td><td class="v">${bucket ? bucket.label : "Unknown"}</td></tr>
+        ${cardRow(
+      "Mean wind speed",
+      `${speed.toFixed(1)} m/s`,
+      "Global Wind Atlas 3, mean wind speed 100 m above ground, sampled at this block group. A long-run average at height rather than what you feel in the garden - useful for comparing exposed ridges against sheltered basins."
+    )}
+        ${cardRow(
+          "Band",
+          bucket ? bucket.label : "Unknown",
+          "Which of the five wind-speed bands this falls in - the same bands the map legend uses."
+        )}
       </table>`;
   }
 
@@ -3166,6 +3227,45 @@ const BlockGroupApp = (() => {
     return `<span class="info-icon" data-tip="${safe}" tabindex="0" role="button" aria-label="Explain this figure">i</span>`;
   }
 
+  // --- One way to build a card row ----------------------------------------
+  // Every figure on a card is a number somebody could misread, and the info
+  // icon is where the caveat lives - which table it came from, what its
+  // denominator is, whether it was published or derived here. So the source is
+  // a REQUIRED argument, not an optional flourish: rows were being written by
+  // hand in forty places and the explanations kept getting left off, silently,
+  // because nothing forced the question.
+  //
+  // A missing source is reported rather than thrown, so one careless row
+  // cannot blank a whole card - but it lands in the console, where the
+  // "no page errors" test picks it up.
+  function cardRow(label, value, tip, { key = false, count = null, valueClass = "" } = {}) {
+    if (value === null || value === undefined || value === "") return "";
+    let source = tip;
+    if (!source) {
+      console.error(`cardRow("${label}") was built without a source explanation.`);
+      source = "No source recorded for this figure - that is a bug, please report it.";
+    }
+    const cls = ["v", key ? "key-figure" : "", valueClass].filter(Boolean).join(" ");
+    const countCell = count === null ? "" : `<td class="v count">${count}</td>`;
+    return `<tr><td class="k">${label}${infoIcon(source)}</td><td class="${cls}">${value}</td>${countCell}</tr>`;
+  }
+
+  // Section and sub headings carry a source too: they name the table the rows
+  // beneath them come from, so the individual rows can explain their own
+  // wrinkle rather than repeating the provenance each time.
+  function sectionLabel(text, tip) {
+    return `<div class="section-label">${text}${tip ? infoIcon(tip) : ""}</div>`;
+  }
+
+  function subLabel(text, tip) {
+    return `<div class="sub-label">${text}${tip ? infoIcon(tip) : ""}</div>`;
+  }
+
+  function cardTable(rows) {
+    const body = Array.isArray(rows) ? rows.filter(Boolean).join("") : rows;
+    return body ? `<table>${body}</table>` : "";
+  }
+
   // One tooltip element, shown wherever an info icon is hovered, focused or
   // tapped - the card exists in two places (map popup and sidebar) and both
   // are re-rendered constantly, so this listens on the document rather than
@@ -3241,11 +3341,9 @@ const BlockGroupApp = (() => {
       .join("");
     if (!rows) return "";
 
-    return `<div class="sub-label">Households by income bracket${infoIcon(
-      "ACS B19001. Percentages are of the " +
+    return `${subLabel(`Households by income bracket`, "ACS B19001. Percentages are of the " +
         Utils.fmtNumber(households) +
-        " households in this block group, not of people."
-    )}</div>${rows}`;
+        " households in this block group, not of people.")}${rows}`;
   }
 
   function densityRows(feature) {
@@ -3255,17 +3353,29 @@ const BlockGroupApp = (() => {
     if (density == null || !sqMiles) return "";
     const bucket = densityBucket(density);
     return `
-      <tr><td class="k">Land area${infoIcon(
-          "Land area from the Census boundary file (AREALAND), water excluded. Density below is computed from it, so a block group that is mostly reservoir or hillside does not read as artificially empty."
-        )}</td><td class="v">${sqMiles.toFixed(2)} sq mi</td></tr>
-      <tr><td class="k">Density${infoIcon(
-          "Population over land area, both from the Census boundary file. Water is excluded from the area, so a block group that is half reservoir is not made to look empty."
-        )}</td><td class="v">${Utils.fmtNumber(Math.round(density))} /sq mi</td></tr>
-      ${bucket ? `<tr><td class="k">Density band${infoIcon(
-          "Which of the five density bands this falls in - the same bands the density shading on the map uses, so the colour and this row always agree."
-        )}</td><td class="v">
-        <span class="swatch inline" style="background:${bucket.color}"></span>${bucket.label.replace(/\s*\(.*\)/, "")}
-      </td></tr>` : ""}`;
+      ${cardRow(
+      "Land area",
+      `${sqMiles.toFixed(2)} sq mi`,
+      "Land area from the Census boundary file (AREALAND), water excluded. Density below is computed from it, so a block group that is mostly reservoir or hillside does not read as artificially empty."
+    )}
+      ${cardRow(
+      "Density",
+      `${Utils.fmtNumber(Math.round(density))} /sq mi`,
+      "Population over land area, both from the Census boundary file. Water is excluded from the area, so a block group that is half reservoir is not made to look empty."
+    )}
+      ${
+        bucket
+          ? cardRow(
+              "Density band",
+              `<span class="swatch inline" style="background:${bucket.color}"></span>${bucket.label.replace(
+                /\s*\(.*\)/,
+                ""
+              )}`,
+              "Which of the five density bands this falls in - the same bands the density shading on the map uses, " +
+                "so the colour and this row always agree."
+            )
+          : ""
+      }`;
   }
 
   // Average household size. Prefer ACS B25010, which the Census Bureau
@@ -3302,8 +3412,9 @@ const BlockGroupApp = (() => {
         "count in the population but live in no household. Re-run the fetch script for the " +
         "Census Bureau's own figure.";
 
-    return `<tr><td class="k">Average household size${infoIcon(tip)}</td>` +
-      `<td class="v key-figure">${value.toFixed(2)} people${published ? "" : " (est.)"}</td></tr>`;
+    return cardRow("Average household size", `${value.toFixed(2)} people${published ? "" : " (est.)"}`, tip, {
+      key: true,
+    });
   }
 
   function shareOf(part, whole) {
@@ -3338,44 +3449,53 @@ const BlockGroupApp = (() => {
     const rows = [];
     if (detached !== null) {
       rows.push(
-        `<tr><td class="k">Detached houses${infoIcon(
-          "Share of all housing units that are single detached houses (ACS B25024). This is what separates a dense block " +
-            "group of small lots from one holding an apartment tower - population density alone cannot tell them apart."
-        )}</td><td class="v">${detached.toFixed(1)}%</td></tr>`
+        cardRow(
+          "Detached houses",
+          `${detached.toFixed(1)}%`,
+          "Share of all housing UNITS in a one-unit detached structure (ACS B25024). Close to single-family but not the " +
+            "same thing: it counts a detached unit that is rented out, and excludes an attached townhouse that is legally " +
+            "single-family. The assessor roll's SFR count under Home prices is the true single-family figure."
+        )
       );
     }
     if (owner !== null) {
       rows.push(
-        `<tr><td class="k">Owner-occupied${infoIcon(
-          "Share of occupied homes lived in by their owner (ACS B25003). Worth reading next to the income figures: two " +
+        `${cardRow(
+      "Owner-occupied",
+      `${owner.toFixed(1)}%`,
+      "Share of occupied homes lived in by their owner (ACS B25003). Worth reading next to the income figures: two " +
             "block groups can show the same median household income while one is mostly owners and the other mostly renters."
-        )}</td><td class="v">${owner.toFixed(1)}%</td></tr>`
+    )}`
       );
       const renters = shareOf(record.renterOccupied, record.tenureTotal);
       if (renters !== null) {
-        rows.push(`<tr><td class="k">Renter-occupied${infoIcon(
-          "ACS B25003. The other side of owner-occupied: both are shares of OCCUPIED units, so they sum to 100% and exclude anything vacant."
-        )}</td><td class="v">${renters.toFixed(1)}%</td></tr>`);
+        rows.push(`${cardRow(
+      "Renter-occupied",
+      `${renters.toFixed(1)}%`,
+      "ACS B25003. The other side of owner-occupied: both are shares of OCCUPIED units, so they sum to 100% and exclude anything vacant."
+    )}`);
       }
     }
     if (record.medianYearBuilt) {
       const pre80 = pre1980Share(record);
       rows.push(
-        `<tr><td class="k">Median year built${infoIcon(
-          "ACS B25035, the midpoint year for housing here. LA thresholds worth knowing: before 1978 lead paint is likely, " +
+        `${cardRow(
+      "Median year built",
+      `${record.medianYearBuilt}`,
+      "ACS B25035, the midpoint year for housing here. LA thresholds worth knowing: before 1978 lead paint is likely, " +
             "before 1980 asbestos, before 1994 pre-Northridge soft-story risk. This describes the stock, not any one house - " +
             "a remodelled 1948 home looks identical here to an untouched one."
-        )}</td><td class="v">${record.medianYearBuilt}</td></tr>`
+    )}`
       );
       if (pre80 !== null) {
-        rows.push(`<tr><td class="k">Built before 1980${infoIcon(
-          "Summed from ACS B25034's decade bands - the Census does not publish this figure directly. 1980 is the asbestos threshold; 1978 is lead paint and 1994 pre-Northridge soft storey, which the decade bars below let you read off."
-        )}</td><td class="v">${pre80.toFixed(0)}%</td></tr>`);
+        rows.push(`${cardRow(
+      "Built before 1980",
+      `${pre80.toFixed(0)}%`,
+      "Summed from ACS B25034's decade bands - the Census does not publish this figure directly. 1980 is the asbestos threshold; 1978 is lead paint and 1994 pre-Northridge soft storey, which the decade bars below let you read off."
+    )}`);
       }
     }
-    return `<div class="section-label">Housing stock${infoIcon(
-      "ACS B25024, B25003, B25035 and B25034 - what the housing here IS, rather than what it sells for."
-    )}</div><table>${rows.join("")}</table>${yearBuiltBars(record)}`;
+    return `${sectionLabel(`Housing stock`, "ACS B25024, B25003, B25035 and B25034 - what the housing here IS, rather than what it sells for.")}<table>${rows.join("")}</table>${yearBuiltBars(record)}`;
   }
 
   // The decade distribution behind the median year built. A median of 1962
@@ -3391,12 +3511,10 @@ const BlockGroupApp = (() => {
       .map(([label, n]) => barRow(label, n, units))
       .join("");
     if (!rows) return "";
-    return `<div class="sub-label">When it was built${infoIcon(
-      "ACS B25034, as a share of the " +
+    return `${subLabel(`When it was built`, "ACS B25034, as a share of the " +
         Utils.fmtNumber(units) +
         " housing units here. The median year alone cannot tell a uniform post-war tract from a street that is half " +
-        "pre-war and half new build - these are very different places to buy in."
-    )}</div>${rows}`;
+        "pre-war and half new build - these are very different places to buy in.")}${rows}`;
   }
 
   function commuteRows(record) {
@@ -3405,55 +3523,68 @@ const BlockGroupApp = (() => {
     const walked = shareOf(record.walkedToWork || 0, record.workersTotal);
     const transit = shareOf(record.transitToWork || 0, record.workersTotal);
     return `
-      <div class="section-label">Work${infoIcon(
-        "ACS B08301, how residents get to work. Nearly everyone in LA drives, so the useful lines are these three. " +
+      ${sectionLabel(`Work`, "ACS B08301, how residents get to work. Nearly everyone in LA drives, so the useful lines are these three. " +
           "Work-from-home share is the closest thing to an occupation signal available at block group level, and it " +
           "also predicts whether a neighbourhood is alive on a Tuesday afternoon. Walking above about 5% marks a " +
-          "genuinely walkable pocket - it is near zero almost everywhere else."
-      )}</div>
+          "genuinely walkable pocket - it is near zero almost everywhere else.")}
       <table>
-        <tr><td class="k">Work from home${infoIcon(
-          "ACS B08301, as a share of workers 16 and over who have a job - not of everyone living here."
-        )}</td><td class="v">${wfh.toFixed(1)}%</td></tr>
-        <tr><td class="k">Walk to work${infoIcon(
-          "ACS B08301, as a share of workers 16 and over who have a job. Above about 5% marks a genuinely walkable pocket - it is near zero almost everywhere else in LA."
-        )}</td><td class="v">${walked === null ? "n/a" : `${walked.toFixed(1)}%`}</td></tr>
-        <tr><td class="k">Public transit${infoIcon(
-          "ACS B08301, as a share of workers 16 and over who have a job. Includes bus, rail and ferry."
-        )}</td><td class="v">${transit === null ? "n/a" : `${transit.toFixed(1)}%`}</td></tr>
+        ${cardRow(
+      "Work from home",
+      `${wfh.toFixed(1)}%`,
+      "ACS B08301, as a share of workers 16 and over who have a job - not of everyone living here."
+    )}
+        ${cardRow(
+      "Walk to work",
+      `${walked === null ? "n/a" : `${walked.toFixed(1)}%`}`,
+      "ACS B08301, as a share of workers 16 and over who have a job. Above about 5% marks a genuinely walkable pocket - it is near zero almost everywhere else in LA."
+    )}
+        ${cardRow(
+      "Public transit",
+      `${transit === null ? "n/a" : `${transit.toFixed(1)}%`}`,
+      "ACS B08301, as a share of workers 16 and over who have a job. Includes bus, rail and ferry."
+    )}
         ${
           record.commuteMedianMinutes
-            ? `<tr><td class="k">Median commute${infoIcon(
-                "ACS B08303, interpolated from the table's 13 travel-time bands - the Census publishes no median at this " +
+            ? `${cardRow(
+      "Median commute",
+      `${record.commuteMedianMinutes} min`,
+      "ACS B08303, interpolated from the table's 13 travel-time bands - the Census publishes no median at this " +
                   "geography. It counts door to door for people who leave the house to work, so a block group full of " +
-                  "home workers is described by whoever is left commuting."
-              )}</td><td class="v key-figure">${record.commuteMedianMinutes} min</td></tr>`
+                  "home workers is described by whoever is left commuting.",
+      { key: true }
+    )}`
             : ""
         }
         ${
           longCommuteShare(record) === null
             ? ""
-            : `<tr><td class="k">Commuting 45+ min${infoIcon(
-                "The share of commuters travelling three quarters of an hour or more each way. A median hides this: two " +
+            : `${cardRow(
+      "Commuting 45+ min",
+      `${longCommuteShare(record).toFixed(1)}%`,
+      "The share of commuters travelling three quarters of an hour or more each way. A median hides this: two " +
                   "block groups can share a median while one has a long tail of hour-and-a-half drives."
-              )}</td><td class="v">${longCommuteShare(record).toFixed(1)}%</td></tr>`
+    )}`
         }
         ${
           laborForceParticipation(record) === null
             ? ""
-            : `<tr><td class="k">In the labour force${infoIcon(
-                "ACS B23025: the share of everyone 16 and over who is working or looking for work. It is low where a " +
+            : `${cardRow(
+      "In the labour force",
+      `${laborForceParticipation(record).toFixed(1)}%`,
+      "ACS B23025: the share of everyone 16 and over who is working or looking for work. It is low where a " +
                   "block group is full of retirees or students, which is a different kind of quiet from a high " +
                   "unemployment rate - read the two together."
-              )}</td><td class="v">${laborForceParticipation(record).toFixed(1)}%</td></tr>`
+    )}`
         }
         ${
           unemploymentRate(record) === null
             ? ""
-            : `<tr><td class="k">Unemployment${infoIcon(
-                "ACS B23025, against the civilian labour force rather than everyone 16 and over - the way the rate is " +
+            : `${cardRow(
+      "Unemployment",
+      `${unemploymentRate(record).toFixed(1)}%`,
+      "ACS B23025, against the civilian labour force rather than everyone 16 and over - the way the rate is " +
                   "normally quoted. Five-year data, so it lags a turning market badly."
-              )}</td><td class="v">${unemploymentRate(record).toFixed(1)}%</td></tr>`
+    )}`
         }
       </table>`;
   }
@@ -3500,15 +3631,13 @@ const BlockGroupApp = (() => {
         .map(([name, n]) => barRow(name, n, whole))
         .join("");
       if (!rows) return "";
-      return `<div class="sub-label">${label}${infoIcon(`ACS ${table}. ${note}`)}</div>${rows}`;
+      return `${subLabel(`${label}`, `ACS ${table}. ${note}`)}${rows}`;
     }).filter(Boolean);
     if (!blocks.length) return "";
     return `
-      <div class="section-label">Detailed origin${infoIcon(
-        "The five largest groups in each of three ACS tables. They count DIFFERENT things and can overlap - one person can " +
+      ${sectionLabel(`Detailed origin`, "The five largest groups in each of three ACS tables. They count DIFFERENT things and can overlap - one person can " +
           "be Mexican-origin in B03001 and of Spanish ancestry in B04006 - so they are listed separately rather than ranked " +
-          "against each other. Five-year survey estimates at block group level, so small numbers here are noisy."
-      )}</div>${blocks.join("")}`;
+          "against each other. Five-year survey estimates at block group level, so small numbers here are noisy.")}${blocks.join("")}`;
   }
 
   function householdRows(record) {
@@ -3516,35 +3645,40 @@ const BlockGroupApp = (() => {
     const value = record.medianHomeValue;
     if (kids === null && !value) return "";
     return `
-      <div class="section-label">Households${infoIcon(
-        "ACS B11003 and B25077. 'Families with children' is families with their OWN children under 18 - so an " +
-          "empty-nester couple and a household of flatmates both count against it, in different ways."
-      )}</div>
+      ${sectionLabel(`Households`, "ACS B11003 and B25077. 'Families with children' is families with their OWN children under 18 - so an " +
+          "empty-nester couple and a household of flatmates both count against it, in different ways.")}
       <table>
         ${
           childrenPerHousehold(record) === null
             ? ""
-            : `<tr><td class="k">Children per household${infoIcon(
-                "Everyone under 18 (the first four age brackets of ACS B01001) over the number of households (B19001). It is " +
+            : `${cardRow(
+      "Children per household",
+      `${childrenPerHousehold(record).toFixed(2)}`,
+      "Everyone under 18 (the first four age brackets of ACS B01001) over the number of households (B19001). It is " +
                   "an average across ALL households, most of which have no children at all, so it reads low - a block group at " +
                   "0.6 is full of families by LA standards. Not the same as children per family."
-              )}</td><td class="v">${childrenPerHousehold(record).toFixed(2)}</td></tr>`
+    )}`
         }
         ${
           kids === null
             ? ""
-            : `<tr><td class="k">Families with children under 18${infoIcon(
-          "ACS B11003, and it is FAMILIES not households: the denominator excludes people living alone and unrelated flatmates. Own children means the householder's own by birth, marriage or adoption, so a grandchild being raised here does not count."
-        )}</td><td class="v">${kids.toFixed(1)}%</td></tr>`
+            : `${cardRow(
+      "Families with children under 18",
+      `${kids.toFixed(1)}%`,
+      "ACS B11003, and it is FAMILIES not households: the denominator excludes people living alone and unrelated flatmates. Own children means the householder's own by birth, marriage or adoption, so a grandchild being raised here does not count."
+    )}`
         }
         ${
           value
-            ? `<tr><td class="k">Median home value, owner-reported${infoIcon(
-                "ACS B25077: what owners SAY their home is worth, across houses, condos and townhouses together. It is a " +
+            ? `${cardRow(
+      "Median home value, owner-reported",
+      `${Utils.fmtCurrency(value)}`,
+      "ACS B25077: what owners SAY their home is worth, across houses, condos and townhouses together. It is a " +
                   "genuinely independent second opinion on the assessor roll, arrived at a completely different way - so " +
                   "where the two disagree sharply, that is usually a block group of long-held homes whose assessed values " +
-                  "are frozen well below the market. It is a five-year rolling figure and covers owner-occupied units only."
-              )}</td><td class="v key-figure">${Utils.fmtCurrency(value)}</td></tr>`
+                  "are frozen well below the market. It is a five-year rolling figure and covers owner-occupied units only.",
+      { key: true }
+    )}`
             : ""
         }
       </table>`;
@@ -3694,72 +3828,81 @@ const BlockGroupApp = (() => {
       <p class="geoid">GEOID ${geoid}</p>
 
       <table>
-        <tr><td class="k">Total population${infoIcon(
-          "ACS B01001, everyone living here including children and people in group quarters."
-        )}</td><td class="v">${Utils.fmtNumber(pop)}</td></tr>
+        ${cardRow(
+      "Total population",
+      `${Utils.fmtNumber(pop)}`,
+      "ACS B01001, everyone living here including children and people in group quarters."
+    )}
         ${householdSizeRow(record)}
         ${densityRows(feature)}
       </table>
 
-      <div class="section-label">Age${infoIcon(
-      "ACS B01001, in the table's own brackets so nothing is double-counted. Shares are of everyone living here, children included."
-    )}</div>
+      ${sectionLabel(`Age`, "ACS B01001, in the table's own brackets so nothing is double-counted. Shares are of everyone living here, children included.")}
       ${ageHtml}
 
-      <div class="section-label">Sex${infoIcon(
-      "ACS B01001. Shares are of everyone living here."
-    )}</div>
+      ${sectionLabel(`Sex`, "ACS B01001. Shares are of everyone living here.")}
       <table>
-        <tr><td class="k">Female${infoIcon(
-          "ACS B01001, summed across every age bracket. Shares are of everyone living here."
-        )}</td><td class="v">${pctText(record.female, sexTotal)}</td><td class="v count">${Utils.fmtNumber(record.female)}</td></tr>
-        <tr><td class="k">Male${infoIcon(
-          "ACS B01001, summed across every age bracket. Shares are of everyone living here."
-        )}</td><td class="v">${pctText(record.male, sexTotal)}</td><td class="v count">${Utils.fmtNumber(record.male)}</td></tr>
+        ${cardRow(
+          "Female",
+          pctText(record.female, sexTotal),
+          "ACS B01001, summed across every age bracket. Shares are of everyone living here.",
+          { count: Utils.fmtNumber(record.female) }
+        )}
+        ${cardRow(
+          "Male",
+          pctText(record.male, sexTotal),
+          "ACS B01001, summed across every age bracket. Shares are of everyone living here.",
+          { count: Utils.fmtNumber(record.male) }
+        )}
       </table>
 
-      <div class="section-label">Ethnicity${infoIcon(
-      "ACS B03002 by default, or the 2020 Census P2 full count if you switch source in the sidebar. The two disagree: one is a five-year survey estimate, the other a count."
-    )}</div>
+      ${sectionLabel(`Ethnicity`, "ACS B03002 by default, or the 2020 Census P2 full count if you switch source in the sidebar. The two disagree: one is a five-year survey estimate, the other a count.")}
       ${ethnicityBlock(record)}
 
-      <div class="section-label">Education${infoIcon(
-      "ACS B15003 for the 25-and-over population, and B15001 for the 25-34 line."
-    )}</div>
+      ${sectionLabel(`Education`, "ACS B15003 for the 25-and-over population, and B15001 for the 25-34 line.")}
       <table>
-        <tr><td class="k">Bachelor's degree or higher${infoIcon(
-          "Share of residents aged 25 and over, not of total population. " +
+        ${cardRow(
+      "Bachelor's degree or higher",
+      `${bachelorsPct}`,
+      "Share of residents aged 25 and over, not of total population. " +
             "ACS table B15003 only covers the 25+ population - under-25s are " +
             "excluded from both the numerator and the denominator, so this " +
             "figure is not comparable with the age, sex and ethnicity " +
-            "percentages above (which are shares of everyone)."
-        )}</td><td class="v key-figure">${bachelorsPct}</td></tr>
+            "percentages above (which are shares of everyone).",
+      { key: true }
+    )}
       </table>
       ${
         youngDegreeShare(record) === null
           ? ""
-          : `<table><tr><td class="k">...among 25-34 year olds${infoIcon(
-              "ACS B15001. The 25-and-over figure is weighted by whoever has lived here longest, so it describes the " +
+          : `<table>${cardRow(
+      "...among 25-34 year olds",
+      `${youngDegreeShare(record).toFixed(1)}%`,
+      "ACS B15001. The 25-and-over figure is weighted by whoever has lived here longest, so it describes the " +
                 "neighbourhood's past. This one describes who is moving in now, and the two often disagree sharply in " +
                 "a block group that is changing."
-            )}</td><td class="v">${youngDegreeShare(record).toFixed(1)}%</td></tr></table>`
+    )}</table>`
       }
       ${compact ? "" : `<p class="src-note">Source: ACS B15003, share of the 25-and-over population${geoNote("education")}</p>`}
 
-      <div class="section-label">Income${infoIcon(
-      "ACS B19013, B19301 and B19001. All three are five-year averages in inflation-adjusted dollars for the final year of the window."
-    )}</div>
+      ${sectionLabel(`Income`, "ACS B19013, B19301 and B19001. All three are five-year averages in inflation-adjusted dollars for the final year of the window.")}
       <table>
-        <tr><td class="k">Median household income${infoIcon(
-          "The midpoint of household incomes (ACS B19013): half the households " +
+        ${cardRow(
+      "Median household income",
+      `${Utils.fmtCurrency(record.medianHouseholdIncome)}`,
+      "The midpoint of household incomes (ACS B19013): half the households " +
             "earn more, half less. A household is everyone living at one address, " +
-            "so this is not the same as an individual's earnings."
-        )}</td><td class="v key-figure">${Utils.fmtCurrency(record.medianHouseholdIncome)}</td></tr>
-        <tr><td class="k">Per-capita income${infoIcon(
-          "Total income divided by every resident including children (ACS B19301). " +
+            "so this is not the same as an individual's earnings.",
+      { key: true }
+    )}
+        ${cardRow(
+      "Per-capita income",
+      `${Utils.fmtCurrency(record.perCapitaIncome)}`,
+      "Total income divided by every resident including children (ACS B19301). " +
             "Always lower than the household median, and the gap widens where " +
-            "households are larger."
-        )}</td><td class="v key-figure">${Utils.fmtCurrency(record.perCapitaIncome)}</td></tr>
+            "households are larger.",
+      { key: true }
+    )}
       </table>
       <p class="src-note">Per-capita income counts <strong>every resident, children included</strong>,
          which is why it sits well below the household median.</p>
@@ -4372,7 +4515,12 @@ const BlockGroupApp = (() => {
         if (pctl === null) return "";
         const raw = cesValue(props, ind.raw);
         const rawText = raw === null ? "" : ` <span style="opacity:.6">(${raw} ${ind.unit})</span>`;
-        return `<tr><td class="k">${ind.label}</td><td class="v">${pctl.toFixed(0)}th${rawText}</td></tr>`;
+        return cardRow(
+          ind.label,
+          `${pctl.toFixed(0)}th${rawText}`,
+          `${ind.label} from CalEnviroScreen 4.0, as a percentile against every census tract in California` +
+            (raw === null ? "." : `, with the raw measurement in ${ind.unit} beside it.`)
+        );
       })
       .join("");
     const tract = Utils.pickField(props, BG_CONFIG.CES_FIELDS.tract);
@@ -5214,6 +5362,9 @@ const BlockGroupApp = (() => {
       renderFilterRows();
       applyFilters();
     },
+    // Lets a test prove the row helper refuses to stay silent about a missing
+    // source - the guarantee that stops explanations being left off again.
+    cardRowForTest: (label, value, tip) => cardRow(label, value, tip),
     // Re-reads the CSV folder from scratch, so a test can prove that a home
     // you removed comes back when a newer download still carries it.
     reloadListingsForTest: async () => {

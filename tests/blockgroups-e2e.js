@@ -2243,9 +2243,9 @@ async function main() {
       salesRows[0][0].includes("Bunker Hill") &&
         salesRows[0][2] === "2,100" &&
         salesRows[0][3] === "1962" &&
-        salesRows[0][4] === "$900,000" &&
-        salesRows[0][5] === "$500,000" &&
-        salesRows[0][7] === "$1,400,000",
+        salesRows[0][6] === "$900,000" &&
+        salesRows[0][7] === "$500,000" &&
+        salesRows[0][9] === "$1,400,000",
       JSON.stringify(salesRows[0])
     );
     step(
@@ -2255,18 +2255,23 @@ async function main() {
     );
     step(
       "each row shows its own price per square foot",
-      salesRows[0][8] === "$667",
-      `${salesRows[0][8]} from $1,400,000 over 2,100 ft²`
+      salesRows[0][10] === "$667",
+      `${salesRows[0][10]} from $1,400,000 over 2,100 ft²`
+    );
+    step(
+      "beds and baths reach the table, rather than sitting unused in the file",
+      salesRows[0][4] === "4" && salesRows[0][5] === "3",
+      JSON.stringify(salesRows[0])
     );
     step(
       "rows are dearest first, so the top of the range is the first thing read",
-      Number(salesRows[0][7].replace(/\D/g, "")) > Number(salesRows[2][7].replace(/\D/g, "")),
-      salesRows.map((r) => r[7]).join(" > ")
+      Number(salesRows[0][9].replace(/\D/g, "")) > Number(salesRows[2][9].replace(/\D/g, "")),
+      salesRows.map((r) => r[9]).join(" > ")
     );
     step(
       "an exemption is shown as the subtraction it is",
-      salesRows.some((r) => r[6].startsWith("-$")),
-      JSON.stringify(salesRows.map((r) => r[6]))
+      salesRows.some((r) => r[8].startsWith("-$")),
+      JSON.stringify(salesRows.map((r) => r[8]))
     );
     await page.click('#detail-panel .price-table .sales-link[data-year="2024"]');
     await page.waitForTimeout(400);
@@ -3013,6 +3018,55 @@ async function main() {
     await page.click("#clear-pin");
     await page.waitForTimeout(200);
     step("clearing the pin also removes the dropped one", (await page.locator(".leaflet-marker-icon:not(.house-pin)").count()) === 0);
+
+    // --- Every row on every card path, with all the overlays on -----------
+    // The earlier audit ran with the hazard layers off, so the rows they add -
+    // FEMA zone, noise, wind, the pollution bands - were never rendered and
+    // never checked. This turns everything on first.
+    for (const id of ["#toggle-flood", "#toggle-seismic", "#toggle-noise"]) {
+      if (!(await page.isChecked(id))) await page.click(id);
+    }
+    for (const id of ["#toggle-pollution", "#toggle-wind"]) {
+      if (!(await page.isChecked(id))) await page.click(id);
+    }
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(1500);
+    const fullAudit = await page.evaluate(() =>
+      [...document.querySelectorAll("#detail-panel td.k, #detail-panel .sub-label, #detail-panel .section-label")]
+        .map((el) => ({ text: el.textContent.trim(), tip: !!el.querySelector("[data-tip]") }))
+        .filter((r) => r.text && !r.tip)
+        .map((r) => r.text)
+    );
+    step(
+      "with every overlay on, every row and heading still names its source",
+      fullAudit.length === 0,
+      fullAudit.length ? JSON.stringify(fullAudit) : `all labelled (${await page.evaluate(() => document.querySelectorAll("#detail-panel td.k").length)} rows checked)`
+    );
+    step(
+      "the card is actually showing the overlay rows, not passing by being empty",
+      /flood/i.test(await page.locator("#detail-panel").innerText()) &&
+        /wind/i.test(await page.locator("#detail-panel").innerText()),
+      "FEMA zone, noise, wind and pollution sections are all present"
+    );
+    // And the helper itself refuses to let a row through unexplained.
+    const guard = await page.evaluate(() => {
+      const errors = [];
+      const original = console.error;
+      console.error = (...args) => errors.push(args.join(" "));
+      const html = BlockGroupApp.cardRowForTest("Nameless", "42", null);
+      console.error = original;
+      return { html, errors };
+    });
+    step(
+      "a row built without a source is reported rather than shipped silently",
+      guard.errors.some((e) => /Nameless/.test(e)) && /data-tip/.test(guard.html),
+      guard.errors.join(" | ") || "no error raised"
+    );
 
     // Turn the environment layers back off so the teardown checks below see
     // the same map they were written against.
