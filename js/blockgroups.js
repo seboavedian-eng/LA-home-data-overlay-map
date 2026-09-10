@@ -1024,7 +1024,9 @@ const BlockGroupApp = (() => {
         "CalEnviroScreen 4.0, from OEHHA. The score is a percentile against every other California census tract, not an absolute measure: 90 means this tract scores worse than 90% of the state. It is reported for the whole tract, so every block group inside it shares one value."
       )}</div>
       <table>
-        <tr><td class="k">CalEnviroScreen score</td><td class="v">${score.toFixed(1)}th pct</td></tr>
+        <tr><td class="k">CalEnviroScreen score${infoIcon(
+          "OEHHA CalEnviroScreen 4.0, published by census TRACT, so every block group inside a tract shares one score. It is a percentile against the whole state: 87 means more burdened than 87% of California tracts, not that 87% of anything is polluted."
+        )}</td><td class="v">${score.toFixed(1)}th pct</td></tr>
         <tr><td class="k">Band</td><td class="v">${bucket ? bucket.label : "Unknown"}</td></tr>
       </table>`;
   }
@@ -1084,7 +1086,9 @@ const BlockGroupApp = (() => {
       return `
         <div class="section-label">Home prices</div>
         <table>
-          <tr><td class="k">Median home price</td><td class="v key-figure">${Utils.fmtCurrency(rec.medianSalePrice)}</td></tr>
+          <tr><td class="k">Median home price${infoIcon(
+          "The pooled figure from the assessor roll across every year in the file, shown when the per-year table is not available. Re-run scripts/fetch-parcel-data.py to get the year-by-year table instead."
+        )}</td><td class="v key-figure">${Utils.fmtCurrency(rec.medianSalePrice)}</td></tr>
           <tr><td class="k">Based on</td><td class="v">${rec.saleCount || 0} sale${rec.saleCount === 1 ? "" : "s"}</td></tr>
         </table>
         <p class="src-note">This parcel file predates the year-by-year table. Re-run
@@ -2170,7 +2174,9 @@ const BlockGroupApp = (() => {
           "two zones, and the zone for a specific address is what the lender actually uses."
       )}</div>
       <table>
-        <tr><td class="k">FEMA zone</td><td class="v${inHighRiskFlood(hit.properties) ? " key-figure" : ""}">${zone}</td></tr>
+        <tr><td class="k">FEMA zone${infoIcon(
+          "FEMA National Flood Hazard Layer, read at this block group's centre. A, AE, V and VE are the 1% annual chance floodplain, where a federally-backed mortgage requires flood insurance. It is the centre point only - a large block group can straddle a boundary."
+        )}</td><td class="v${inHighRiskFlood(hit.properties) ? " key-figure" : ""}">${zone}</td></tr>
         <tr><td class="k">Meaning</td><td class="v">${cls ? cls.label.split(" - ").slice(1).join(" - ") || cls.label : "Unclassified"}</td></tr>
       </table>`;
   }
@@ -2507,7 +2513,9 @@ const BlockGroupApp = (() => {
           "An airport with night operations feels worse than this number implies."
       )}</div>
       <table>
-        <tr><td class="k">Modelled level</td><td class="v">${db.toFixed(0)} dB LAeq</td></tr>
+        <tr><td class="k">Modelled level${infoIcon(
+          "BTS/DOT National Transportation Noise Map, aircraft only, read at this block group's centre. It is a 24-hour A-weighted average (LAeq) with NO night-time penalty, so it is not comparable with the 65 dB DNL threshold HUD uses - an airport that flies at night feels worse than this."
+        )}</td><td class="v">${db.toFixed(0)} dB LAeq</td></tr>
         <tr><td class="k">Band</td><td class="v">${band ? band.label : "Unknown"}</td></tr>
       </table>`;
   }
@@ -2862,7 +2870,10 @@ const BlockGroupApp = (() => {
         (h) =>
           `<tr><td class="k"><span class="school-dot" style="background:${
             BG_CONFIG.SCHOOL_LEVEL_COLORS[zoneLevel(h.layer)] || BG_CONFIG.SCHOOL_LEVEL_COLORS.other
-          }"></span>${zoneLevel(h.layer).replace(/^./, (c) => c.toUpperCase())}</td>` +
+          }"></span>${zoneLevel(h.layer).replace(/^./, (c) => c.toUpperCase())}${infoIcon(
+            `The ${zoneLevel(h.layer)} school whose LAUSD attendance boundary contains this block group's CENTRE. ` +
+              "An address at the edge can fall in a neighbouring zone - drop a pin on the house itself for the answer that counts."
+          )}</td>` +
           `<td class="v">${h.name}</td></tr>`
       )
       .join("");
@@ -2992,7 +3003,9 @@ const BlockGroupApp = (() => {
         `Mean wind speed ${height} above ground, from Global Wind Atlas 3 (DTU/World Bank). A long-run climatological average at 250 m resolution, sampled at this block group's centre - not a forecast and not a Santa Ana gust figure.`
       )}</div>
       <table>
-        <tr><td class="k">Mean wind speed</td><td class="v">${speed.toFixed(1)} m/s</td></tr>
+        <tr><td class="k">Mean wind speed${infoIcon(
+          "Global Wind Atlas 3, mean wind speed 100 m above ground, sampled at this block group. A long-run average at height rather than what you feel in the garden - useful for comparing exposed ridges against sheltered basins."
+        )}</td><td class="v">${speed.toFixed(1)} m/s</td></tr>
         <tr><td class="k">Band</td><td class="v">${bucket ? bucket.label : "Unknown"}</td></tr>
       </table>`;
   }
@@ -3242,9 +3255,15 @@ const BlockGroupApp = (() => {
     if (density == null || !sqMiles) return "";
     const bucket = densityBucket(density);
     return `
-      <tr><td class="k">Land area</td><td class="v">${sqMiles.toFixed(2)} sq mi</td></tr>
-      <tr><td class="k">Density</td><td class="v">${Utils.fmtNumber(Math.round(density))} /sq mi</td></tr>
-      ${bucket ? `<tr><td class="k">Density band</td><td class="v">
+      <tr><td class="k">Land area${infoIcon(
+          "Land area from the Census boundary file (AREALAND), water excluded. Density below is computed from it, so a block group that is mostly reservoir or hillside does not read as artificially empty."
+        )}</td><td class="v">${sqMiles.toFixed(2)} sq mi</td></tr>
+      <tr><td class="k">Density${infoIcon(
+          "Population over land area, both from the Census boundary file. Water is excluded from the area, so a block group that is half reservoir is not made to look empty."
+        )}</td><td class="v">${Utils.fmtNumber(Math.round(density))} /sq mi</td></tr>
+      ${bucket ? `<tr><td class="k">Density band${infoIcon(
+          "Which of the five density bands this falls in - the same bands the density shading on the map uses, so the colour and this row always agree."
+        )}</td><td class="v">
         <span class="swatch inline" style="background:${bucket.color}"></span>${bucket.label.replace(/\s*\(.*\)/, "")}
       </td></tr>` : ""}`;
   }
@@ -3334,7 +3353,9 @@ const BlockGroupApp = (() => {
       );
       const renters = shareOf(record.renterOccupied, record.tenureTotal);
       if (renters !== null) {
-        rows.push(`<tr><td class="k">Renter-occupied</td><td class="v">${renters.toFixed(1)}%</td></tr>`);
+        rows.push(`<tr><td class="k">Renter-occupied${infoIcon(
+          "ACS B25003. The other side of owner-occupied: both are shares of OCCUPIED units, so they sum to 100% and exclude anything vacant."
+        )}</td><td class="v">${renters.toFixed(1)}%</td></tr>`);
       }
     }
     if (record.medianYearBuilt) {
@@ -3347,10 +3368,14 @@ const BlockGroupApp = (() => {
         )}</td><td class="v">${record.medianYearBuilt}</td></tr>`
       );
       if (pre80 !== null) {
-        rows.push(`<tr><td class="k">Built before 1980</td><td class="v">${pre80.toFixed(0)}%</td></tr>`);
+        rows.push(`<tr><td class="k">Built before 1980${infoIcon(
+          "Summed from ACS B25034's decade bands - the Census does not publish this figure directly. 1980 is the asbestos threshold; 1978 is lead paint and 1994 pre-Northridge soft storey, which the decade bars below let you read off."
+        )}</td><td class="v">${pre80.toFixed(0)}%</td></tr>`);
       }
     }
-    return `<div class="section-label">Housing stock</div><table>${rows.join("")}</table>${yearBuiltBars(record)}`;
+    return `<div class="section-label">Housing stock${infoIcon(
+      "ACS B25024, B25003, B25035 and B25034 - what the housing here IS, rather than what it sells for."
+    )}</div><table>${rows.join("")}</table>${yearBuiltBars(record)}`;
   }
 
   // The decade distribution behind the median year built. A median of 1962
@@ -3387,9 +3412,15 @@ const BlockGroupApp = (() => {
           "genuinely walkable pocket - it is near zero almost everywhere else."
       )}</div>
       <table>
-        <tr><td class="k">Work from home</td><td class="v">${wfh.toFixed(1)}%</td></tr>
-        <tr><td class="k">Walk to work</td><td class="v">${walked === null ? "n/a" : `${walked.toFixed(1)}%`}</td></tr>
-        <tr><td class="k">Public transit</td><td class="v">${transit === null ? "n/a" : `${transit.toFixed(1)}%`}</td></tr>
+        <tr><td class="k">Work from home${infoIcon(
+          "ACS B08301, as a share of workers 16 and over who have a job - not of everyone living here."
+        )}</td><td class="v">${wfh.toFixed(1)}%</td></tr>
+        <tr><td class="k">Walk to work${infoIcon(
+          "ACS B08301, as a share of workers 16 and over who have a job. Above about 5% marks a genuinely walkable pocket - it is near zero almost everywhere else in LA."
+        )}</td><td class="v">${walked === null ? "n/a" : `${walked.toFixed(1)}%`}</td></tr>
+        <tr><td class="k">Public transit${infoIcon(
+          "ACS B08301, as a share of workers 16 and over who have a job. Includes bus, rail and ferry."
+        )}</td><td class="v">${transit === null ? "n/a" : `${transit.toFixed(1)}%`}</td></tr>
         ${
           record.commuteMedianMinutes
             ? `<tr><td class="k">Median commute${infoIcon(
@@ -3432,6 +3463,54 @@ const BlockGroupApp = (() => {
   // it covers condos and townhouses too, so it is not the same population as
   // the single-family figures from the assessor roll and should not be read
   // as a competing estimate of the same thing.
+  // Three tables, three universes, three lists. Merging them into one ranking
+  // would double-count: the same person can be Mexican-origin in B03001 and of
+  // Spanish ancestry in B04006, and each table's percentage is against its own
+  // denominator. Kept apart, each is exactly what it says.
+  const ORIGIN_GROUPS = [
+    {
+      key: "originHispanic",
+      label: "Hispanic origin",
+      table: "B03001",
+      note: "Share of everyone here. B03002 above says how many are Hispanic; this says from where.",
+    },
+    {
+      key: "originAsian",
+      label: "Asian groups",
+      table: "B02015",
+      note: "Share of everyone here, counting people who reported that group alone or in combination.",
+    },
+    {
+      key: "originAncestry",
+      label: "Ancestry",
+      table: "B04006",
+      note:
+        "Self-reported ancestry, which is a separate question from race - so Armenian, Iranian and Russian appear here " +
+        "while Korean and Chinese appear under Asian groups above. Only the ancestries with a real presence in LA are fetched.",
+    },
+  ];
+
+  function originRows(record) {
+    const blocks = ORIGIN_GROUPS.map(({ key, label, table, note }) => {
+      const counts = record[key];
+      const whole = record.totalPopulation;
+      if (!counts || !whole) return "";
+      const rows = Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, n]) => barRow(name, n, whole))
+        .join("");
+      if (!rows) return "";
+      return `<div class="sub-label">${label}${infoIcon(`ACS ${table}. ${note}`)}</div>${rows}`;
+    }).filter(Boolean);
+    if (!blocks.length) return "";
+    return `
+      <div class="section-label">Detailed origin${infoIcon(
+        "The five largest groups in each of three ACS tables. They count DIFFERENT things and can overlap - one person can " +
+          "be Mexican-origin in B03001 and of Spanish ancestry in B04006 - so they are listed separately rather than ranked " +
+          "against each other. Five-year survey estimates at block group level, so small numbers here are noisy."
+      )}</div>${blocks.join("")}`;
+  }
+
   function householdRows(record) {
     const kids = familiesWithChildrenShare(record);
     const value = record.medianHomeValue;
@@ -3443,9 +3522,20 @@ const BlockGroupApp = (() => {
       )}</div>
       <table>
         ${
+          childrenPerHousehold(record) === null
+            ? ""
+            : `<tr><td class="k">Children per household${infoIcon(
+                "Everyone under 18 (the first four age brackets of ACS B01001) over the number of households (B19001). It is " +
+                  "an average across ALL households, most of which have no children at all, so it reads low - a block group at " +
+                  "0.6 is full of families by LA standards. Not the same as children per family."
+              )}</td><td class="v">${childrenPerHousehold(record).toFixed(2)}</td></tr>`
+        }
+        ${
           kids === null
             ? ""
-            : `<tr><td class="k">Families with children under 18</td><td class="v">${kids.toFixed(1)}%</td></tr>`
+            : `<tr><td class="k">Families with children under 18${infoIcon(
+          "ACS B11003, and it is FAMILIES not households: the denominator excludes people living alone and unrelated flatmates. Own children means the householder's own by birth, marriage or adoption, so a grandchild being raised here does not count."
+        )}</td><td class="v">${kids.toFixed(1)}%</td></tr>`
         }
         ${
           value
@@ -3470,6 +3560,21 @@ const BlockGroupApp = (() => {
 
   function unemploymentRate(record) {
     return shareOf(record.unemployed, record.civilianLaborForce);
+  }
+
+  // Under-18s are B01001 brackets 3-6 (under 5, 5-9, 10-14, 15-17), male and
+  // female already summed when the data file was built.
+  const CHILD_BRACKETS = ["3", "4", "5", "6"];
+
+  function childrenUnder18(record) {
+    if (!record || !record.ageBrackets) return null;
+    return CHILD_BRACKETS.reduce((sum, i) => sum + (record.ageBrackets[i] || 0), 0);
+  }
+
+  function childrenPerHousehold(record) {
+    const kids = childrenUnder18(record);
+    if (kids === null || !record.householdCount) return null;
+    return kids / record.householdCount;
   }
 
   function familiesWithChildrenShare(record) {
@@ -3589,24 +3694,38 @@ const BlockGroupApp = (() => {
       <p class="geoid">GEOID ${geoid}</p>
 
       <table>
-        <tr><td class="k">Total population</td><td class="v">${Utils.fmtNumber(pop)}</td></tr>
+        <tr><td class="k">Total population${infoIcon(
+          "ACS B01001, everyone living here including children and people in group quarters."
+        )}</td><td class="v">${Utils.fmtNumber(pop)}</td></tr>
         ${householdSizeRow(record)}
         ${densityRows(feature)}
       </table>
 
-      <div class="section-label">Age</div>
+      <div class="section-label">Age${infoIcon(
+      "ACS B01001, in the table's own brackets so nothing is double-counted. Shares are of everyone living here, children included."
+    )}</div>
       ${ageHtml}
 
-      <div class="section-label">Sex</div>
+      <div class="section-label">Sex${infoIcon(
+      "ACS B01001. Shares are of everyone living here."
+    )}</div>
       <table>
-        <tr><td class="k">Female</td><td class="v">${pctText(record.female, sexTotal)}</td><td class="v count">${Utils.fmtNumber(record.female)}</td></tr>
-        <tr><td class="k">Male</td><td class="v">${pctText(record.male, sexTotal)}</td><td class="v count">${Utils.fmtNumber(record.male)}</td></tr>
+        <tr><td class="k">Female${infoIcon(
+          "ACS B01001, summed across every age bracket. Shares are of everyone living here."
+        )}</td><td class="v">${pctText(record.female, sexTotal)}</td><td class="v count">${Utils.fmtNumber(record.female)}</td></tr>
+        <tr><td class="k">Male${infoIcon(
+          "ACS B01001, summed across every age bracket. Shares are of everyone living here."
+        )}</td><td class="v">${pctText(record.male, sexTotal)}</td><td class="v count">${Utils.fmtNumber(record.male)}</td></tr>
       </table>
 
-      <div class="section-label">Ethnicity</div>
+      <div class="section-label">Ethnicity${infoIcon(
+      "ACS B03002 by default, or the 2020 Census P2 full count if you switch source in the sidebar. The two disagree: one is a five-year survey estimate, the other a count."
+    )}</div>
       ${ethnicityBlock(record)}
 
-      <div class="section-label">Education</div>
+      <div class="section-label">Education${infoIcon(
+      "ACS B15003 for the 25-and-over population, and B15001 for the 25-34 line."
+    )}</div>
       <table>
         <tr><td class="k">Bachelor's degree or higher${infoIcon(
           "Share of residents aged 25 and over, not of total population. " +
@@ -3627,7 +3746,9 @@ const BlockGroupApp = (() => {
       }
       ${compact ? "" : `<p class="src-note">Source: ACS B15003, share of the 25-and-over population${geoNote("education")}</p>`}
 
-      <div class="section-label">Income</div>
+      <div class="section-label">Income${infoIcon(
+      "ACS B19013, B19301 and B19001. All three are five-year averages in inflation-adjusted dollars for the final year of the window."
+    )}</div>
       <table>
         <tr><td class="k">Median household income${infoIcon(
           "The midpoint of household incomes (ACS B19013): half the households " +
@@ -3645,6 +3766,7 @@ const BlockGroupApp = (() => {
       ${incomeBracketBars(record)}
       ${compact ? "" : `<p class="src-note">Source: ACS B19013 / B19301${geoNote("income")}</p>`}
 
+      ${originRows(record)}
       ${householdRows(record)}
       ${priceRows(props)}
       ${housingRows(record)}
@@ -4813,6 +4935,9 @@ const BlockGroupApp = (() => {
     ["B03002", "ACS 5-year", "Hispanic origin by race, 8 groups", () => censusDate(), "Card: Ethnicity (default source). Filters: eight ethnicity shares"],
     ["P2", "2020 Census", "Same 8 groups, full count not a survey", () => censusDate(), "Card: Ethnicity when you switch source. Same eight filters"],
     ["B15003", "ACS 5-year", "Educational attainment, 25 and over", () => censusDate(), "Card: Education. Filter: bachelor's or higher"],
+    ["B03001", "ACS 5-year", "Hispanic origin by specific origin, 20 groups", () => censusDate(), "Card: Detailed origin - Hispanic origin, top five"],
+    ["B02015", "ACS 5-year", "Asian population by detailed group, 18 groups", () => censusDate(), "Card: Detailed origin - Asian groups, top five"],
+    ["B04006", "ACS 5-year", "Self-reported ancestry, the groups with an LA presence", () => censusDate(), "Card: Detailed origin - Ancestry, top five"],
     ["B15001", "ACS 5-year", "Education by sex by age", () => censusDate(), "Card: degree share among 25-34 year olds"],
     ["B19013", "ACS 5-year", "Median household income", () => censusDate(), "Card: Income. Filter: median household income"],
     ["B19301", "ACS 5-year", "Per-capita income", () => censusDate(), "Card: Income. Filter: per-capita income"],

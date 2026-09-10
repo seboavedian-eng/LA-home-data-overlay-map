@@ -231,6 +231,18 @@ now fetched and shown too - as a **Households** section, extra **Work** rows,
 and a young-adult degree share under Education. Three of them are filterable:
 home value, median commute and families with children.
 
+**Detailed origin (B03001, B02015, B04006).** B03002's eight groups answer
+"what race", which in LA is rarely the question - Armenian Glendale, Persian
+Westwood, Korean Koreatown and Chinese San Gabriel are all invisible in it.
+Three tables cover it because the Census splits it three ways, and they count
+**different universes that can overlap**: a Mexican-origin person is in B03001,
+a Korean one in B02015, an Armenian one in B04006, and one person can appear in
+two of them. The card therefore shows three separate top-five lists, each as a
+share of the block group's population, rather than one merged ranking that
+would double-count. B04006 publishes ~110 ancestries; only those with a real
+presence in LA County are fetched, since the rest are noise at block group
+level - the list is a dict at the top of the fetch script if you want more.
+
 **Median commute is interpolated, not published.** The Census gives no median
 travel time at block group, only B08303's thirteen bands, so the median is
 found inside whichever band it falls in. Taking the band's midpoint instead

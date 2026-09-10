@@ -211,6 +211,14 @@ const CENSUS_DATA = {
       familiesWithChildren: 90,
       edu25to34Total: 150,
       edu25to34BachelorsPlus: 75,
+      // Three detailed-origin tables, kept apart because they count different
+      // universes and a person can appear in more than one.
+      originHispanic: { Mexican: 300, Salvadoran: 90, Guatemalan: 40 },
+      originHispanicTotal: 450,
+      originAsian: { Korean: 120, Chinese: 60 },
+      originAsianTotal: 200,
+      originAncestry: { Armenian: 150, Iranian: 70, Italian: 30 },
+      originAncestryTotal: 260,
       ethnicityAcsTotal: 1000,
       ethnicityAcs: {
         "Hispanic or Latino": 450,
@@ -2136,7 +2144,7 @@ async function main() {
       "every ACS table the fetch script pulls has a row, by table number",
       ["B01001", "B03002", "B15003", "B15001", "B19013", "B19301", "B19001", "B25010",
        "B25024", "B25003", "B25035", "B25034", "B25077", "B08301", "B08303", "B23025",
-       "B11003", "P2"].every((id) => sourceRows.some((r) => r[0] === id)),
+       "B11003", "P2", "B03001", "B02015", "B04006"].every((id) => sourceRows.some((r) => r[0] === id)),
       JSON.stringify(sourceRows.map((r) => r[0]).filter((id) => /^B\d|^P2$/.test(id)))
     );
     step(
@@ -2171,6 +2179,35 @@ async function main() {
         "Two or more races (non-Hispanic)", "Some other race (non-Hispanic)",
       ].every((n) => metricsHere.some((m) => m.startsWith(n))),
       `${metricsHere.filter((m) => /Hispanic/.test(m)).length} ethnicity filters offered`
+    );
+    step(
+      "the five largest groups from each detailed-origin table are shown",
+      /mexican/i.test(cardHere) && /korean/i.test(cardHere) && /armenian/i.test(cardHere),
+      cardHere.replace(/\s+/g, " ").match(/detailed origin.{0,180}/i)
+    );
+    step(
+      "each is a share of the block group's population, not of its own table",
+      // Mexican 300 of 1,000 people = 30.0%, not 300 of the 450 Hispanic total.
+      /mexican\D*30\.0%/i.test(cardHere),
+      cardHere.replace(/\s+/g, " ").match(/Mexican.{0,16}/i)
+    );
+    step(
+      "children per household is derived from the age brackets and household count",
+      // Under-18s in the fixture are brackets 3-6: 100+100+100+60 = 360,
+      // over 400 households = 0.90.
+      /children per household\D*0\.90/i.test(cardHere),
+      cardHere.replace(/\s+/g, " ").match(/Children per household.{0,16}/i)
+    );
+    const missingIcons = await page.evaluate(() =>
+      [...document.querySelectorAll("#detail-panel td.k, #detail-panel .sub-label, #detail-panel .section-label")]
+        .map((el) => ({ text: el.textContent.trim(), tip: !!el.querySelector("[data-tip]") }))
+        .filter((r) => r.text && !r.tip)
+        .map((r) => r.text)
+    );
+    step(
+      "every row and heading on the card says where its number came from",
+      missingIcons.length === 0,
+      missingIcons.length ? JSON.stringify(missingIcons) : "all labelled"
     );
     step(
       "and the card shows renter share, labour force participation and the build decades",

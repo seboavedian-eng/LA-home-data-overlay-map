@@ -209,6 +209,54 @@ B11003_WITH_OWN_CHILDREN = ["B11003_003E", "B11003_010E", "B11003_016E"]
 B15001_25_34_TOTAL = ["B15001_011E", "B15001_052E"]
 B15001_25_34_BACHELORS_PLUS = ["B15001_017E", "B15001_018E", "B15001_058E", "B15001_059E"]
 
+# --- Detailed origin ---------------------------------------------------------
+# B03002's eight groups answer "what race/ethnicity", which in LA is not the
+# question people are actually asking - Armenian Glendale, Persian Westwood,
+# Korean Koreatown and Chinese San Gabriel are all invisible in it.
+#
+# Three tables are needed because the Census splits this three ways, and they
+# count DIFFERENT UNIVERSES: a Mexican-origin person is in B03001, a Korean one
+# in B02015, an Armenian one in B04006, and the same person can appear in more
+# than one. They are therefore kept apart on the card, each with its own
+# denominator, rather than merged into one misleading ranking.
+B03001_TOTAL = "B03001_001E"
+B03001_GROUPS = {
+    "B03001_004E": "Mexican", "B03001_005E": "Puerto Rican", "B03001_006E": "Cuban",
+    "B03001_008E": "Dominican", "B03001_010E": "Costa Rican", "B03001_011E": "Guatemalan",
+    "B03001_012E": "Honduran", "B03001_013E": "Nicaraguan", "B03001_014E": "Panamanian",
+    "B03001_015E": "Salvadoran", "B03001_017E": "Argentinean", "B03001_018E": "Bolivian",
+    "B03001_019E": "Chilean", "B03001_020E": "Colombian", "B03001_021E": "Ecuadorian",
+    "B03001_022E": "Paraguayan", "B03001_023E": "Peruvian", "B03001_024E": "Uruguayan",
+    "B03001_025E": "Venezuelan", "B03001_027E": "Spaniard",
+}
+
+B02015_TOTAL = "B02015_001E"
+B02015_GROUPS = {
+    "B02015_002E": "Asian Indian", "B02015_003E": "Bangladeshi", "B02015_005E": "Burmese",
+    "B02015_006E": "Cambodian", "B02015_007E": "Chinese", "B02015_009E": "Filipino",
+    "B02015_010E": "Hmong", "B02015_011E": "Indonesian", "B02015_012E": "Japanese",
+    "B02015_013E": "Korean", "B02015_014E": "Laotian", "B02015_015E": "Malaysian",
+    "B02015_017E": "Nepalese", "B02015_018E": "Pakistani", "B02015_019E": "Sri Lankan",
+    "B02015_020E": "Taiwanese", "B02015_021E": "Thai", "B02015_022E": "Vietnamese",
+}
+
+# B04006 publishes about 110 ancestries. These are the ones with a real
+# presence in LA County; the rest would be noise at block group level, where
+# five-year samples are small. Add to this dict if you want more.
+B04006_TOTAL = "B04006_001E"
+B04006_GROUPS = {
+    "B04006_005E": "Arab", "B04006_008E": "Lebanese", "B04006_011E": "Syrian",
+    "B04006_013E": "Armenian", "B04006_014E": "Assyrian/Chaldean/Syriac",
+    "B04006_021E": "Czech", "B04006_024E": "Dutch", "B04006_025E": "Eastern European",
+    "B04006_026E": "English", "B04006_028E": "French", "B04006_031E": "German",
+    "B04006_034E": "Greek", "B04006_036E": "Hungarian", "B04006_038E": "Irish",
+    "B04006_039E": "Israeli", "B04006_040E": "Italian", "B04006_045E": "Lithuanian",
+    "B04006_051E": "Norwegian", "B04006_053E": "Polish", "B04006_054E": "Portuguese",
+    "B04006_057E": "Romanian", "B04006_058E": "Russian", "B04006_060E": "Scotch-Irish",
+    "B04006_061E": "Scottish", "B04006_064E": "Slovak", "B04006_067E": "Swedish",
+    "B04006_069E": "Swiss", "B04006_070E": "Ukrainian", "B04006_075E": "Iranian",
+}
+
 B19013_MEDIAN_HH = "B19013_001E"
 B19301_PER_CAPITA = "B19301_001E"
 
@@ -495,6 +543,15 @@ def main():
         acs, [B11003_TOTAL_FAMILIES] + B11003_WITH_OWN_CHILDREN, args.key, "B11003"
     )
 
+    print("\nHispanic origin, by specific origin (B03001):")
+    hisp, hisp_geo = fetch_table(acs, [B03001_TOTAL] + list(B03001_GROUPS), args.key, "B03001")
+
+    print("\nAsian population, by detailed group (B02015):")
+    asian, asian_geo = fetch_table(acs, [B02015_TOTAL] + list(B02015_GROUPS), args.key, "B02015")
+
+    print("\nAncestry, selected groups (B04006):")
+    ancestry, ancestry_geo = fetch_table(acs, [B04006_TOTAL] + list(B04006_GROUPS), args.key, "B04006")
+
     print("\nEducation among 25-34 year olds (B15001):")
     edu_young, edu_young_geo = fetch_table(
         acs, B15001_25_34_TOTAL + B15001_25_34_BACHELORS_PLUS, args.key, "B15001"
@@ -587,6 +644,24 @@ def main():
             rec["families"] = to_number(fam_row.get(B11003_TOTAL_FAMILIES))
             rec["familiesWithChildren"] = total(fam_row, B11003_WITH_OWN_CHILDREN)
 
+        def top_groups(table, table_geo, groups, total_code, key, limit=5):
+            """The five largest named groups, as counts, with the table's own total."""
+            row = lookup(table, table_geo) if table else None
+            if not row:
+                return
+            counts = {
+                label: to_number(row.get(code)) or 0 for code, label in groups.items()
+            }
+            top = sorted(((n, label) for label, n in counts.items() if n > 0), reverse=True)[:limit]
+            if not top:
+                return
+            rec[key] = {label: n for n, label in top}
+            rec[key + "Total"] = to_number(row.get(total_code))
+
+        top_groups(hisp, hisp_geo, B03001_GROUPS, B03001_TOTAL, "originHispanic")
+        top_groups(asian, asian_geo, B02015_GROUPS, B02015_TOTAL, "originAsian")
+        top_groups(ancestry, ancestry_geo, B04006_GROUPS, B04006_TOTAL, "originAncestry")
+
         young_row = lookup(edu_young, edu_young_geo) if edu_young else None
         if young_row:
             rec["edu25to34Total"] = total(young_row, B15001_25_34_TOTAL)
@@ -624,7 +699,7 @@ def main():
         "meta": {
             # Bumped when the record shape changes, so the page can tell a
             # stale data file from a missing one and say which it is.
-            "schemaVersion": 5,
+            "schemaVersion": 6,
             # So the sidebar's data-source table can say when this was pulled.
             "generated": datetime.date.today().isoformat(),
             "ageBracketLabels": {str(k): v for k, v in B01001_BRACKETS.items()},
