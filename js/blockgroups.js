@@ -1544,16 +1544,25 @@ const BlockGroupApp = (() => {
     return listing.firstSeen === listingsMeta.latestDownload;
   }
 
+  // Built once and reused: a renderer per redraw would leave a stack of
+  // abandoned <svg> elements over the map.
+  let listingRenderer = null;
+  function listingsRenderer() {
+    if (!listingRenderer) listingRenderer = L.svg({ pane: "listings" });
+    return listingRenderer;
+  }
+
   function listingMarker(listing) {
     const selected = listing.id === selectedListingId;
     const cold = listingStatus(listing.id) === "notInterested";
     return L.circleMarker([listing.lat, listing.lon], {
+      renderer: listingsRenderer(),
       radius: selected ? 9 : 6,
       color: "#ffffff",
       weight: selected ? 3 : 2,
       fillColor: cold ? "#98a2ac" : selected ? "#7f1d1d" : "#b3261e",
       fillOpacity: cold ? 0.7 : 1,
-      pane: "markerPane",
+      pane: "listings",
     });
   }
 
@@ -4497,6 +4506,18 @@ const BlockGroupApp = (() => {
     map.createPane("rasterOverlay");
     map.getPane("rasterOverlay").style.zIndex = 380;
     map.getPane("rasterOverlay").style.pointerEvents = "none";
+
+    // The house dots get a pane of their own, ABOVE the polygons so they are
+    // never buried, and rendered as SVG rather than canvas. The renderer is
+    // the point: the map runs preferCanvas, and a canvas renderer paints one
+    // element over the whole map that hit-tests only its own layers. Putting
+    // the dots on a second canvas therefore blanketed the map and swallowed
+    // every click that missed a dot - block groups stopped being selectable
+    // the moment a listing was first drawn. An SVG renderer only hit-tests
+    // where something is actually painted, so clicks between the dots reach
+    // the block group underneath.
+    map.createPane("listings");
+    map.getPane("listings").style.zIndex = 620;
 
     addBasemap();
 

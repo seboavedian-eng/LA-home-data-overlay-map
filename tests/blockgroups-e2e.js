@@ -1772,26 +1772,93 @@ async function main() {
       }),
       "the one dot left is the one inside block group C"
     );
-    // Closing the block group card is a deselection: its houses go with it,
-    // rather than being left floating over a block group nothing is showing.
-    await page.evaluate(() => BlockGroupApp.state.map.closePopup());
-    await page.waitForTimeout(400);
-    step(
-      "closing the block group card takes its houses off the map too",
-      await page.evaluate(() => {
-        let n = 0;
-        BlockGroupApp.state.map.eachLayer((l) => {
-          if (l.getLatLng && l.options && /^#(b3261e|98a2ac|7f1d1d)$/.test(l.options.fillColor || "")) n += 1;
-        });
-        return n === 0;
-      })
-    );
+
+    // --- Real mouse clicks, which is where the renderer bug lived ---------
+    // The house dots are vector layers. The map runs preferCanvas, so giving
+    // them a pane of their own used to put a SECOND canvas over the whole
+    // map; a canvas renderer hit-tests only its own layers, so every click
+    // that missed a dot died there and block groups became unselectable the
+    // moment a listing was first drawn. Synthetic layer.fire("click") bypasses
+    // DOM hit-testing entirely and cannot see this, so these use the mouse.
+    const clickMapAt = async (lat, lon) => {
+      const pt = await page.evaluate(
+        ([la, lo]) => {
+          const p = BlockGroupApp.state.map.latLngToContainerPoint([la, lo]);
+          const r = document.getElementById("map").getBoundingClientRect();
+          return { x: r.left + p.x, y: r.top + p.y };
+        },
+        [lat, lon]
+      );
+      await page.mouse.click(pt.x, pt.y);
+    };
+    const topPaneAt = async (lat, lon) =>
+      page.evaluate(
+        ([la, lo]) => {
+          const p = BlockGroupApp.state.map.latLngToContainerPoint([la, lo]);
+          const r = document.getElementById("map").getBoundingClientRect();
+          const el = document.elementFromPoint(r.left + p.x, r.top + p.y);
+          const pane = el && el.closest ? el.closest(".leaflet-pane") : null;
+          return pane ? pane.className.replace("leaflet-pane ", "") : "none";
+        },
+        [lat, lon]
+      );
+
     await page.evaluate(() => {
       BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
         if (l.feature.properties.GEOID === "060372011001") l.fire("click");
       });
     });
     await page.waitForTimeout(400);
+    step(
+      "empty map between the house dots is not covered by the listings pane",
+      (await topPaneAt(34.045, -118.245)) === "leaflet-overlay-pane",
+      await topPaneAt(34.045, -118.245)
+    );
+
+    // Close the house card, then the block group card - the user's sequence.
+    await page.evaluate(() => {
+      BlockGroupApp.state.map.eachLayer((l) => {
+        if (l.getLatLng && l.options && l.options.fillColor === "#b3261e" && l.getLatLng().lat === 34.05) {
+          l.fire("click", { latlng: l.getLatLng() });
+        }
+      });
+    });
+    await page.waitForTimeout(300);
+    await page.locator("#house-card .house-close").click();
+    await page.waitForTimeout(300);
+    await page.locator(".leaflet-popup-close-button").click();
+    await page.waitForTimeout(400);
+    step(
+      "closing the house card then the block group card leaves both shut",
+      !(await page.locator("#house-card").isVisible()) && (await page.locator(".leaflet-popup").count()) === 0
+    );
+    await clickMapAt(34.05, -118.21);
+    await page.waitForTimeout(500);
+    step(
+      "a block group is still selectable by real mouse click afterwards",
+      (await page.locator(".leaflet-popup").count()) === 1 &&
+        (await page.evaluate(() => BlockGroupApp.state.selectedProps.GEOID)) === "060372011003",
+      `popups: ${await page.locator(".leaflet-popup").count()}`
+    );
+
+    // ...and the dots themselves are still hittable, which is the other half:
+    // an SVG renderer that let clicks through everywhere would be no use.
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(500);
+    await clickMapAt(34.05, -118.25);
+    await page.waitForTimeout(400);
+    step(
+      "clicking a house dot with the mouse still opens its card",
+      (await page.locator("#house-card").isVisible()) &&
+        (await page.locator("#house-card .house-price").innerText()).startsWith("$1,400,000"),
+      await page.locator("#house-card .house-price").innerText().catch(() => "no card")
+    );
+    await page.locator("#house-card .house-close").click();
+    await page.waitForTimeout(300);
 
     // --- Data sources table ---
     await page.evaluate(() => document.getElementById("sources-details").setAttribute("open", "open"));
