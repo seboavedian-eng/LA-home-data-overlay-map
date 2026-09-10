@@ -508,6 +508,7 @@ const BlockGroupApp = (() => {
     fire: false, pollution: false, wind: false,
     flood: false, seismic: false, noise: false, noiseSurface: false,
     schools: false,
+    listings: false,   // "show every listing", rather than only the selected block group's
   };
   const loadedBBox = {};    // key -> padded bbox covered by the current layer
   let censusData = null;    // { meta, blockGroups } from the local snapshot
@@ -1544,25 +1545,37 @@ const BlockGroupApp = (() => {
     return listing.firstSeen === listingsMeta.latestDownload;
   }
 
-  // Built once and reused: a renderer per redraw would leave a stack of
-  // abandoned <svg> elements over the map.
-  let listingRenderer = null;
-  function listingsRenderer() {
-    if (!listingRenderer) listingRenderer = L.svg({ pane: "listings" });
-    return listingRenderer;
+  // A map pin rather than a dot: it reads as "a house is here" at a glance,
+  // and its point sits ON the address instead of straddling it.
+  //
+  // These are L.marker with a divIcon, not circleMarker. That matters beyond
+  // looks: a circleMarker is a vector layer, and giving vectors their own pane
+  // under preferCanvas puts a second canvas over the whole map that hit-tests
+  // only its own layers - which is what made block groups unclickable. DOM
+  // markers hit-test per element, so the problem cannot come back.
+  function pinIcon(fill, selected) {
+    const size = selected ? [26, 36] : [20, 28];
+    return L.divIcon({
+      className: "house-pin",
+      iconSize: size,
+      iconAnchor: [size[0] / 2, size[1]],
+      popupAnchor: [0, -size[1]],
+      html:
+        `<svg viewBox="0 0 20 28" width="${size[0]}" height="${size[1]}" aria-hidden="true">` +
+        `<path d="M10 27.2C10 27.2 19 16.8 19 10A9 9 0 1 0 1 10c0 6.8 9 17.2 9 17.2z" ` +
+        `fill="${fill}" stroke="#ffffff" stroke-width="${selected ? 2.4 : 1.8}"/>` +
+        `<circle cx="10" cy="10" r="3.2" fill="#ffffff" opacity="0.9"/></svg>`,
+    });
   }
 
   function listingMarker(listing) {
     const selected = listing.id === selectedListingId;
     const cold = listingStatus(listing.id) === "notInterested";
-    return L.circleMarker([listing.lat, listing.lon], {
-      renderer: listingsRenderer(),
-      radius: selected ? 9 : 6,
-      color: "#ffffff",
-      weight: selected ? 3 : 2,
-      fillColor: cold ? "#98a2ac" : selected ? "#7f1d1d" : "#b3261e",
-      fillOpacity: cold ? 0.7 : 1,
+    return L.marker([listing.lat, listing.lon], {
+      icon: pinIcon(cold ? "#98a2ac" : selected ? "#7f1d1d" : "#b3261e", selected),
+      opacity: cold ? 0.8 : 1,
       pane: "listings",
+      riseOnHover: true,
     });
   }
 
@@ -1573,11 +1586,26 @@ const BlockGroupApp = (() => {
     }
   }
 
+  // Two ways in, and they meet in the middle. Top down: pick a promising block
+  // group, see what is for sale inside it. Bottom up: turn every listing on,
+  // find a house you like, and its block group opens with it. A house is
+  // always read together with its neighbourhood - which is why the house card
+  // never appears without the block group card, while the block group card is
+  // perfectly readable on its own.
+  function allListings() {
+    if (!listingsData) return [];
+    return listingsData
+      .filter((l) => listingStatus(l.id) !== "removed")
+      .sort((a, b) => b.price - a.price);
+  }
+
   async function showListingsFor(feature) {
     await loadListings();
     const target = feature || selectedFeature;
     clearListingLayer();
-    const rows = listingsFor(target);
+    // With the toggle on, every listing is drawn wherever the map is. With it
+    // off, only the ones inside the selected block group.
+    const rows = enabled.listings ? allListings() : listingsFor(target);
     if (!rows.length) return;
 
     listingLayer = L.layerGroup(
@@ -1591,7 +1619,7 @@ const BlockGroupApp = (() => {
         );
         marker.on("click", (e) => {
           if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
-          openHouseCard(listing);
+          selectHouse(listing);
         });
         return marker;
       })
@@ -1614,6 +1642,41 @@ const BlockGroupApp = (() => {
       return { value: years[year].ppsf, year };
     }
     return p.medianPricePerSqft ? { value: p.medianPricePerSqft, year: null } : null;
+  }
+
+  // Clicking a pin. The block group comes with it: find the polygon the house
+  // sits in and select that first, so the two cards open together and in the
+  // right order. If the block group layer has nothing loaded there - zoomed
+  // out, or borders switched off - the house card still opens and the log says
+  // why the neighbourhood did not.
+  function blockGroupLayerAt(lat, lon) {
+    if (!layers.blockGroup) return null;
+    let found = null;
+    layers.blockGroup.eachLayer((l) => {
+      if (!found && l.feature && l.feature.geometry && pointInGeometry(lat, lon, l.feature.geometry)) {
+        found = l;
+      }
+    });
+    return found;
+  }
+
+  function selectHouse(listing) {
+    const owner = blockGroupLayerAt(listing.lat, listing.lon);
+    if (owner) {
+      const sameBlockGroup = geoidOf(owner.feature.properties) === selectedGeoid;
+      if (!sameBlockGroup) {
+        // selectBlockGroup closes the old house card and redraws the pins,
+        // which is exactly the "both close, both reopen" behaviour wanted.
+        selectBlockGroup(owner, owner.feature.properties);
+      }
+    } else if (!selectedGeoid) {
+      Utils.logStatus(
+        "listings",
+        "info",
+        `Opened ${listing.address} on its own: no block group is loaded there. Turn on Block Group Borders and zoom in to see its neighbourhood.`
+      );
+    }
+    openHouseCard(listing);
   }
 
   function houseCardHTML(listing) {
@@ -1714,7 +1777,7 @@ const BlockGroupApp = (() => {
     if (card) card.classList.add("hidden");
     selectedListingId = null;
     currentListing = null;
-    if (selectedFeature) showListingsFor(); // redraw dots unselected
+    if (selectedFeature || enabled.listings) showListingsFor(); // redraw pins unselected
   }
 
   function openHouseCard(listing) {
@@ -1726,12 +1789,38 @@ const BlockGroupApp = (() => {
     showListingsFor();
   }
 
+  // The house card sits immediately right of the block group card, matching its
+  // width, and follows it as the map moves. Fixed to the window's right edge it
+  // drifted away from the card it belongs to and covered the map besides.
+  function positionHouseCard() {
+    const card = document.getElementById("house-card");
+    if (!card || card.classList.contains("hidden")) return;
+    const popup = cardPopup && cardPopup.isOpen() ? cardPopup.getElement() : null;
+    const mapBox = document.getElementById("map").getBoundingClientRect();
+    if (!popup) {
+      // No block group card open - which should not happen, since the house
+      // card never opens without one. Fall back to the map's top-right.
+      card.style.left = `${mapBox.width - CARD_WIDTH - 16}px`;
+      card.style.top = "16px";
+      return;
+    }
+    const box = popup.getBoundingClientRect();
+    const width = card.offsetWidth || box.width;
+    let left = box.right - mapBox.left + 12;
+    // If there is no room to the right, put it to the left of the block group
+    // card rather than off the edge.
+    if (left + width > mapBox.width - 8) left = box.left - mapBox.left - width - 12;
+    card.style.left = `${Math.max(8, left)}px`;
+    card.style.top = `${Math.max(8, box.top - mapBox.top)}px`;
+  }
+
   function renderHouseCard() {
     const card = document.getElementById("house-card");
     if (!card || !currentListing) return;
     const listing = currentListing;
     card.classList.remove("hidden");
     card.innerHTML = houseCardHTML(listing);
+    alignCards();
     card.querySelector(".house-close").addEventListener("click", closeHouseCard);
 
     const form = card.querySelector(".house-reason");
@@ -2206,7 +2295,9 @@ const BlockGroupApp = (() => {
 
   // One service -> one tile layer. Throws if the service will not describe
   // itself, so the caller can move on to the next candidate.
-  async function buildNoiseTileLayer(modeKey, url) {
+  // onDead is called only once the service has been shown to be useless HERE -
+  // never merely because a tile was refused, which is recoverable.
+  async function buildNoiseTileLayer(modeKey, url, onDead) {
     const state = noise[modeKey];
     const root = await Utils.fetchJSON(`${url}?f=json`, { timeoutMs: 20000 });
     if (root && root.error) throw new Error(root.error.message || "service error");
@@ -2230,30 +2321,40 @@ const BlockGroupApp = (() => {
       state.drew = true;
     });
 
-    if (cached) {
-      // Whatever the metadata claims, the tiles themselves are the authority.
-      // If a zoom the service said it had turns out to 404, step the layer's
-      // native zoom back to the last one that actually drew and re-request:
-      // the map upscales instead of going blank. This is what keeps the layer
-      // on screen past zoom 12 even when a service overstates its cache.
-      let deepestGood = -1;
-      layer.on("tileload", (e) => {
-        if (e.coords && e.coords.z > deepestGood) deepestGood = e.coords.z;
-      });
-      layer.on("tileerror", (e) => {
-        const z = e.coords && e.coords.z;
-        if (!Number.isFinite(z) || z <= 0) return;
-        const limit = Math.max(0, z - 1);
-        if (limit >= layer.options.maxNativeZoom) return;   // only ever lower it
-        layer.options.maxNativeZoom = limit;
+    // Whatever the metadata claims, the tiles themselves are the authority. A
+    // refused tile means "this zoom was never cached", so the layer steps its
+    // native zoom back and re-requests, and the map upscales instead of going
+    // blank.
+    //
+    // Backing off ALWAYS takes priority over giving up on the service. It
+    // previously did not, and the two handlers raced: switching a layer on
+    // while already zoomed in meant the very first tile 404'd before anything
+    // had drawn, the give-up path fired, and the layer was torn down and the
+    // toggle switched itself off. Turning it on at zoom 12 and then zooming
+    // worked only because a tile had succeeded first.
+    let backoffs = 0;
+    let gaveUp = false;
+    layer.on("tileerror", (e) => {
+      const z = e.coords && e.coords.z;
+      const canBackOff =
+        cached && Number.isFinite(z) && z > 0 && z - 1 < layer.options.maxNativeZoom && backoffs < 12;
+      if (canBackOff) {
+        backoffs += 1;
+        layer.options.maxNativeZoom = Math.max(0, z - 1);
         Utils.logStatus(
           modeKey,
           "info",
-          `${BG_CONFIG.NOISE.modes[modeKey].label}: no tiles cached at zoom ${z}, so it is upscaled from ${limit} instead.`
+          `${BG_CONFIG.NOISE.modes[modeKey].label}: nothing cached at zoom ${z}, upscaling from ${layer.options.maxNativeZoom} instead.`
         );
         layer.redraw();
-      });
-    }
+        return;
+      }
+      // Nothing left to back off to. Only now is the service actually no use
+      // here - and only if it never managed to draw anything at all.
+      if (gaveUp || state.drew || !onDead) return;
+      gaveUp = true;
+      onDead();
+    });
 
     return { layer, url, maxNative, cached };
   }
@@ -2274,7 +2375,7 @@ const BlockGroupApp = (() => {
       while (state.candidates.length) {
         const url = state.candidates.shift();
         try {
-          built.push(await buildNoiseTileLayer(modeKey, url));
+          built.push(await buildNoiseTileLayer(modeKey, url, null));
         } catch (err) {
           problems.push(`${url}: ${err.message}`);
         }
@@ -2309,17 +2410,9 @@ const BlockGroupApp = (() => {
     while (state.candidates.length) {
       const url = state.candidates.shift();
       try {
-        const built = await buildNoiseTileLayer(modeKey, url);
-        let escalated = false;
-        built.layer.on("tileerror", () => {
-          // Only give up on a service that never managed to draw anything. A
-          // single missing tile in a service that is otherwise working is not
-          // a reason to throw it away and cycle through every alternative.
-          if (escalated || state.drew) return;
-          escalated = true;
-          tryNextNoiseSource(modeKey, "That service has no tiles for this area.");
-        });
-
+        const built = await buildNoiseTileLayer(modeKey, url, () =>
+          tryNextNoiseSource(modeKey, "That service has no tiles for this area, at any zoom.")
+        );
         state.url = url;
         Utils.logStatus(
           modeKey,
@@ -3899,11 +3992,19 @@ const BlockGroupApp = (() => {
     }
   }
 
+  // The card is deliberately the same width as the house card, because the two
+  // sit side by side.
+  const CARD_WIDTH = 300;
+
   const POPUP_OPTIONS = {
-    maxWidth: 300,
-    minWidth: 250,
+    maxWidth: CARD_WIDTH,
+    minWidth: CARD_WIDTH,
     maxHeight: 480,
-    autoPanPadding: [20, 20],
+    // Padded on the right for the house card, which docks there: without this
+    // the map pans the block group card into view and leaves the house card
+    // off the edge.
+    autoPanPaddingTopLeft: [20, 20],
+    autoPanPaddingBottomRight: [CARD_WIDTH + 60, 20],
     autoClose: false,   // don't vanish when another popup opens
     closeOnClick: false, // ...or when the map is clicked
   };
@@ -3933,8 +4034,11 @@ const BlockGroupApp = (() => {
       selectedLayer = null;
       selectedFeature = null;
       selectedGeoid = null;
-      clearListingLayer();
       closeHouseCard();
+      // With "show every listing" on, the pins belong to the map rather than
+      // to the selection, so they stay put when the card closes.
+      if (enabled.listings) showListingsFor();
+      else clearListingLayer();
       if (wasSelected && wasSelected._map) wasSelected.setStyle(styleForBlockGroup(wasSelected.feature));
     });
     return cardPopup;
@@ -3942,13 +4046,43 @@ const BlockGroupApp = (() => {
 
   // A synthetic click (as the tests fire) carries no latlng, so fall back to
   // the polygon's own centre.
-  function anchorFor(layer, latlng) {
-    if (latlng) return latlng;
-    if (layer && layer.getBounds) return layer.getBounds().getCenter();
+  // The card hangs off the block group's TOP-LEFT corner, not its centre.
+  // Anchored at the centre it sat squarely on top of the thing being read -
+  // and on top of the house pins inside it. Leaflet draws a popup above its
+  // anchor and centred on it, so anchoring at the north-west corner and
+  // shifting left by half the card's width puts the card's bottom-right corner
+  // at the block group's top-left, clear of the polygon entirely.
+  //
+  // The synthetic clicks the tests fire carry no latlng; the polygon's own
+  // bounds are used either way, so that makes no difference here.
+  function anchorFor(layer) {
+    if (layer && layer.getBounds) return layer.getBounds().getNorthWest();
     return map.getCenter();
   }
 
-  function selectBlockGroup(layer, props, { openPopup = true, latlng = null } = {}) {
+  // Leaflet's maxWidth is the CONTENT box, so the popup element ends up wider
+  // than CARD_WIDTH by however much its own padding and border come to. The
+  // offset that pushes the card clear of the polygon has to be half the REAL
+  // width, so it is measured once the popup exists rather than guessed - a
+  // guess left the card overlapping the block group by the width of its own
+  // chrome. The house card is sized to match for the same reason.
+  function alignCards() {
+    const el = cardPopup && cardPopup.isOpen() ? cardPopup.getElement() : null;
+    if (!el) return;
+    const width = el.offsetWidth;
+    if (!width) return;
+    const wanted = [-Math.round(width / 2) - 8, -6];
+    const current = cardPopup.options.offset;
+    if (!current || current[0] !== wanted[0] || current[1] !== wanted[1]) {
+      cardPopup.options.offset = wanted;
+      cardPopup.update();   // re-lays out, and re-runs the pan that keeps it on screen
+    }
+    const card = document.getElementById("house-card");
+    if (card) card.style.width = `${width}px`;
+    positionHouseCard();
+  }
+
+  function selectBlockGroup(layer, props, { openPopup = true } = {}) {
     const record = recordFor(props);
     const previousGeoid = selectedGeoid;
 
@@ -3964,8 +4098,9 @@ const BlockGroupApp = (() => {
     const html = `<div class="bg-popup">${detailHTML(props, record, { compact: true, feature: layer.feature })}</div>`;
     if (openPopup) {
       const popup = ensureCardPopup();
-      popup.setLatLng(anchorFor(layer, latlng)).setContent(html);
+      popup.setLatLng(anchorFor(layer)).setContent(html);
       if (!popup.isOpen()) popup.openOn(map);
+      alignCards();
     }
     document.getElementById("detail-panel").innerHTML = detailHTML(props, record, { feature: layer.feature });
 
@@ -4076,7 +4211,7 @@ const BlockGroupApp = (() => {
         onEachFeature: (feature, layer) => {
           layer.on("click", (e) => {
             if (pinArmed) return; // the armed pin-drop owns this click
-            selectBlockGroup(layer, feature.properties, { latlng: e && e.latlng });
+            selectBlockGroup(layer, feature.properties);
           });
         },
       });
@@ -4275,8 +4410,9 @@ const BlockGroupApp = (() => {
         delete loadedBBox[key];
       }
       if (key === "blockGroup") {
-        clearListingLayer();
         closeHouseCard();
+        if (enabled.listings) showListingsFor();
+        else clearListingLayer();
         if (cardPopup && cardPopup.isOpen()) map.closePopup(cardPopup);
         selectedLayer = null;
         selectedProps = null;
@@ -4856,6 +4992,19 @@ const BlockGroupApp = (() => {
     loadListings();
     loadOrsKey();
     renderFilterRows();
+    document.getElementById("toggle-listings").addEventListener("change", async (e) => {
+      enabled.listings = e.target.checked;
+      await showListingsFor();
+      const shown = listingLayer ? listingLayer.getLayers().length : 0;
+      Utils.logStatus(
+        "listings",
+        "ok",
+        enabled.listings
+          ? `Showing all ${shown} listing(s) across the county. Click a pin to open its block group with it.`
+          : `Showing listings for the selected block group only (${shown} here).`
+      );
+    });
+
     document.getElementById("toggle-density").addEventListener("change", (e) => {
       densityShading = e.target.checked;
       renderDensityLegend();
@@ -4909,6 +5058,10 @@ const BlockGroupApp = (() => {
 
     // Debounced: panning fires moveend constantly, and each reload is a
     // network round trip.
+    // The house card is anchored to the block group card, which moves with the
+    // map, so it has to follow on every frame of a pan - not just at the end.
+    map.on("move zoom viewreset", positionHouseCard);
+
     map.on("moveend zoomend", () => {
       clearTimeout(moveTimer);
       moveTimer = setTimeout(() => {

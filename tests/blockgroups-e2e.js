@@ -758,10 +758,12 @@ async function main() {
     }
     noiseServicesChosen.push(url);
     // Real ArcGIS metadata publishes the WHOLE standard LOD scheme whether or
-    // not those levels were cached. An aviation service also states maxScale,
-    // which is where its cache actually stops; the road and rail ones here do
-    // not, so the layer has to discover the limit from the tiles themselves.
-    const statesMaxScale = /aviation/i.test(url);
+    // not those levels were cached. The road and rail services here also state
+    // maxScale, which is where the cache actually stops. The aviation one does
+    // NOT, so that layer has to discover its limit from refused tiles - which
+    // is the harder path, and the one that breaks if a layer is switched on
+    // when the map is already zoomed past the cache.
+    const statesMaxScale = /road|rail/i.test(url);
     return route.fulfill(
       json({
         mapName: "NTAD noise",
@@ -873,7 +875,18 @@ async function main() {
   }
 
   try {
-    await page.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    // Houses are pin markers (L.marker + divIcon), so tests identify them by the
+  // icon's class and read the pin colour out of its SVG rather than off a
+  // vector layer's fillColor.
+  await page.addInitScript(() => {
+    window.isPin = (l) =>
+      !!(l.getLatLng && l.options && l.options.icon && l.options.icon.options.className === "house-pin");
+    window.pinFill = (l) => {
+      const m = (l.options.icon.options.html || "").match(/fill="(#[0-9a-f]{6})"/i);
+      return m ? m[1].toLowerCase() : null;
+    };
+  });
+  await page.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
     await page.waitForSelector("#toggle-bg");
 
     step("page loads with three boundary toggles", (await page.locator("#layer-toggle-list li").count()) === 3);
@@ -1230,7 +1243,7 @@ async function main() {
     );
     step(
       "a pin is dropped at the address",
-      (await page.locator(".leaflet-marker-icon").count()) > 0
+      (await page.locator(".leaflet-marker-icon:not(.house-pin)").count()) > 0
     );
 
     // --- The address card: assigned schools at this exact point ---
@@ -1273,7 +1286,7 @@ async function main() {
     );
     step(
       "clear-pin removes the pin and empties the box",
-      (await page.locator(".leaflet-marker-icon").count()) === 0 &&
+      (await page.locator(".leaflet-marker-icon:not(.house-pin)").count()) === 0 &&
         (await page.inputValue("#address-input")) === "" &&
         !(await page.locator("#clear-pin").isVisible())
     );
@@ -1563,7 +1576,7 @@ async function main() {
       (await page.evaluate(() => {
         let n = 0;
         BlockGroupApp.state.map.eachLayer((l) => {
-          if (l.options && l.options.fillColor === "#b3261e") n += 1;
+          if (isPin(l) && pinFill(l) === "#b3261e") n += 1;
         });
         return n;
       })) === 3,
@@ -1606,7 +1619,7 @@ async function main() {
         // Block group C's listing sits east of -118.22; A's two sit west of it.
         let found = false;
         BlockGroupApp.state.map.eachLayer((l) => {
-          if (l.getLatLng && l.options && l.options.fillColor === "#b3261e" && l.getLatLng().lng > -118.22) {
+          if (isPin(l) && pinFill(l) === "#b3261e" && l.getLatLng().lng > -118.22) {
             found = true;
           }
         });
@@ -1616,7 +1629,7 @@ async function main() {
 
     await page.evaluate(() => {
       BlockGroupApp.state.map.eachLayer((l) => {
-        if (l.getLatLng && l.options && l.options.fillColor === "#b3261e" && l.getLatLng().lat === 34.05) {
+        if (isPin(l) && pinFill(l) === "#b3261e" && l.getLatLng().lat === 34.05) {
           l.fire("click", { latlng: l.getLatLng() });
         }
       });
@@ -1678,7 +1691,7 @@ async function main() {
     // block group card.
     await page.evaluate(() => {
       BlockGroupApp.state.map.eachLayer((l) => {
-        if (l.getLatLng && l.options && l.options.fillColor && l.getLatLng().lat === 34.052) {
+        if (isPin(l) && l.getLatLng().lat === 34.052) {
           l.fire("click", { latlng: l.getLatLng() });
         }
       });
@@ -1740,7 +1753,7 @@ async function main() {
       await page.evaluate(() => {
         let grey = 0;
         BlockGroupApp.state.map.eachLayer((l) => {
-          if (l.getLatLng && l.options && l.options.fillColor === "#98a2ac") grey += 1;
+          if (isPin(l) && pinFill(l) === "#98a2ac") grey += 1;
         });
         return grey === 1;
       })
@@ -1763,7 +1776,7 @@ async function main() {
         (await page.evaluate(() => {
           let grey = 0;
           BlockGroupApp.state.map.eachLayer((l) => {
-            if (l.getLatLng && l.options && l.options.fillColor === "#98a2ac") grey += 1;
+            if (isPin(l) && pinFill(l) === "#98a2ac") grey += 1;
           });
           return grey === 0;
         }))
@@ -1778,7 +1791,7 @@ async function main() {
         (await page.evaluate(() => {
           let n = 0;
           BlockGroupApp.state.map.eachLayer((l) => {
-            if (l.options && l.options.fillColor === "#b3261e") n += 1;
+            if (isPin(l) && pinFill(l) === "#b3261e") n += 1;
           });
           return n;
         })) === 2
@@ -1799,7 +1812,7 @@ async function main() {
       (await page.evaluate(() => {
         let n = 0;
         BlockGroupApp.state.map.eachLayer((l) => {
-          if (l.options && l.options.fillColor === "#b3261e") n += 1;
+          if (isPin(l) && pinFill(l) === "#b3261e") n += 1;
         });
         return n;
       })) === 3,
@@ -1816,7 +1829,7 @@ async function main() {
         await BlockGroupApp.reloadListingsForTest();
         let n = 0;
         BlockGroupApp.state.map.eachLayer((l) => {
-          if (l.options && l.options.fillColor === "#b3261e") n += 1;
+          if (isPin(l) && pinFill(l) === "#b3261e") n += 1;
         });
         // Put it back so the counts below are the ones the rest of the run
         // expects.
@@ -1845,7 +1858,7 @@ async function main() {
       (await page.evaluate(() => {
         let n = 0;
         BlockGroupApp.state.map.eachLayer((l) => {
-          if (l.options && l.options.fillColor === "#b3261e") n += 1;
+          if (isPin(l) && pinFill(l) === "#b3261e") n += 1;
         });
         return n;
       })) === 1
@@ -1855,7 +1868,7 @@ async function main() {
       await page.evaluate(() => {
         let inside = true;
         BlockGroupApp.state.map.eachLayer((l) => {
-          if (l.getLatLng && l.options && l.options.fillColor === "#b3261e") {
+          if (isPin(l) && pinFill(l) === "#b3261e") {
             inside = inside && l.getLatLng().lng > -118.22;
           }
         });
@@ -1882,6 +1895,20 @@ async function main() {
       );
       await page.mouse.click(pt.x, pt.y);
     };
+    // A pin is anchored at its TIP, so its body sits above the coordinate.
+    // Clicking the coordinate itself lands under the pin and hits the map -
+    // which is what a user misses too, only they can see where to aim.
+    const clickPinAt = async (lat, lon) => {
+      const pt = await page.evaluate(
+        ([la, lo]) => {
+          const p = BlockGroupApp.state.map.latLngToContainerPoint([la, lo]);
+          const r = document.getElementById("map").getBoundingClientRect();
+          return { x: r.left + p.x, y: r.top + p.y - 14 };
+        },
+        [lat, lon]
+      );
+      await page.mouse.click(pt.x, pt.y);
+    };
     const topPaneAt = async (lat, lon) =>
       page.evaluate(
         ([la, lo]) => {
@@ -1901,7 +1928,7 @@ async function main() {
     });
     await page.waitForTimeout(400);
     step(
-      "empty map between the house dots is not covered by the listings pane",
+      "empty map between the house pins is not covered by the listings pane",
       (await topPaneAt(34.045, -118.245)) === "leaflet-overlay-pane",
       await topPaneAt(34.045, -118.245)
     );
@@ -1909,7 +1936,7 @@ async function main() {
     // Close the house card, then the block group card - the user's sequence.
     await page.evaluate(() => {
       BlockGroupApp.state.map.eachLayer((l) => {
-        if (l.getLatLng && l.options && l.options.fillColor === "#b3261e" && l.getLatLng().lat === 34.05) {
+        if (isPin(l) && pinFill(l) === "#b3261e" && l.getLatLng().lat === 34.05) {
           l.fire("click", { latlng: l.getLatLng() });
         }
       });
@@ -1940,16 +1967,157 @@ async function main() {
       });
     });
     await page.waitForTimeout(500);
-    await clickMapAt(34.05, -118.25);
+    await clickPinAt(34.05, -118.25);
     await page.waitForTimeout(400);
     step(
-      "clicking a house dot with the mouse still opens its card",
+      "clicking a house pin with the mouse opens its card",
       (await page.locator("#house-card").isVisible()) &&
         (await page.locator("#house-card .house-price").innerText()).startsWith("$1,400,000"),
       await page.locator("#house-card .house-price").innerText().catch(() => "no card")
     );
     await page.locator("#house-card .house-close").click();
     await page.waitForTimeout(300);
+
+    // --- Where the cards sit ---------------------------------------------
+    // The block group card used to be centred on the polygon, so it covered
+    // the thing it described - and the house pins inside it.
+    await clickPinAt(34.05, -118.25);
+    await page.waitForTimeout(500);
+    const layout = await page.evaluate(() => {
+      const mapBox = document.getElementById("map").getBoundingClientRect();
+      const popup = document.querySelector(".leaflet-popup").getBoundingClientRect();
+      const house = document.getElementById("house-card").getBoundingClientRect();
+      let bg = null;
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") {
+          const b = l.getBounds();
+          const nw = BlockGroupApp.state.map.latLngToContainerPoint(b.getNorthWest());
+          const se = BlockGroupApp.state.map.latLngToContainerPoint(b.getSouthEast());
+          bg = { left: mapBox.left + nw.x, top: mapBox.top + nw.y, right: mapBox.left + se.x, bottom: mapBox.top + se.y };
+        }
+      });
+      return { mapBox: { left: mapBox.left, top: mapBox.top, width: mapBox.width, height: mapBox.height }, popup, house, bg };
+    });
+    const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    step(
+      "the block group card does not sit on top of its own block group",
+      !overlaps(layout.popup, layout.bg),
+      `card ${Math.round(layout.popup.left)},${Math.round(layout.popup.top)}-${Math.round(layout.popup.right)},${Math.round(
+        layout.popup.bottom
+      )} vs block group ${Math.round(layout.bg.left)},${Math.round(layout.bg.top)}-${Math.round(layout.bg.right)},${Math.round(layout.bg.bottom)}`
+    );
+    step(
+      "it hangs off the block group's top-left corner",
+      layout.popup.right <= layout.bg.left + 2 && layout.popup.bottom <= layout.bg.top + 2,
+      `card bottom-right ${Math.round(layout.popup.right)},${Math.round(layout.popup.bottom)} vs corner ${Math.round(
+        layout.bg.left
+      )},${Math.round(layout.bg.top)}`
+    );
+    step(
+      "the whole card is on screen - the map pans to make room for it",
+      layout.popup.left >= layout.mapBox.left - 1 && layout.popup.top >= layout.mapBox.top - 1,
+      `card at ${Math.round(layout.popup.left)},${Math.round(layout.popup.top)}; map starts at ${Math.round(
+        layout.mapBox.left
+      )},${Math.round(layout.mapBox.top)}`
+    );
+    step(
+      "the house card is the same width as the block group card",
+      Math.abs(layout.house.width - layout.popup.width) <= 2,
+      `house ${Math.round(layout.house.width)}px vs block group ${Math.round(layout.popup.width)}px`
+    );
+    step(
+      "and docks immediately to its right, not to the window edge",
+      layout.house.left >= layout.popup.right && layout.house.left - layout.popup.right < 40,
+      `gap ${Math.round(layout.house.left - layout.popup.right)}px`
+    );
+    step(
+      "the two cards do not overlap each other",
+      !overlaps(layout.house, layout.popup)
+    );
+
+    // --- Show every listing: the bottom-up path ---------------------------
+    await page.locator("#house-card .house-close").click();
+    await page.evaluate(() => BlockGroupApp.state.map.closePopup());
+    await page.waitForTimeout(300);
+    await page.check("#toggle-listings");
+    await page.waitForTimeout(800);
+    step(
+      "the toggle draws every listing, not just the selected block group's",
+      (await page.evaluate(() => {
+        let n = 0;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (isPin(l)) n += 1;
+        });
+        return n;
+      })) === 4,
+      "four homes across the fixture, three in A and one in C"
+    );
+    // Block group C's house. Clicking it must bring C's card with it.
+    await clickPinAt(34.05, -118.21);
+    await page.waitForTimeout(700);
+    step(
+      "clicking a pin opens the house card AND selects its block group",
+      (await page.locator("#house-card").isVisible()) &&
+        (await page.evaluate(() => BlockGroupApp.state.selectedProps.GEOID)) === "060372011003",
+      `selected ${await page.evaluate(() => BlockGroupApp.state.selectedProps.GEOID)}`
+    );
+    step(
+      "both cards are open together - a house is never read without its neighbourhood",
+      (await page.locator(".leaflet-popup").count()) === 1 &&
+        (await page.locator("#house-card .house-price").innerText()).startsWith("$780,000"),
+      await page.locator("#house-card .house-price").innerText()
+    );
+    // Now a house in a DIFFERENT block group: both cards swap.
+    await clickPinAt(34.052, -118.252);
+    await page.waitForTimeout(700);
+    step(
+      "clicking a house in another block group swaps both cards",
+      (await page.evaluate(() => BlockGroupApp.state.selectedProps.GEOID)) === "060372011001" &&
+        (await page.locator("#house-card .house-price").innerText()).startsWith("$995,000"),
+      `${await page.evaluate(() => BlockGroupApp.state.selectedProps.GEOID)} / ${await page
+        .locator("#house-card .house-price")
+        .innerText()}`
+    );
+    // A block group card on its own is fine - the rule is one-way.
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011003") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(600);
+    step(
+      "selecting a block group closes the house card, but not the other way round",
+      !(await page.locator("#house-card").isVisible()) && (await page.locator(".leaflet-popup").count()) === 1
+    );
+    step(
+      "with the toggle on, pins stay on the map for every block group",
+      (await page.evaluate(() => {
+        let n = 0;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (isPin(l)) n += 1;
+        });
+        return n;
+      })) === 4
+    );
+    await page.uncheck("#toggle-listings");
+    await page.waitForTimeout(600);
+    step(
+      "switching it off returns to the selected block group's listings only",
+      (await page.evaluate(() => {
+        let n = 0;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (isPin(l)) n += 1;
+        });
+        return n;
+      })) === 1,
+      "block group C has one"
+    );
+    await page.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(500);
 
     // --- Data sources table ---
     await page.evaluate(() => document.getElementById("sources-details").setAttribute("open", "open"));
@@ -2362,10 +2530,11 @@ async function main() {
         return found;
       }, pattern);
     step(
-      "the cache's real depth is read from maxScale, not from the LOD list",
+      "a service that overstates its cache is corrected from refused tiles",
       Object.values(await maxNativeOf("CONUS_aviation/MapServer")).join() === "12",
-      // tileInfo.lods advertises all 24 levels; only 0-12 were built. Trusting
-      // the list asked for tiles that do not exist and the layer went blank.
+      // tileInfo.lods advertises all 24 levels and this service states no
+      // maxScale; only 0-12 were built. Trusting the list asked for tiles that
+      // do not exist and the layer went blank.
       `${JSON.stringify(await maxNativeOf("CONUS_aviation/MapServer"))} while the LODs advertised 0-23`
     );
     const noiseLegend = await page.locator("#noise-legend").innerText();
@@ -2417,23 +2586,44 @@ async function main() {
       `${await page.locator("#noiseSurface-legend img.swatch").count()} swatches for two services banded the same way`
     );
 
-    // These services do NOT declare maxScale, so the only way to find the real
-    // cache depth is to ask for a tile and be refused. The map is above zoom
-    // 12 here, so the layer asks, is refused, and must step its own native
-    // zoom back rather than leaving the map blank - which is what the user saw
-    // as "shows at zoom 12 and below, nothing above".
+    // These services DO declare maxScale, so the depth comes from the metadata
+    // and no tile is ever wasted asking for a level that was never built.
     step(
-      "a service that overstates its cache is corrected from the tiles themselves",
+      "the cache's real depth is read from maxScale where a service states one",
       Object.values(surfaceLayers).every((z) => z === 12) && Object.values(surfaceLayers).length > 0,
-      `at zoom ${zoomWhenTested}: ${JSON.stringify(surfaceLayers)} after ${
+      `at zoom ${zoomWhenTested}: ${JSON.stringify(surfaceLayers)} (${
         noiseRequests.deepTiles - deepBefore
-      } refused tiles`
+      } tiles refused - should be none)`
     );
     step(
       "and the layer is still on the map, upscaled rather than blank",
       (await page.locator('.leaflet-rasterOverlay-pane img[src*="/tile/"]').count()) > 0,
       `${await page.locator('.leaflet-rasterOverlay-pane img[src*="/tile/"]').count()} tiles drawn above the cache depth`
     );
+    // Switching a layer ON while already zoomed past the cache is the case
+    // that used to kill it: the first tile 404s before anything has drawn, and
+    // the give-up path fired instead of the back-off. Aviation is off at this
+    // point, so this turns it on from cold at zoom 14.
+    await page.click("#toggle-noise");
+    await page.waitForTimeout(400);
+    step("aviation is off before the cold-start test", !(await page.isChecked("#toggle-noise")));
+    await page.evaluate(() => BlockGroupApp.state.map.setZoom(15));
+    await page.waitForTimeout(800);
+    await page.click("#toggle-noise");
+    await page.waitForTimeout(2000);
+    step(
+      "a noise layer switched on while already zoomed in stays on",
+      await page.isChecked("#toggle-noise"),
+      "the toggle used to switch itself back off"
+    );
+    step(
+      "...and actually draws, upscaled from the deepest cached zoom",
+      (await page.locator('.leaflet-rasterOverlay-pane img[src*="/tile/"]').count()) > 0,
+      `${await page.locator('.leaflet-rasterOverlay-pane img[src*="/tile/"]').count()} tiles at zoom 15`
+    );
+    await page.evaluate(() => BlockGroupApp.state.map.setZoom(14));
+    await page.waitForTimeout(600);
+
     await page.click("#toggle-noise-surface");
     await page.waitForTimeout(300);
 
@@ -2758,7 +2948,7 @@ async function main() {
       (await page.evaluate(() => BlockGroupApp.state.selectedProps.GEOID)) === selectedBefore,
       `still ${selectedBefore}`
     );
-    step("the pin lands on the map", (await page.locator(".leaflet-marker-icon").count()) === 1);
+    step("the pin lands on the map", (await page.locator(".leaflet-marker-icon:not(.house-pin)").count()) === 1);
     step("the mode disarms itself after one drop", !(await page.evaluate(() => BlockGroupApp.state.pinArmed)));
     step(
       "the pin is reverse-geocoded",
@@ -2785,7 +2975,7 @@ async function main() {
 
     await page.click("#clear-pin");
     await page.waitForTimeout(200);
-    step("clearing the pin also removes the dropped one", (await page.locator(".leaflet-marker-icon").count()) === 0);
+    step("clearing the pin also removes the dropped one", (await page.locator(".leaflet-marker-icon:not(.house-pin)").count()) === 0);
 
     // Turn the environment layers back off so the teardown checks below see
     // the same map they were written against.
