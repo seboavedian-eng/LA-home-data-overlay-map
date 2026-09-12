@@ -78,5 +78,99 @@ check("negative sentinel values become None", fetch_bg.to_number("-666666666") i
 check("normal values parse", fetch_bg.to_number("1234") == 1234)
 check("empty values become None", fetch_bg.to_number(None) is None)
 
+
+
+# --- Detailed origin: variable discovery -------------------------------------
+# The codes for B03001, B02015 and B04006 used to be written out by hand. They
+# were wrong, one bad code failed the whole request, the table was skipped, and
+# the section vanished from the card without a word. They are now read from the
+# API's own description of each table, so these check the parsing of that.
+
+check(
+    "a leaf's label is its own name, not the whole path",
+    fetch_bg.short_label("Estimate!!Total:!!Arab:!!Lebanese") == "Lebanese",
+    fetch_bg.short_label("Estimate!!Total:!!Arab:!!Lebanese"),
+)
+check(
+    "a group directly under the total keeps its name",
+    fetch_bg.short_label("Estimate!!Total:!!Armenian") == "Armenian",
+    fetch_bg.short_label("Estimate!!Total:!!Armenian"),
+)
+check(
+    "B02015's 'alone or in any combination' qualifier is trimmed",
+    fetch_bg.short_label("Estimate!!Total:!!Korean alone or in any combination") == "Korean",
+    fetch_bg.short_label("Estimate!!Total:!!Korean alone or in any combination"),
+)
+check(
+    "...and the plain 'alone' form too",
+    fetch_bg.short_label("Estimate!!Total:!!Chinese alone") == "Chinese",
+    fetch_bg.short_label("Estimate!!Total:!!Chinese alone"),
+)
+check("the total itself has no name", fetch_bg.short_label("Estimate!!Total:") is None)
+check(
+    "a parent category is not a leaf",
+    not fetch_bg.is_leaf("Estimate!!Total:!!Arab:") and fetch_bg.is_leaf("Estimate!!Total:!!Arab:!!Lebanese"),
+    "parents end in a colon; counting both would double the total",
+)
+for junk in ("Not Hispanic or Latino", "Other groups", "Unclassified or not reported", "Two or more ancestries"):
+    check(
+        f"'{junk}' is kept out of the top five",
+        bool(fetch_bg.ORIGIN_SKIP.match(junk)),
+        "it is a complement or a catch-all, not an origin",
+    )
+check(
+    "a real origin is not caught by that filter",
+    not any(fetch_bg.ORIGIN_SKIP.match(n) for n in ("Armenian", "Iranian", "Mexican", "Korean", "Nicaraguan")),
+)
+
+
+
+# --- The whole discovery, against a table description shaped like the real one
+# This is the step that was guessed before. It runs offline against a stub of
+# the API's groups endpoint, so a change to the parsing cannot quietly produce
+# an empty group list again - which is what made the section disappear.
+_FAKE_GROUPS = {
+    "variables": {
+        "B04006_001E": {"label": "Estimate!!Total:"},
+        "B04006_001M": {"label": "Margin of Error!!Total:"},
+        "B04006_002E": {"label": "Estimate!!Total:!!Afghan"},
+        "B04006_003E": {"label": "Estimate!!Total:!!Armenian"},
+        "B04006_004E": {"label": "Estimate!!Total:!!Arab:"},
+        "B04006_005E": {"label": "Estimate!!Total:!!Arab:!!Lebanese"},
+        "B04006_006E": {"label": "Estimate!!Total:!!Arab:!!Syrian"},
+        "B04006_007E": {"label": "Estimate!!Total:!!Other groups"},
+        "B04006_008E": {"label": "Estimate!!Total:!!Unclassified or not reported"},
+    }
+}
+
+_original_fetch_json = fetch_bg.fetch_json
+fetch_bg.fetch_json = lambda url: _FAKE_GROUPS
+groups = fetch_bg.fetch_group_variables("https://example.invalid", "B04006")
+fetch_bg.fetch_json = _original_fetch_json
+
+check(
+    "every leaf group is discovered, with a readable name",
+    groups == {
+        "B04006_002E": "Afghan",
+        "B04006_003E": "Armenian",
+        "B04006_005E": "Lebanese",
+        "B04006_006E": "Syrian",
+    },
+    str(groups),
+)
+check("the table total is not treated as a group", "B04006_001E" not in groups)
+check("margins of error are ignored", not any(c.endswith("M") for c in groups))
+check("the parent 'Arab:' is skipped, its children are kept", "B04006_004E" not in groups)
+check("catch-alls are dropped", "B04006_007E" not in groups and "B04006_008E" not in groups)
+
+fetch_bg.fetch_json = lambda url: (_ for _ in ()).throw(RuntimeError("503"))
+broken = fetch_bg.fetch_group_variables("https://example.invalid", "B04006")
+fetch_bg.fetch_json = _original_fetch_json
+check(
+    "an unreadable variable list returns nothing rather than raising",
+    broken == {},
+    "the caller reports a skipped table instead of the run dying",
+)
+
 print(f"\n{len(failures) and 'FAILURES: ' + ', '.join(failures) or 'All checks passed.'}")
 sys.exit(1 if failures else 0)

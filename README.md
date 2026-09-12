@@ -239,9 +239,17 @@ Three tables cover it because the Census splits it three ways, and they count
 a Korean one in B02015, an Armenian one in B04006, and one person can appear in
 two of them. The card therefore shows three separate top-five lists, each as a
 share of the block group's population, rather than one merged ranking that
-would double-count. B04006 publishes ~110 ancestries; only those with a real
-presence in LA County are fetched, since the rest are noise at block group
-level - the list is a dict at the top of the fetch script if you want more.
+would double-count. Every group in all three tables is fetched, and the top five of each is shown.
+
+**The variable codes are not written down anywhere.** They were once, and it
+was a mistake: an ACS table's codes cannot be verified without asking the API,
+one wrong code fails the whole request, and the table was then skipped - so the
+section simply never appeared, with nothing to say why. The script now reads
+each table's variable list from the API's own description of it, keeps the leaf
+categories (a parent is the sum of its children), and drops the complements and
+catch-alls - "Not Hispanic or Latino", "Other groups", "Unclassified". If a
+table cannot be fetched the run ends with a WARNING naming it, and the card
+says which table is missing instead of showing nothing.
 
 **Median commute is interpolated, not published.** The Census gives no median
 travel time at block group, only B08303's thirteen bands, so the median is

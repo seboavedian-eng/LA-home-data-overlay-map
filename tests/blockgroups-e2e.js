@@ -179,9 +179,10 @@ const AGE_BRACKETS = {
 
 const CENSUS_DATA = {
   meta: {
-    schemaVersion: 6,
+    schemaVersion: 7,
     year: 2022,
     decennialYear: 2020,
+    originTables: { B03001: "block group", B02015: "block group", B04006: "block group" },
     geoLevels: {
       age: "block group",
       ethnicityAcs: "block group",
@@ -2186,6 +2187,62 @@ async function main() {
       staleLog.replace(/\s+/g, " ").match(/older than this version.{0,90}/i)
     );
     await stalePage.close();
+
+    // The other way the section can be empty: the file is CURRENT, but a table
+    // failed to fetch. That is what actually happened - the codes were guessed,
+    // one was wrong, the request failed, and the section vanished in silence.
+    const failedPage = await browser.newPage();
+    await failedPage.route("**/js/data/bg-la-county.json", (route) =>
+      route.fulfill(
+        json({
+          ...CENSUS_DATA,
+          meta: {
+            ...CENSUS_DATA.meta,
+            originTables: { B03001: "block group", B02015: "block group", B04006: "unavailable" },
+          },
+          blockGroups: Object.fromEntries(
+            Object.entries(CENSUS_DATA.blockGroups).map(([id, rec]) => {
+              const copy = { ...rec };
+              delete copy.originHispanic;
+              delete copy.originAsian;
+              delete copy.originAncestry;
+              return [id, copy];
+            })
+          ),
+        })
+      )
+    );
+    await failedPage.route("**://tile.openstreetmap.org/**", (route) =>
+      route.fulfill({ contentType: "image/png", body: BLANK_PNG })
+    );
+    await failedPage.route("**://tigerweb.geo.census.gov/**", (route) => {
+      const url = route.request().url();
+      if (url.includes("/10/query")) return route.fulfill(json(esriFC([BG_A])));
+      return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
+    });
+    await failedPage.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    await failedPage.waitForFunction(() => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.map);
+    await failedPage.check("#toggle-bg");
+    await failedPage.waitForFunction(
+      () => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.layers.blockGroup,
+      { timeout: 15000 }
+    );
+    await failedPage.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => l.fire("click"));
+    });
+    await failedPage.waitForTimeout(600);
+    const failedCard = await failedPage.locator("#detail-panel").innerText();
+    step(
+      "a table that failed to fetch is named, instead of the section vanishing",
+      /B04006 could not be fetched/.test(failedCard) && /fetch-blockgroup-data\.py/.test(failedCard),
+      failedCard.replace(/\s+/g, " ").match(/detailed origin.{0,140}/i)
+    );
+    step(
+      "and it says to watch the script's own output for the warning",
+      /WARNING near the end/i.test(failedCard),
+      "so a failed table is actionable rather than a mystery"
+    );
+    await failedPage.close();
 
     // --- Data sources table ---
     await page.evaluate(() => document.getElementById("sources-details").setAttribute("open", "open"));

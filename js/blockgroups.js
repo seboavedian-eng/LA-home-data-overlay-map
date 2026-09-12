@@ -493,7 +493,7 @@ const BG_CONFIG = {
   // older file simply lacks the new fields, and the sections that need them
   // vanish with no explanation - which is exactly how the detailed-origin
   // section went missing and looked like a bug in the page.
-  CENSUS_SCHEMA: 6,
+  CENSUS_SCHEMA: 7,
 
   STYLES: {
     zip: { color: "#b3401f", weight: 2, fill: false, opacity: 0.9 },
@@ -3665,8 +3665,22 @@ const BlockGroupApp = (() => {
       return `${subLabel(`${label}`, `ACS ${table}. ${note}`)}${rows}`;
     }).filter(Boolean);
     if (!blocks.length) {
-      const note = staleNote("Detailed origin (ACS B03001, B02015 and B04006)");
-      return note ? `${sectionLabel(`Detailed origin`)}${note}` : "";
+      // Three different reasons for an empty section, and only the reader can
+      // act on two of them - so say which it is instead of showing nothing.
+      const stale = staleNote("Detailed origin (ACS B03001, B02015 and B04006)");
+      if (stale) return `${sectionLabel(`Detailed origin`)}${stale}`;
+      const status = (censusData && censusData.meta && censusData.meta.originTables) || {};
+      const failed = Object.keys(status).filter((t) => status[t] !== "block group" && status[t] !== "tract");
+      if (failed.length) {
+        return `${sectionLabel(`Detailed origin`)}<p class="hint">${failed.join(", ")} could not be fetched
+          the last time you ran <code>${fetchCommand()}</code>, so there is nothing to show. Re-run it and
+          watch for a WARNING near the end of its output.</p>`;
+      }
+      if (Object.keys(status).length) {
+        return `${sectionLabel(`Detailed origin`)}<p class="hint">Nobody in this block group reported a
+          specific origin or ancestry - which happens where the five-year sample is very small.</p>`;
+      }
+      return "";
     }
     return `
       ${sectionLabel(`Detailed origin`, "The five largest groups in each of three ACS tables. They count DIFFERENT things and can overlap - one person can " +
