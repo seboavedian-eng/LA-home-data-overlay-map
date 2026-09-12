@@ -179,7 +179,7 @@ const AGE_BRACKETS = {
 
 const CENSUS_DATA = {
   meta: {
-    schemaVersion: 7,
+    schemaVersion: 8,
     year: 2022,
     decennialYear: 2020,
     originTables: { B03001: "block group", B02015: "block group", B04006: "block group" },
@@ -214,12 +214,18 @@ const CENSUS_DATA = {
       edu25to34BachelorsPlus: 75,
       // Three detailed-origin tables, kept apart because they count different
       // universes and a person can appear in more than one.
-      originHispanic: { Mexican: 300, Salvadoran: 90, Guatemalan: 40 },
-      originHispanicTotal: 450,
-      originAsian: { Korean: 120, Chinese: 60 },
-      originAsianTotal: 200,
-      originAncestry: { Armenian: 150, Iranian: 70, Italian: 30 },
-      originAncestryTotal: 260,
+      // Percentages of the TRACT these came from - 4,000 people, far more than
+      // this block group's 1,000. Head counts over the block group's own
+      // population would read over 100% and mean nothing.
+      originHispanic: { Mexican: 30.0, Salvadoran: 9.0, Guatemalan: 4.0 },
+      originHispanicTotal: 4000,
+      originHispanicGeo: "tract",
+      originAsian: { Korean: 12.0, Chinese: 6.0 },
+      originAsianTotal: 4000,
+      originAsianGeo: "tract",
+      originAncestry: { Armenian: 15.0, Iranian: 7.0, Italian: 3.0 },
+      originAncestryTotal: 4000,
+      originAncestryGeo: "tract",
       ethnicityAcsTotal: 1000,
       ethnicityAcs: {
         "Hispanic or Latino": 450,
@@ -2303,10 +2309,24 @@ async function main() {
       cardHere.replace(/\s+/g, " ").match(/detailed origin.{0,180}/i)
     );
     step(
-      "each is a share of the block group's population, not of its own table",
-      // Mexican 300 of 1,000 people = 30.0%, not 300 of the 450 Hispanic total.
-      /mexican\D*30\.0%/i.test(cardHere),
-      cardHere.replace(/\s+/g, " ").match(/Mexican.{0,16}/i)
+      "shares are shown as percentages of the tract they came from",
+      // 30.0% is stored directly. Computed as a count over this block group's
+      // 1,000 people it would have been 3,000% - which is what a tract count
+      // divided by a block group population does.
+      /mexican\D*30\.0%/i.test(cardHere) && /armenian\D*15\.0%/i.test(cardHere),
+      cardHere.replace(/\s+/g, " ").match(/Mexican.{0,16}|Armenian.{0,16}/g)
+    );
+    step(
+      "the card says these are tract figures, not block group ones",
+      /ancestry \(tract\)/i.test(cardHere),
+      cardHere.replace(/\s+/g, " ").match(/ancestry[^\n]{0,20}/i)
+    );
+    step(
+      "no head counts are shown beside them, since the counts are the tract's",
+      !/1[,.]?500 people|4[,.]?000 people/.test(
+        (cardHere.match(/detailed origin[\s\S]{0,400}/i) || [""])[0]
+      ),
+      "a tract head count under a block group card would be read as the block group's"
     );
     step(
       "children per household is derived from the age brackets and household count",

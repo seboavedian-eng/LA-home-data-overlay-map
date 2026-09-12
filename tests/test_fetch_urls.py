@@ -172,5 +172,74 @@ check(
     "the caller reports a skipped table instead of the run dying",
 )
 
+
+# --- A response can succeed and still be empty -------------------------------
+# B03001, B02015 and B04006 are published at TRACT level. The API does not
+# refuse them at block group: it accepts the query and answers nulls for every
+# row. Treating that as success is what made the card say nobody here had an
+# ancestry, for every block group in the county.
+empty_rows = {"060372011001": {"B04006_001E": "1500", "B04006_002E": None, "B04006_003E": ""}}
+full_rows = {"060372011001": {"B04006_001E": "1500", "B04006_002E": "120", "B04006_003E": ""}}
+check(
+    "a response of nothing but nulls does not count as having values",
+    not fetch_bg.has_any_value(empty_rows, ["B04006_001E", "B04006_002E", "B04006_003E"]),
+    "so the fetch falls through to tract level instead of stopping here",
+)
+check(
+    "a response with even one real number does count",
+    fetch_bg.has_any_value(full_rows, ["B04006_001E", "B04006_002E", "B04006_003E"]),
+)
+check(
+    "the table total alone is not enough - it is populated even when the groups are not",
+    not fetch_bg.has_any_value({"x": {"B04006_001E": "1500"}}, ["B04006_001E", "B04006_002E"]),
+    "B04006_001E is excluded from the test on purpose",
+)
+
+# --- Top five, as shares of the row's own total ------------------------------
+row = {
+    "B04006_001E": "2000",
+    "B04006_002E": "500",   # Armenian
+    "B04006_003E": "300",   # Iranian
+    "B04006_004E": "200",   # Italian
+    "B04006_005E": "100",   # Russian
+    "B04006_006E": "50",    # Greek
+    "B04006_007E": "10",    # Polish - sixth, so dropped
+    "B04006_008E": "0",     # zero, never shown
+}
+groups = {
+    "B04006_002E": "Armenian", "B04006_003E": "Iranian", "B04006_004E": "Italian",
+    "B04006_005E": "Russian", "B04006_006E": "Greek", "B04006_007E": "Polish",
+    "B04006_008E": "Swedish",
+}
+shares, total = fetch_bg.top_origin_groups(row, groups, "B04006_001E")
+check(
+    "the top five are returned, largest first",
+    list(shares) == ["Armenian", "Iranian", "Italian", "Russian", "Greek"],
+    str(list(shares)),
+)
+check(
+    "each is a percentage of the row's own total, not a head count",
+    shares["Armenian"] == 25.0 and shares["Greek"] == 2.5,
+    f"Armenian {shares['Armenian']}% of 2,000; Greek {shares['Greek']}%",
+)
+check("the sixth largest is dropped", "Polish" not in shares)
+check("a group with nobody in it is not listed", "Swedish" not in shares)
+check("the total comes back for the tooltip", total == 2000, str(total))
+check(
+    "a row with no total yields nothing rather than dividing by zero",
+    fetch_bg.top_origin_groups({"B04006_001E": "0", "B04006_002E": "5"}, groups, "B04006_001E") == (None, None),
+)
+check(
+    "a row where every group is empty yields nothing",
+    fetch_bg.top_origin_groups({"B04006_001E": "2000"}, groups, "B04006_001E") == (None, None),
+)
+
+for junk in ("Other Central American", "All other Hispanic or Latino", "Uncategorized", "Unknown", "Some other race"):
+    check(
+        f"'{junk}' is excluded - only real origins matter",
+        bool(fetch_bg.ORIGIN_SKIP.match(junk)),
+    )
+
+
 print(f"\n{len(failures) and 'FAILURES: ' + ', '.join(failures) or 'All checks passed.'}")
 sys.exit(1 if failures else 0)

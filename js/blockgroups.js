@@ -493,7 +493,7 @@ const BG_CONFIG = {
   // older file simply lacks the new fields, and the sections that need them
   // vanish with no explanation - which is exactly how the detailed-origin
   // section went missing and looked like a bug in the page.
-  CENSUS_SCHEMA: 7,
+  CENSUS_SCHEMA: 8,
 
   STYLES: {
     zip: { color: "#b3401f", weight: 2, fill: false, opacity: 0.9 },
@@ -3138,6 +3138,19 @@ const BlockGroupApp = (() => {
     return p === null ? "n/a" : `${p.toFixed(1)}%`;
   }
 
+  // A bar whose percentage is already known, rather than derived from a count
+  // over a whole. The detailed-origin figures are shares of the TRACT the
+  // numbers came from; dividing them by this block group's population - which
+  // is what a count-based bar would do - can exceed 100% and means nothing.
+  function pctBarRow(label, percent, note) {
+    const width = Math.max(0, Math.min(100, percent));
+    return `<div class="bar-row">
+      <div class="bar-label"><span>${label}</span><span class="pct">${percent.toFixed(1)}%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div>
+      ${note ? `<div class="bar-label"><span class="layer-desc">${note}</span></div>` : ""}
+    </div>`;
+  }
+
   function barRow(label, count, whole) {
     const p = pctOf(count, whole);
     const width = p === null ? 0 : Math.min(100, p);
@@ -3654,15 +3667,25 @@ const BlockGroupApp = (() => {
 
   function originRows(record) {
     const blocks = ORIGIN_GROUPS.map(({ key, label, table, note }) => {
-      const counts = record[key];
-      const whole = record.totalPopulation;
-      if (!counts || !whole) return "";
-      const rows = Object.entries(counts)
+      const shares = record[key];
+      if (!shares || !Object.keys(shares).length) return "";
+      const geo = record[`${key}Geo`] || "tract";
+      const total = record[`${key}Total`];
+      const where = geo === "block group" ? "this block group" : "the surrounding census tract";
+      const rows = Object.entries(shares)
         .sort((a, b) => b[1] - a[1])
-        .map(([name, n]) => barRow(name, n, whole))
+        .map(([name, pct]) => pctBarRow(name, pct))
         .join("");
-      if (!rows) return "";
-      return `${subLabel(`${label}`, `ACS ${table}. ${note}`)}${rows}`;
+      return `${subLabel(
+        `${label}${geo === "block group" ? "" : " (tract)"}`,
+        `ACS ${table}. ${note} Shares are of ${where}${
+          total ? `, ${Utils.fmtNumber(total)} people` : ""
+        }. ${
+          geo === "block group"
+            ? ""
+            : "The Census does not publish this table below tract level, so every block group inside a tract shows the same figures - it describes the neighbourhood around the block group rather than the block group itself."
+        }`
+      )}${rows}`;
     }).filter(Boolean);
     if (!blocks.length) {
       // Three different reasons for an empty section, and only the reader can

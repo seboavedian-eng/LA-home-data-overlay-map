@@ -230,7 +230,20 @@ ORIGIN_TABLES = [
 # Leaves that are not an origin: the "not Hispanic" complement, and the
 # catch-alls that would otherwise top every list without saying anything.
 ORIGIN_SKIP = re.compile(
-    r"^(not\b|unclassified|other groups?\b|unreported|two or more|all other)", re.IGNORECASE
+    r"^("
+    r"not\b"              # "Not Hispanic or Latino" - the complement, not an origin
+    r"|other\b"           # "Other groups", "Other Central American", ...
+    r"|all other\b"
+    r"|unclassified"
+    r"|uncategori[sz]ed"
+    r"|unreported"
+    r"|unknown"
+    r"|not specified"
+    r"|not reported"
+    r"|two or more"
+    r"|some other"
+    r")",
+    re.IGNORECASE,
 )
 
 B19013_MEDIAN_HH = "B19013_001E"
@@ -339,6 +352,31 @@ def is_leaf(label):
     return not str(label or "").rstrip().endswith(":")
 
 
+def top_origin_groups(row, groups, total_code, limit=5):
+    """
+    The largest named groups in one row, as PERCENTAGES of that row's own total.
+
+    Percentages rather than counts because these tables are published by tract:
+    a tract's head-count divided by a block group's population is a meaningless
+    number, and can exceed 100%. A share of the same tract the counts came from
+    is the only honest figure, and it is what a reader wants anyway.
+
+    Returns (ordered {label: percent}, total) or (None, None).
+    """
+    total = to_number(row.get(total_code))
+    if not total or total <= 0:
+        return None, None
+    counts = []
+    for code, label in groups.items():
+        n = to_number(row.get(code))
+        if n and n > 0:
+            counts.append((n, label))
+    if not counts:
+        return None, None
+    counts.sort(reverse=True)
+    return {label: round(100 * n / total, 1) for n, label in counts[:limit]}, int(total)
+
+
 def fetch_group_variables(base, table):
     """
     {variable code: short label} for a table's LEAF estimate variables, read
@@ -368,11 +406,29 @@ def fetch_group_variables(base, table):
     return out
 
 
-def fetch_table(base, variables, key, label, prefer="block group"):
+def has_any_value(rows, variables):
+    """Did the response actually carry numbers, or just a shape full of nulls?"""
+    wanted = [v for v in variables if not v.endswith("_001E")]
+    for values in rows.values():
+        for code in wanted:
+            raw = values.get(code)
+            if raw not in (None, "", "null") and to_number(raw) is not None:
+                return True
+    return False
+
+
+def fetch_table(base, variables, key, label, prefer="block group", require_values=False):
     """
     Fetch a table, chunked around the API's 50-variable cap.
     Falls back to tract level if block group isn't available for this table.
     Returns (data, geo_level_actually_used) or (None, None) if both fail.
+
+    require_values matters for tables that are only PUBLISHED at tract level.
+    The API does not refuse those at block group - it accepts the query and
+    answers with nulls for every row. Treating that as success is how the
+    detailed-origin tables came back "available at block group" and yielded
+    nothing at all, leaving the card to report that nobody here had an
+    ancestry. With require_values set, an all-empty answer is not success.
     """
     for geo_level in ([prefer, "tract"] if prefer == "block group" else [prefer]):
         merged = {}
@@ -399,6 +455,13 @@ def fetch_table(base, variables, key, label, prefer="block group"):
             continue
         except Exception as err:  # noqa: BLE001 - report and keep going
             print(f"  {label}: failed at {geo_level} ({type(err).__name__}: {err})")
+            continue
+
+        if require_values and merged and not has_any_value(merged, variables):
+            print(
+                f"  {label}: answered at {geo_level} but every value was empty"
+                " - it is not really published at this geography, trying the next one"
+            )
             continue
 
         note = "" if geo_level == "block group" else "  <-- FELL BACK TO TRACT LEVEL"
@@ -584,7 +647,9 @@ def main():
             continue
         print(f"  {table}: {len(groups)} groups to fetch")
         total_code = f"{table}_001E"
-        data, geo = fetch_table(acs, [total_code] + sorted(groups), args.key, table)
+        data, geo = fetch_table(
+            acs, [total_code] + sorted(groups), args.key, table, require_values=True
+        )
         if not data:
             origin_status[table] = "unavailable"
             continue
@@ -684,16 +749,18 @@ def main():
             rec["familiesWithChildren"] = total(fam_row, B11003_WITH_OWN_CHILDREN)
 
         # The five largest groups in each origin table, as counts.
+        # Detailed origin. These come from the tract this block group sits in,
+        # so they are stored as shares of that tract rather than head counts.
         for key, (table_data, table_geo, groups, total_code) in origin.items():
             row = lookup(table_data, table_geo)
             if not row:
                 continue
-            counts = {label: to_number(row.get(code)) or 0 for code, label in groups.items()}
-            top = sorted(((n, label) for label, n in counts.items() if n > 0), reverse=True)[:5]
-            if not top:
+            shares, total = top_origin_groups(row, groups, total_code)
+            if not shares:
                 continue
-            rec[key] = {label: n for n, label in top}
-            rec[key + "Total"] = to_number(row.get(total_code))
+            rec[key] = shares
+            rec[key + "Total"] = total
+            rec[key + "Geo"] = table_geo
 
         young_row = lookup(edu_young, edu_young_geo) if edu_young else None
         if young_row:
@@ -732,7 +799,7 @@ def main():
         "meta": {
             # Bumped when the record shape changes, so the page can tell a
             # stale data file from a missing one and say which it is.
-            "schemaVersion": 7,
+            "schemaVersion": 8,
             # Which detailed-origin tables actually made it in. Without this the
             # page cannot tell "nobody here reported an ancestry" from "that
             # table was never fetched", and the section vanishes either way.

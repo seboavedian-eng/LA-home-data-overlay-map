@@ -251,6 +251,19 @@ catch-alls - "Not Hispanic or Latino", "Other groups", "Unclassified". If a
 table cannot be fetched the run ends with a WARNING naming it, and the card
 says which table is missing instead of showing nothing.
 
+**These three are published at TRACT level, and shown as percentages.** The
+Census does not break them down to block group. Worse, the API does not refuse
+a block-group query for them - it answers with nulls for every row, which looks
+exactly like success. So the fetch now treats an all-empty answer as "not
+really published here" and falls through to tract.
+
+That makes the denominator the whole point: a tract's head count over a block
+group's population is meaningless and routinely exceeds 100%. The figures are
+therefore stored as **shares of the tract they came from**, computed when the
+file is built, and the card labels them `(tract)` and says so in the tooltip.
+Every block group inside a tract shows the same figures - this describes the
+neighbourhood around a block group, not the block group itself.
+
 **Median commute is interpolated, not published.** The Census gives no median
 travel time at block group, only B08303's thirteen bands, so the median is
 found inside whichever band it falls in. Taking the band's midpoint instead
