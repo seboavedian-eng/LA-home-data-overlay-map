@@ -58,15 +58,32 @@ check(
     ", ".join(unused) if unused else f"all {len(census_fields)} used",
 )
 
-# Fields written through a variable key (the detailed-origin tables) are named
-# at the call site instead, so they are listed explicitly.
-dynamic = re.findall(r'top_groups\([^,]+,\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*"([A-Za-z0-9]+)"', census)
+# The detailed-origin fields are written through a variable key, so the names
+# come from the table list rather than from rec["..."] assignments.
+dynamic = re.findall(r'\(\s*"(?:B\d{5})"\s*,\s*"([A-Za-z0-9]+)"', census)
 check("the detailed-origin tables are wired up", len(dynamic) == 3, ", ".join(dynamic))
 unused_dynamic = [f for f in dynamic if not mentioned(f)]
 check(
     "every detailed-origin field reaches the page",
     not unused_dynamic,
     ", ".join(unused_dynamic) if unused_dynamic else "all used",
+)
+
+# Variable codes for these tables must not be written out by hand: they cannot
+# be verified without asking the API, one wrong code fails the whole request,
+# and the table is then skipped with nothing on the card to say so.
+# B03002's eight codes stay written out - they are few, stable, and proven.
+# These three are the ones with a hundred-odd codes each that cannot be checked.
+hardcoded = re.findall(r'"(B03001|B02015|B04006)_\d+E"', census)
+check(
+    "detailed-origin variable codes are discovered, not hardcoded",
+    not hardcoded,
+    ", ".join(hardcoded[:5]) if hardcoded else "read from the API's own table description",
+)
+check(
+    "a table that fails to fetch is recorded for the page to explain",
+    '"originTables"' in census and "originTables" in page,
+    "meta.originTables",
 )
 
 # --- Parcel prices -----------------------------------------------------------
