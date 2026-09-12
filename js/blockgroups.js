@@ -488,6 +488,12 @@ const BG_CONFIG = {
 
   // Produced by scripts/fetch-blockgroup-data.py (see README).
   BLOCK_GROUP_DATA: "js/data/bg-la-county.json",
+  // The schema this build of the page expects. Bumped whenever the fetch
+  // script starts writing fields the page relies on. Without this check an
+  // older file simply lacks the new fields, and the sections that need them
+  // vanish with no explanation - which is exactly how the detailed-origin
+  // section went missing and looked like a bug in the page.
+  CENSUS_SCHEMA: 6,
 
   STYLES: {
     zip: { color: "#b3401f", weight: 2, fill: false, opacity: 0.9 },
@@ -592,6 +598,15 @@ const BlockGroupApp = (() => {
       );
       if (count === 0) {
         Utils.logStatus("census", "warn", "The data file loaded but contains zero block groups - re-run the fetch script.");
+      }
+      if (censusIsStale()) {
+        Utils.logStatus(
+          "census",
+          "warn",
+          `Your block group data file is older than this version of the page (schema ${
+            (censusData.meta && censusData.meta.schemaVersion) || "1"
+          }, expected ${BG_CONFIG.CENSUS_SCHEMA}). Sections added since it was built will be missing. Re-run ${fetchCommand()}.`
+        );
       }
     } catch (err) {
       censusDataError = err;
@@ -3621,6 +3636,22 @@ const BlockGroupApp = (() => {
     },
   ];
 
+  // True when the loaded file was built by an older fetch script than this
+  // page expects, so some sections have nothing to draw.
+  function censusIsStale() {
+    if (!censusData || !censusData.meta) return false;
+    return (Number(censusData.meta.schemaVersion) || 1) < BG_CONFIG.CENSUS_SCHEMA;
+  }
+
+  // A section with no data says why rather than disappearing. "Nothing here"
+  // and "you have not fetched it yet" look identical otherwise, and the second
+  // one is fixable.
+  function staleNote(what) {
+    if (!censusIsStale()) return "";
+    return `<p class="hint">${what} needs a newer data file than the one you have. Re-run
+      <code>${fetchCommand()}</code> and reload.</p>`;
+  }
+
   function originRows(record) {
     const blocks = ORIGIN_GROUPS.map(({ key, label, table, note }) => {
       const counts = record[key];
@@ -3633,7 +3664,10 @@ const BlockGroupApp = (() => {
       if (!rows) return "";
       return `${subLabel(`${label}`, `ACS ${table}. ${note}`)}${rows}`;
     }).filter(Boolean);
-    if (!blocks.length) return "";
+    if (!blocks.length) {
+      const note = staleNote("Detailed origin (ACS B03001, B02015 and B04006)");
+      return note ? `${sectionLabel(`Detailed origin`)}${note}` : "";
+    }
     return `
       ${sectionLabel(`Detailed origin`, "The five largest groups in each of three ACS tables. They count DIFFERENT things and can overlap - one person can " +
           "be Mexican-origin in B03001 and of Spanish ancestry in B04006 - so they are listed separately rather than ranked " +

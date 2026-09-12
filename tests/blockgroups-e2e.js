@@ -179,7 +179,7 @@ const AGE_BRACKETS = {
 
 const CENSUS_DATA = {
   meta: {
-    schemaVersion: 2,
+    schemaVersion: 6,
     year: 2022,
     decennialYear: 2020,
     geoLevels: {
@@ -2126,6 +2126,66 @@ async function main() {
       });
     });
     await page.waitForTimeout(500);
+
+    // --- An out-of-date data file says so, rather than losing a section ------
+    // A file built before the detailed-origin tables existed simply has no
+    // such fields, and the section used to vanish without a word - which looks
+    // exactly like a broken page rather than a fetch you have not run.
+    const stalePage = await browser.newPage();
+    await stalePage.route("**/js/data/bg-la-county.json", (route) =>
+      route.fulfill(
+        json({
+          ...CENSUS_DATA,
+          meta: { ...CENSUS_DATA.meta, schemaVersion: 2 },
+          blockGroups: Object.fromEntries(
+            Object.entries(CENSUS_DATA.blockGroups).map(([id, rec]) => {
+              const copy = { ...rec };
+              delete copy.originHispanic;
+              delete copy.originAsian;
+              delete copy.originAncestry;
+              return [id, copy];
+            })
+          ),
+        })
+      )
+    );
+    await stalePage.route("**://tile.openstreetmap.org/**", (route) =>
+      route.fulfill({ contentType: "image/png", body: BLANK_PNG })
+    );
+    await stalePage.route("**://tigerweb.geo.census.gov/**", (route) => {
+      const url = route.request().url();
+      if (url.includes("/10/query")) return route.fulfill(json(esriFC([BG_A])));
+      return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
+    });
+    await stalePage.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    await stalePage.waitForFunction(() => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.map);
+    await stalePage.check("#toggle-bg");
+    await stalePage.waitForFunction(
+      () => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.layers.blockGroup,
+      { timeout: 15000 }
+    );
+    await stalePage.evaluate(() => {
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => l.fire("click"));
+    });
+    await stalePage.waitForTimeout(600);
+    const staleCard = await stalePage.locator("#detail-panel").innerText();
+    step(
+      "an older data file is named as the reason a section is empty",
+      /detailed origin/i.test(staleCard) && /newer data file/i.test(staleCard),
+      staleCard.replace(/\s+/g, " ").match(/detailed origin.{0,120}/i)
+    );
+    step(
+      "and it names the script to run",
+      /fetch-blockgroup-data\.py/.test(staleCard),
+      staleCard.replace(/\s+/g, " ").match(/fetch-blockgroup-data.{0,20}/)
+    );
+    const staleLog = await stalePage.locator("#status-log").innerText();
+    step(
+      "the status log warns about the version too, not just the one section",
+      /older than this version/i.test(staleLog) && /schema 2/.test(staleLog),
+      staleLog.replace(/\s+/g, " ").match(/older than this version.{0,90}/i)
+    );
+    await stalePage.close();
 
     // --- Data sources table ---
     await page.evaluate(() => document.getElementById("sources-details").setAttribute("open", "open"));
