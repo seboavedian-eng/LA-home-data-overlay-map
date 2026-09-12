@@ -222,10 +222,18 @@ B15001_25_34_BACHELORS_PLUS = ["B15001_017E", "B15001_018E", "B15001_058E", "B15
 # the section simply never appeared on the card. The codes and their labels are
 # now read from the API's own description of each table, which cannot drift.
 ORIGIN_TABLES = [
-    ("B03001", "originHispanic", "Hispanic origin, by specific origin"),
-    ("B02015", "originAsian", "Asian population, by detailed group"),
-    ("B04006", "originAncestry", "Ancestry, self-reported"),
+    ("B03001", "Hispanic origin, by specific origin"),
+    ("B02015", "Asian population, by detailed group"),
+    ("B04006", "Ancestry, self-reported"),
 ]
+
+# The three are merged into ONE ranking, so they need ONE denominator, and it
+# has to be the same population for every group or the percentages are not
+# comparable. B03001 and B04006 are both universed on the total population, so
+# either serves. B02015 is NOT - its total is the Asian population alone - so
+# its groups are counted against the tract's population like everything else,
+# and its own total is never used as a denominator.
+ORIGIN_POP_TABLES = ("B04006", "B03001")
 
 # Leaves that are not an origin: the "not Hispanic" complement, and the
 # catch-alls that would otherwise top every list without saying anything.
@@ -352,33 +360,56 @@ def is_leaf(label):
     return not str(label or "").rstrip().endswith(":")
 
 
-def top_origin_groups(row, groups, total_code, limit=5):
+def merge_origin_groups(per_table, limit=5):
     """
-    The largest named groups in one row, as PERCENTAGES of that row's own total.
+    ONE ranking of the largest origins across all three tables.
 
-    Percentages rather than counts because these tables are published by tract:
-    a tract's head-count divided by a block group's population is a meaningless
-    number, and can exceed 100%. A share of the same tract the counts came from
-    is the only honest figure, and it is what a reader wants anyway.
+    per_table is {table: (row, {code: label})}, each row for the same tract.
 
-    Returns (ordered {label: percent}, total) or (None, None).
+    All three tables count PEOPLE, so every group is divided by the same
+    figure - the tract's total population - and the results are directly
+    comparable. B02015's own total is the Asian population only and is
+    deliberately not used for this; using each table's own total would have
+    made a 30%-of-Asians group outrank a 20%-of-everyone one.
+
+    The same name can appear in two tables (Spaniard is both a Hispanic origin
+    and an ancestry). Those are the SAME people counted twice, so the larger
+    count wins rather than the two being added.
+
+    Returns (ordered {label: percent}, denominator, {label: table}) or
+    (None, None, None).
     """
-    # Named denominator, not `total`: that is a module-level helper here, and
-    # shadowing it inside a function is how the last run died.
-    denominator = to_number(row.get(total_code))
-    if not denominator or denominator <= 0:
-        return None, None
-    counts = []
-    for code, label in groups.items():
-        n = to_number(row.get(code))
-        if n and n > 0:
-            counts.append((n, label))
-    if not counts:
-        return None, None
-    counts.sort(reverse=True)
+    denominator = None
+    for table in ORIGIN_POP_TABLES:
+        entry = per_table.get(table)
+        if not entry:
+            continue
+        value = to_number(entry[0].get(f"{table}_001E"))
+        if value and value > 0:
+            denominator = value
+            break
+    if not denominator:
+        # Only B02015 landed, whose total is not the population. There is no
+        # honest shared denominator, so nothing is claimed.
+        return None, None, None
+
+    best = {}
+    for table, (row, groups) in per_table.items():
+        for code, label in groups.items():
+            n = to_number(row.get(code))
+            if not n or n <= 0:
+                continue
+            if label not in best or n > best[label][0]:
+                best[label] = (n, table)
+
+    if not best:
+        return None, None, None
+
+    ranked = sorted(((n, label, table) for label, (n, table) in best.items()), reverse=True)[:limit]
     return (
-        {label: round(100 * n / denominator, 1) for n, label in counts[:limit]},
+        {label: round(100 * n / denominator, 1) for n, label, _ in ranked},
         int(denominator),
+        {label: table for _, label, table in ranked},
     )
 
 
@@ -649,7 +680,7 @@ def main():
     # Detailed origin: ask the API what each table contains, then fetch it.
     origin = {}
     origin_status = {}
-    for table, key, title in ORIGIN_TABLES:
+    for table, title in ORIGIN_TABLES:
         print(f"\n{title} ({table}):")
         groups = fetch_group_variables(acs, table)
         if not groups:
@@ -665,7 +696,7 @@ def main():
             origin_status[table] = "unavailable"
             continue
         origin_status[table] = geo
-        origin[key] = (data, geo, groups, total_code)
+        origin[table] = (data, geo, groups)
 
     print("\nEducation among 25-34 year olds (B15001):")
     edu_young, edu_young_geo = fetch_table(
@@ -760,21 +791,22 @@ def main():
             rec["familiesWithChildren"] = total(fam_row, B11003_WITH_OWN_CHILDREN)
 
         # The five largest groups in each origin table, as counts.
-        # Detailed origin. These come from the tract this block group sits in,
-        # so they are stored as shares of that tract rather than head counts.
-        for key, (table_data, table_geo, groups, total_code) in origin.items():
+        # Detailed origin: one ranking across all three tables, as shares of the
+        # tract this block group sits in.
+        per_table = {}
+        origin_geo = None
+        for table, (table_data, table_geo, groups) in origin.items():
             row = lookup(table_data, table_geo)
-            if not row:
-                continue
-            # NOT `total` - that is the name of a module-level helper this
-            # function calls earlier, and binding it here makes it local for
-            # the whole of main(), so the earlier call fails at run time.
-            shares, group_total = top_origin_groups(row, groups, total_code)
-            if not shares:
-                continue
-            rec[key] = shares
-            rec[key + "Total"] = group_total
-            rec[key + "Geo"] = table_geo
+            if row:
+                per_table[table] = (row, groups)
+                origin_geo = origin_geo or table_geo
+        if per_table:
+            shares, denominator, sources = merge_origin_groups(per_table)
+            if shares:
+                rec["originTop"] = shares
+                rec["originTopTotal"] = denominator
+                rec["originTopGeo"] = origin_geo
+                rec["originTopSource"] = sources
 
         young_row = lookup(edu_young, edu_young_geo) if edu_young else None
         if young_row:
@@ -813,7 +845,7 @@ def main():
         "meta": {
             # Bumped when the record shape changes, so the page can tell a
             # stale data file from a missing one and say which it is.
-            "schemaVersion": 8,
+            "schemaVersion": 9,
             # Which detailed-origin tables actually made it in. Without this the
             # page cannot tell "nobody here reported an ancestry" from "that
             # table was never fetched", and the section vanishes either way.

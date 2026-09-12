@@ -239,7 +239,19 @@ Three tables cover it because the Census splits it three ways, and they count
 a Korean one in B02015, an Armenian one in B04006, and one person can appear in
 two of them. The card therefore shows three separate top-five lists, each as a
 share of the block group's population, rather than one merged ranking that
-would double-count. Every group in all three tables is fetched, and the top five of each is shown.
+would double-count. Every group in all three tables is fetched, and they are merged into **one**
+top five - "what are the biggest groups around here" is a single question, not
+three.
+
+**Merging them takes one shared denominator.** The three tables have different
+universes: B03001 and B04006 are universed on the whole population, B02015 only
+on the Asian population. Ranking each by its own total would let a group at 30%
+of Asians outrank one at 20% of everybody, so every group is divided by the
+tract's total population instead. Where the same name appears in two tables
+(Spaniard is both a Hispanic origin and an ancestry) it is the same people, so
+the larger count is used rather than the two being added. The shares can still
+total more than 100%, because one person answers more than one of these
+questions - the card says so.
 
 **The variable codes are not written down anywhere.** They were once, and it
 was a mistake: an ACS table's codes cannot be verified without asking the API,

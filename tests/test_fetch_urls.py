@@ -194,44 +194,79 @@ check(
     not fetch_bg.has_any_value({"x": {"B04006_001E": "1500"}}, ["B04006_001E", "B04006_002E"]),
     "B04006_001E is excluded from the test on purpose",
 )
+# --- ONE top five, merged across all three tables ----------------------------
+# The three tables have DIFFERENT universes: B03001 and B04006 are universed on
+# the whole population, B02015 only on the Asian population. Ranking each by
+# its own total would let a group at 30% of Asians outrank one at 20% of
+# everybody, so every group is divided by the tract's population instead.
+per_table = {
+    "B04006": (
+        {"B04006_001E": "10000", "B04006_002E": "2000", "B04006_003E": "500", "B04006_004E": "0"},
+        {"B04006_002E": "Armenian", "B04006_003E": "Italian", "B04006_004E": "Swedish"},
+    ),
+    "B03001": (
+        {"B03001_001E": "10000", "B03001_002E": "3000", "B03001_003E": "800"},
+        {"B03001_002E": "Mexican", "B03001_003E": "Salvadoran"},
+    ),
+    "B02015": (
+        # Its own total is the Asian population only - 1,200, not 10,000.
+        {"B02015_001E": "1200", "B02015_002E": "900", "B02015_003E": "300"},
+        {"B02015_002E": "Korean", "B02015_003E": "Filipino"},
+    ),
+}
+shares, denominator, sources = fetch_bg.merge_origin_groups(per_table)
 
-# --- Top five, as shares of the row's own total ------------------------------
-row = {
-    "B04006_001E": "2000",
-    "B04006_002E": "500",   # Armenian
-    "B04006_003E": "300",   # Iranian
-    "B04006_004E": "200",   # Italian
-    "B04006_005E": "100",   # Russian
-    "B04006_006E": "50",    # Greek
-    "B04006_007E": "10",    # Polish - sixth, so dropped
-    "B04006_008E": "0",     # zero, never shown
-}
-groups = {
-    "B04006_002E": "Armenian", "B04006_003E": "Iranian", "B04006_004E": "Italian",
-    "B04006_005E": "Russian", "B04006_006E": "Greek", "B04006_007E": "Polish",
-    "B04006_008E": "Swedish",
-}
-shares, total = fetch_bg.top_origin_groups(row, groups, "B04006_001E")
 check(
-    "the top five are returned, largest first",
-    list(shares) == ["Armenian", "Iranian", "Italian", "Russian", "Greek"],
+    "one ranking is returned across all three tables, largest first",
+    list(shares) == ["Mexican", "Armenian", "Korean", "Salvadoran", "Italian"],
     str(list(shares)),
 )
 check(
-    "each is a percentage of the row's own total, not a head count",
-    shares["Armenian"] == 25.0 and shares["Greek"] == 2.5,
-    f"Armenian {shares['Armenian']}% of 2,000; Greek {shares['Greek']}%",
+    "the denominator is the tract's population, not each table's own total",
+    denominator == 10000,
+    f"{denominator} - B02015's own total is 1,200 and must not be used",
 )
-check("the sixth largest is dropped", "Polish" not in shares)
+check(
+    "an Asian group is measured against everybody, like the rest",
+    shares["Korean"] == 9.0,
+    f"Korean {shares['Korean']}% - 900 of 10,000, not 75% of the 1,200 Asians",
+)
+check(
+    "shares are of the whole population",
+    shares["Mexican"] == 30.0 and shares["Armenian"] == 20.0,
+    str(shares),
+)
 check("a group with nobody in it is not listed", "Swedish" not in shares)
-check("the total comes back for the tooltip", total == 2000, str(total))
+check("the sixth largest is dropped", "Filipino" not in shares)
 check(
-    "a row with no total yields nothing rather than dividing by zero",
-    fetch_bg.top_origin_groups({"B04006_001E": "0", "B04006_002E": "5"}, groups, "B04006_001E") == (None, None),
+    "each group records which table it came from",
+    sources["Mexican"] == "B03001" and sources["Korean"] == "B02015" and sources["Armenian"] == "B04006",
+    str(sources),
+)
+
+# The same name in two tables is the same people counted twice.
+dupe = {
+    "B04006": ({"B04006_001E": "1000", "B04006_002E": "150"}, {"B04006_002E": "Spaniard"}),
+    "B03001": ({"B03001_001E": "1000", "B03001_002E": "200"}, {"B03001_002E": "Spaniard"}),
+}
+dupe_shares, _, dupe_sources = fetch_bg.merge_origin_groups(dupe)
+check(
+    "a name in two tables is counted once, at the larger of the two",
+    dupe_shares == {"Spaniard": 20.0} and dupe_sources["Spaniard"] == "B03001",
+    f"{dupe_shares} - adding 150 and 200 would double-count the same people",
+)
+
+only_asian = {"B02015": ({"B02015_001E": "1200", "B02015_002E": "900"}, {"B02015_002E": "Korean"})}
+check(
+    "with no population table there is no honest denominator, so nothing is claimed",
+    fetch_bg.merge_origin_groups(only_asian) == (None, None, None),
+    "B02015 alone cannot say what share of the neighbourhood anyone is",
 )
 check(
-    "a row where every group is empty yields nothing",
-    fetch_bg.top_origin_groups({"B04006_001E": "2000"}, groups, "B04006_001E") == (None, None),
+    "a tract with no groups at all yields nothing",
+    fetch_bg.merge_origin_groups(
+        {"B04006": ({"B04006_001E": "1000"}, {"B04006_002E": "Armenian"})}
+    ) == (None, None, None),
 )
 
 for junk in ("Other Central American", "All other Hispanic or Latino", "Uncategorized", "Unknown", "Some other race"):

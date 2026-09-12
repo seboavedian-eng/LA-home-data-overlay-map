@@ -493,7 +493,7 @@ const BG_CONFIG = {
   // older file simply lacks the new fields, and the sections that need them
   // vanish with no explanation - which is exactly how the detailed-origin
   // section went missing and looked like a bug in the page.
-  CENSUS_SCHEMA: 8,
+  CENSUS_SCHEMA: 9,
 
   STYLES: {
     zip: { color: "#b3401f", weight: 2, fill: false, opacity: 0.9 },
@@ -3622,33 +3622,6 @@ const BlockGroupApp = (() => {
   // it covers condos and townhouses too, so it is not the same population as
   // the single-family figures from the assessor roll and should not be read
   // as a competing estimate of the same thing.
-  // Three tables, three universes, three lists. Merging them into one ranking
-  // would double-count: the same person can be Mexican-origin in B03001 and of
-  // Spanish ancestry in B04006, and each table's percentage is against its own
-  // denominator. Kept apart, each is exactly what it says.
-  const ORIGIN_GROUPS = [
-    {
-      key: "originHispanic",
-      label: "Hispanic origin",
-      table: "B03001",
-      note: "Share of everyone here. B03002 above says how many are Hispanic; this says from where.",
-    },
-    {
-      key: "originAsian",
-      label: "Asian groups",
-      table: "B02015",
-      note: "Share of everyone here, counting people who reported that group alone or in combination.",
-    },
-    {
-      key: "originAncestry",
-      label: "Ancestry",
-      table: "B04006",
-      note:
-        "Self-reported ancestry, which is a separate question from race - so Armenian, Iranian and Russian appear here " +
-        "while Korean and Chinese appear under Asian groups above. Only the ancestries with a real presence in LA are fetched.",
-    },
-  ];
-
   // True when the loaded file was built by an older fetch script than this
   // page expects, so some sections have nothing to draw.
   function censusIsStale() {
@@ -3657,58 +3630,74 @@ const BlockGroupApp = (() => {
   }
 
   // A section with no data says why rather than disappearing. "Nothing here"
-  // and "you have not fetched it yet" look identical otherwise, and the second
-  // one is fixable.
+  // and "you have not fetched it yet" look identical otherwise, and only one
+  // of them is fixable.
   function staleNote(what) {
     if (!censusIsStale()) return "";
     return `<p class="hint">${what} needs a newer data file than the one you have. Re-run
       <code>${fetchCommand()}</code> and reload.</p>`;
   }
 
+  // ONE ranking across all three origin tables, because "what are the five
+  // biggest groups around here" is one question, not three.
+  //
+  // Every group is a share of the SAME figure - the tract's total population -
+  // which is what makes them comparable. Each table's own total would not:
+  // B02015's is the Asian population alone, so a group at 30% of Asians would
+  // have outranked one at 20% of everybody.
+  const ORIGIN_TABLE_NOTES = {
+    B03001: "Hispanic origin by specific origin",
+    B02015: "Asian population by detailed group",
+    B04006: "self-reported ancestry",
+  };
+
   function originRows(record) {
-    const blocks = ORIGIN_GROUPS.map(({ key, label, table, note }) => {
-      const shares = record[key];
-      if (!shares || !Object.keys(shares).length) return "";
-      const geo = record[`${key}Geo`] || "tract";
-      const total = record[`${key}Total`];
+    const shares = record.originTop;
+    if (shares && Object.keys(shares).length) {
+      const sources = record.originTopSource || {};
+      const geo = record.originTopGeo || "tract";
+      const total = record.originTopTotal;
       const where = geo === "block group" ? "this block group" : "the surrounding census tract";
       const rows = Object.entries(shares)
         .sort((a, b) => b[1] - a[1])
-        .map(([name, pct]) => pctBarRow(name, pct))
+        .map(([name, pct]) => {
+          const table = sources[name];
+          return pctBarRow(name, pct, table ? `ACS ${table}, ${ORIGIN_TABLE_NOTES[table] || "detailed origin"}` : "");
+        })
         .join("");
-      return `${subLabel(
-        `${label}${geo === "block group" ? "" : " (tract)"}`,
-        `ACS ${table}. ${note} Shares are of ${where}${
-          total ? `, ${Utils.fmtNumber(total)} people` : ""
-        }. ${
-          geo === "block group"
-            ? ""
-            : "The Census does not publish this table below tract level, so every block group inside a tract shows the same figures - it describes the neighbourhood around the block group rather than the block group itself."
-        }`
-      )}${rows}`;
-    }).filter(Boolean);
-    if (!blocks.length) {
-      // Three different reasons for an empty section, and only the reader can
-      // act on two of them - so say which it is instead of showing nothing.
-      const stale = staleNote("Detailed origin (ACS B03001, B02015 and B04006)");
-      if (stale) return `${sectionLabel(`Detailed origin`)}${stale}`;
-      const status = (censusData && censusData.meta && censusData.meta.originTables) || {};
-      const failed = Object.keys(status).filter((t) => status[t] !== "block group" && status[t] !== "tract");
-      if (failed.length) {
-        return `${sectionLabel(`Detailed origin`)}<p class="hint">${failed.join(", ")} could not be fetched
-          the last time you ran <code>${fetchCommand()}</code>, so there is nothing to show. Re-run it and
-          watch for a WARNING near the end of its output.</p>`;
-      }
-      if (Object.keys(status).length) {
-        return `${sectionLabel(`Detailed origin`)}<p class="hint">Nobody in this block group reported a
-          specific origin or ancestry - which happens where the five-year sample is very small.</p>`;
-      }
-      return "";
+      return `
+        ${sectionLabel(
+          `Top origins${geo === "block group" ? "" : " (tract)"}`,
+          "The five largest origin groups here, drawn from three ACS tables at once - Hispanic origin by specific " +
+            "origin (B03001), Asian population by detailed group (B02015) and self-reported ancestry (B04006). " +
+            `Each is a share of ${where}${total ? `, ${Utils.fmtNumber(total)} people` : ""}, so they are directly ` +
+            "comparable with each other. They can add to more than 100%: the three tables ask different questions and " +
+            "one person answers more than one - somebody can be of Mexican origin AND report Spanish ancestry. Where " +
+            "the same name appears in two tables it is the same people, so the larger count is used rather than the " +
+            "two being added." +
+            (geo === "block group"
+              ? ""
+              : " None of the three is published below tract level, so every block group inside a tract shows the same " +
+                "figures - this describes the neighbourhood around the block group rather than the block group itself.")
+        )}${rows}`;
     }
-    return `
-      ${sectionLabel(`Detailed origin`, "The five largest groups in each of three ACS tables. They count DIFFERENT things and can overlap - one person can " +
-          "be Mexican-origin in B03001 and of Spanish ancestry in B04006 - so they are listed separately rather than ranked " +
-          "against each other. Five-year survey estimates at block group level, so small numbers here are noisy.")}${blocks.join("")}`;
+
+    // Three different reasons for an empty section, and the reader can act on
+    // two of them - so say which it is instead of showing nothing.
+    const stale = staleNote("Top origins (ACS B03001, B02015 and B04006)");
+    if (stale) return `${sectionLabel(`Top origins`)}${stale}`;
+    const status = (censusData && censusData.meta && censusData.meta.originTables) || {};
+    const failed = Object.keys(status).filter((t) => status[t] !== "block group" && status[t] !== "tract");
+    if (failed.length) {
+      return `${sectionLabel(`Top origins`)}<p class="hint">${failed.join(", ")} could not be fetched the last
+        time you ran <code>${fetchCommand()}</code>, so there is nothing to show. Re-run it and watch for a
+        WARNING near the end of its output.</p>`;
+    }
+    if (Object.keys(status).length) {
+      return `${sectionLabel(`Top origins`)}<p class="hint">Nobody in the surrounding tract reported a specific
+        origin or ancestry - which happens where the five-year sample is very small.</p>`;
+    }
+    return "";
   }
 
   function householdRows(record) {
@@ -5154,9 +5143,9 @@ const BlockGroupApp = (() => {
     ["B03002", "ACS 5-year", "Hispanic origin by race, 8 groups", () => censusDate(), "Card: Ethnicity (default source). Filters: eight ethnicity shares"],
     ["P2", "2020 Census", "Same 8 groups, full count not a survey", () => censusDate(), "Card: Ethnicity when you switch source. Same eight filters"],
     ["B15003", "ACS 5-year", "Educational attainment, 25 and over", () => censusDate(), "Card: Education. Filter: bachelor's or higher"],
-    ["B03001", "ACS 5-year", "Hispanic origin by specific origin, 20 groups", () => censusDate(), "Card: Detailed origin - Hispanic origin, top five"],
-    ["B02015", "ACS 5-year", "Asian population by detailed group, 18 groups", () => censusDate(), "Card: Detailed origin - Asian groups, top five"],
-    ["B04006", "ACS 5-year", "Self-reported ancestry, the groups with an LA presence", () => censusDate(), "Card: Detailed origin - Ancestry, top five"],
+    ["B03001", "ACS 5-year", "Hispanic origin by specific origin (tract level)", () => censusDate(), "Card: Top origins - merged into one ranking with B02015 and B04006"],
+    ["B02015", "ACS 5-year", "Asian population by detailed group (tract level)", () => censusDate(), "Card: Top origins - merged into one ranking with B03001 and B04006"],
+    ["B04006", "ACS 5-year", "Self-reported ancestry, every group (tract level)", () => censusDate(), "Card: Top origins - merged, and supplies the shared population denominator"],
     ["B15001", "ACS 5-year", "Education by sex by age", () => censusDate(), "Card: degree share among 25-34 year olds"],
     ["B19013", "ACS 5-year", "Median household income", () => censusDate(), "Card: Income. Filter: median household income"],
     ["B19301", "ACS 5-year", "Per-capita income", () => censusDate(), "Card: Income. Filter: per-capita income"],

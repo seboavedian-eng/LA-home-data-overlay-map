@@ -58,7 +58,10 @@ def fake_fetch_table(base, variables, key, label, prefer="block group", require_
 
 
 def fake_group_variables(base, table):
-    return {f"{table}_002E": "Alpha", f"{table}_003E": "Beta", f"{table}_004E": "Gamma"}
+    # Distinct names per table, so the merge is actually exercised rather than
+    # collapsing three identical labels into one.
+    stem = {"B03001": "Hisp", "B02015": "Asian", "B04006": "Anc"}.get(table, table)
+    return {f"{table}_002E": f"{stem}One", f"{table}_003E": f"{stem}Two"}
 
 
 fetch_bg.fetch_table = fake_fetch_table
@@ -94,29 +97,44 @@ check(
 )
 check(
     "the schema version the page expects is written",
-    payload["meta"].get("schemaVersion") == 8,
+    payload["meta"].get("schemaVersion") == 9,
     str(payload["meta"].get("schemaVersion")),
 )
 
-# --- Detailed origin, the part that kept not arriving ------------------------
-for key, table in (("originHispanic", "B03001"), ("originAsian", "B02015"), ("originAncestry", "B04006")):
-    check(f"{table} reaches the record as {key}", key in rec, str(sorted(k for k in rec if k.startswith("origin"))))
-    check(
-        f"{table} is taken from the block group's TRACT, and says so",
-        rec.get(f"{key}Geo") == "tract",
-        str(rec.get(f"{key}Geo")),
-    )
-    shares = rec.get(key) or {}
-    check(
-        f"{table} is stored as percentages, not head counts",
-        bool(shares) and all(0 < v <= 100 for v in shares.values()),
-        str(shares),
-    )
-    check(
-        f"{table}'s shares are of its own total (400 of 4,000 = 10%)",
-        all(abs(v - 10.0) < 0.05 for v in shares.values()),
-        str(shares),
-    )
+# --- Detailed origin: ONE ranking across all three tables --------------------
+top = rec.get("originTop") or {}
+check("the merged ranking reaches the record", bool(top), str(sorted(k for k in rec if k.startswith("origin"))))
+check(
+    "it comes from the block group's TRACT, and says so",
+    rec.get("originTopGeo") == "tract",
+    str(rec.get("originTopGeo")),
+)
+check(
+    "it holds percentages, not head counts",
+    bool(top) and all(0 < v <= 100 for v in top.values()),
+    str(top),
+)
+check(
+    "every group is divided by the SAME denominator - the tract's population",
+    rec.get("originTopTotal") == 4000,
+    f"{rec.get('originTopTotal')} (B02015's own total must not be used)",
+)
+check(
+    "groups from all three tables can appear in one list",
+    set((rec.get("originTopSource") or {}).values()) <= {"B03001", "B02015", "B04006"}
+    and bool(rec.get("originTopSource")),
+    str(rec.get("originTopSource")),
+)
+check(
+    "no more than five are kept",
+    len(top) <= 5,
+    f"{len(top)} groups",
+)
+check(
+    "the per-table lists are gone - the question was one top five, not three",
+    not any(k in rec for k in ("originHispanic", "originAsian", "originAncestry")),
+    str(sorted(k for k in rec if k.startswith("origin"))),
+)
 
 check(
     "which tables landed is recorded, so the page can explain an empty section",

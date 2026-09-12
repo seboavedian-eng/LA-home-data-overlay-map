@@ -58,15 +58,25 @@ check(
     ", ".join(unused) if unused else f"all {len(census_fields)} used",
 )
 
-# The detailed-origin fields are written through a variable key, so the names
-# come from the table list rather than from rec["..."] assignments.
-dynamic = re.findall(r'\(\s*"(?:B\d{5})"\s*,\s*"([A-Za-z0-9]+)"', census)
-check("the detailed-origin tables are wired up", len(dynamic) == 3, ", ".join(dynamic))
-unused_dynamic = [f for f in dynamic if not mentioned(f)]
+# The three origin tables are merged into one ranking, so the fields the page
+# reads are fixed names rather than one per table.
+listed = re.findall(r'\(\s*"(B\d{5})"\s*,', census)
 check(
-    "every detailed-origin field reaches the page",
-    not unused_dynamic,
-    ", ".join(unused_dynamic) if unused_dynamic else "all used",
+    "all three detailed-origin tables are listed for fetching",
+    set(listed) >= {"B03001", "B02015", "B04006"},
+    ", ".join(sorted(set(listed))),
+)
+merged_fields = ["originTop", "originTopTotal", "originTopGeo", "originTopSource"]
+unused_merged = [f for f in merged_fields if f not in census or not mentioned(f)]
+check(
+    "the merged ranking is written by the script and read by the page",
+    not unused_merged,
+    ", ".join(unused_merged) if unused_merged else ", ".join(merged_fields),
+)
+check(
+    "the per-table origin fields are gone - one ranking, not three",
+    not any(f in census for f in ("originHispanic", "originAsian", "originAncestry")),
+    "the question was one top five across all three tables",
 )
 
 # Variable codes for these tables must not be written out by hand: they cannot

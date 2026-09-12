@@ -179,7 +179,7 @@ const AGE_BRACKETS = {
 
 const CENSUS_DATA = {
   meta: {
-    schemaVersion: 8,
+    schemaVersion: 9,
     year: 2022,
     decennialYear: 2020,
     originTables: { B03001: "block group", B02015: "block group", B04006: "block group" },
@@ -214,18 +214,19 @@ const CENSUS_DATA = {
       edu25to34BachelorsPlus: 75,
       // Three detailed-origin tables, kept apart because they count different
       // universes and a person can appear in more than one.
-      // Percentages of the TRACT these came from - 4,000 people, far more than
-      // this block group's 1,000. Head counts over the block group's own
-      // population would read over 100% and mean nothing.
-      originHispanic: { Mexican: 30.0, Salvadoran: 9.0, Guatemalan: 4.0 },
-      originHispanicTotal: 4000,
-      originHispanicGeo: "tract",
-      originAsian: { Korean: 12.0, Chinese: 6.0 },
-      originAsianTotal: 4000,
-      originAsianGeo: "tract",
-      originAncestry: { Armenian: 15.0, Iranian: 7.0, Italian: 3.0 },
-      originAncestryTotal: 4000,
-      originAncestryGeo: "tract",
+      // ONE ranking across all three tables, as percentages of the TRACT -
+      // 4,000 people, far more than this block group's 1,000. Head counts over
+      // the block group's own population would read over 100% and mean nothing.
+      originTop: { Mexican: 30.0, Armenian: 15.0, Korean: 12.0, Salvadoran: 9.0, Iranian: 7.0 },
+      originTopTotal: 4000,
+      originTopGeo: "tract",
+      originTopSource: {
+        Mexican: "B03001",
+        Armenian: "B04006",
+        Korean: "B02015",
+        Salvadoran: "B03001",
+        Iranian: "B04006",
+      },
       ethnicityAcsTotal: 1000,
       ethnicityAcs: {
         "Hispanic or Latino": 450,
@@ -2147,9 +2148,8 @@ async function main() {
           blockGroups: Object.fromEntries(
             Object.entries(CENSUS_DATA.blockGroups).map(([id, rec]) => {
               const copy = { ...rec };
-              delete copy.originHispanic;
-              delete copy.originAsian;
-              delete copy.originAncestry;
+              delete copy.originTop;
+              delete copy.originTopSource;
               return [id, copy];
             })
           ),
@@ -2178,7 +2178,7 @@ async function main() {
     const staleCard = await stalePage.locator("#detail-panel").innerText();
     step(
       "an older data file is named as the reason a section is empty",
-      /detailed origin/i.test(staleCard) && /newer data file/i.test(staleCard),
+      /top origins/i.test(staleCard) && /newer data file/i.test(staleCard),
       staleCard.replace(/\s+/g, " ").match(/detailed origin.{0,120}/i)
     );
     step(
@@ -2209,9 +2209,8 @@ async function main() {
           blockGroups: Object.fromEntries(
             Object.entries(CENSUS_DATA.blockGroups).map(([id, rec]) => {
               const copy = { ...rec };
-              delete copy.originHispanic;
-              delete copy.originAsian;
-              delete copy.originAncestry;
+              delete copy.originTop;
+              delete copy.originTopSource;
               return [id, copy];
             })
           ),
@@ -2241,7 +2240,7 @@ async function main() {
     step(
       "a table that failed to fetch is named, instead of the section vanishing",
       /B04006 could not be fetched/.test(failedCard) && /fetch-blockgroup-data\.py/.test(failedCard),
-      failedCard.replace(/\s+/g, " ").match(/detailed origin.{0,140}/i)
+      failedCard.replace(/\s+/g, " ").match(/top origins.{0,140}/i)
     );
     step(
       "and it says to watch the script's own output for the warning",
@@ -2304,9 +2303,25 @@ async function main() {
       `${metricsHere.filter((m) => /Hispanic/.test(m)).length} ethnicity filters offered`
     );
     step(
-      "the five largest groups from each detailed-origin table are shown",
-      /mexican/i.test(cardHere) && /korean/i.test(cardHere) && /armenian/i.test(cardHere),
-      cardHere.replace(/\s+/g, " ").match(/detailed origin.{0,180}/i)
+      "one top five is shown, mixing all three origin tables together",
+      ["Mexican", "Armenian", "Korean", "Salvadoran", "Iranian"].every((n) =>
+        new RegExp(n, "i").test(cardHere)
+      ),
+      cardHere.replace(/\s+/g, " ").match(/top origins.{0,200}/i)
+    );
+    step(
+      "they are ranked against each other, largest first",
+      (() => {
+        const block = (cardHere.match(/top origins[\s\S]{0,400}/i) || [""])[0];
+        const order = ["Mexican", "Armenian", "Korean", "Salvadoran", "Iranian"].map((n) => block.indexOf(n));
+        return order.every((v, i) => v >= 0 && (i === 0 || v > order[i - 1]));
+      })(),
+      "30.0 > 15.0 > 12.0 > 9.0 > 7.0"
+    );
+    step(
+      "each row names the table it came from",
+      /B03001/.test(cardHere) && /B02015/.test(cardHere) && /B04006/.test(cardHere),
+      cardHere.replace(/\s+/g, " ").match(/B0\d{4}[^\n]{0,40}/g)
     );
     step(
       "shares are shown as percentages of the tract they came from",
@@ -2318,13 +2333,13 @@ async function main() {
     );
     step(
       "the card says these are tract figures, not block group ones",
-      /ancestry \(tract\)/i.test(cardHere),
-      cardHere.replace(/\s+/g, " ").match(/ancestry[^\n]{0,20}/i)
+      /top origins \(tract\)/i.test(cardHere),
+      cardHere.replace(/\s+/g, " ").match(/top origins[^\n]{0,20}/i)
     );
     step(
       "no head counts are shown beside them, since the counts are the tract's",
       !/1[,.]?500 people|4[,.]?000 people/.test(
-        (cardHere.match(/detailed origin[\s\S]{0,400}/i) || [""])[0]
+        (cardHere.match(/top origins[\s\S]{0,400}/i) || [""])[0]
       ),
       "a tract head count under a block group card would be read as the block group's"
     );
