@@ -363,8 +363,10 @@ def top_origin_groups(row, groups, total_code, limit=5):
 
     Returns (ordered {label: percent}, total) or (None, None).
     """
-    total = to_number(row.get(total_code))
-    if not total or total <= 0:
+    # Named denominator, not `total`: that is a module-level helper here, and
+    # shadowing it inside a function is how the last run died.
+    denominator = to_number(row.get(total_code))
+    if not denominator or denominator <= 0:
         return None, None
     counts = []
     for code, label in groups.items():
@@ -374,7 +376,10 @@ def top_origin_groups(row, groups, total_code, limit=5):
     if not counts:
         return None, None
     counts.sort(reverse=True)
-    return {label: round(100 * n / total, 1) for n, label in counts[:limit]}, int(total)
+    return (
+        {label: round(100 * n / denominator, 1) for n, label in counts[:limit]},
+        int(denominator),
+    )
 
 
 def fetch_group_variables(base, table):
@@ -559,6 +564,12 @@ def main():
         "--key",
         default=os.environ.get("CENSUS_API_KEY", "") or read_key_file(),
         help="Census API key (required). Also read from CENSUS_API_KEY or census-api-key.txt",
+    )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Where to write the JSON (default js/data/bg-la-county.json). Mainly so a test can run "
+             "this end to end without overwriting your real data file.",
     )
     args = parser.parse_args()
 
@@ -755,11 +766,14 @@ def main():
             row = lookup(table_data, table_geo)
             if not row:
                 continue
-            shares, total = top_origin_groups(row, groups, total_code)
+            # NOT `total` - that is the name of a module-level helper this
+            # function calls earlier, and binding it here makes it local for
+            # the whole of main(), so the earlier call fails at run time.
+            shares, group_total = top_origin_groups(row, groups, total_code)
             if not shares:
                 continue
             rec[key] = shares
-            rec[key + "Total"] = total
+            rec[key + "Total"] = group_total
             rec[key + "Geo"] = table_geo
 
         young_row = lookup(edu_young, edu_young_geo) if edu_young else None
@@ -841,7 +855,7 @@ def main():
         "blockGroups": block_groups,
     }
 
-    out_path = os.path.normpath(
+    out_path = args.out or os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "js", "data", "bg-la-county.json")
     )
     os.makedirs(os.path.dirname(out_path), exist_ok=True)

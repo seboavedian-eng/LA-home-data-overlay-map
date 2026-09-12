@@ -716,6 +716,15 @@ shown. Add a column to a data file without wiring it up and the test tells you.
 python3 tests/test_data_coverage.py
 ```
 
+**The fetch script is run end to end, with the network stubbed.** Every other
+test checks one helper in isolation, so `main()` - where the tables are
+actually stitched into records - was never executed, and two bugs went straight
+through it: the detailed-origin fields computed and never written, and a local
+variable shadowing a module-level helper, which killed the run at "Compacting"
+after a ten-minute download. `tests/test_compaction.py` runs the whole thing
+against fake responses in under a second. A static check also refuses any local
+that shadows a function in the same module.
+
 ## Project layout
 
 ```

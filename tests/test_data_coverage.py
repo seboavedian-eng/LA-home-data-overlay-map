@@ -148,6 +148,28 @@ check(
     "cardRow reports a missing tip",
 )
 
+# --- No function may shadow one of its module's helpers ----------------------
+# `total = ...` inside main() makes Python treat the module-level total()
+# helper as a local for the WHOLE function, so an earlier call to it raises
+# UnboundLocalError. It cost a ten-minute download to find out.
+import ast  # noqa: E402 - kept beside the check it serves
+
+for script in sorted(f for f in os.listdir(os.path.join(ROOT, "scripts")) if f.endswith(".py")):
+    tree = ast.parse(read("scripts", script))
+    helpers = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+    clashes = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store) and sub.id in helpers:
+                clashes.append(f"{node.name}() binds {sub.id}")
+    check(
+        f"{script}: no local shadows a module-level function",
+        not clashes,
+        "; ".join(sorted(set(clashes))) if clashes else f"{len(helpers)} helpers checked",
+    )
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S): " + ", ".join(failures))
