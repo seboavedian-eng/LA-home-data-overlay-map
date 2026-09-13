@@ -1894,6 +1894,147 @@ const BlockGroupApp = (() => {
     });
   }
 
+  // --- Every listing in one table -----------------------------------------
+  // The map answers "what is for sale HERE". This answers "what is in my list
+  // at all" - including the homes taken off the map, which is the point: a
+  // removed or not-interested house is invisible on the map by design, and
+  // three weeks later you cannot remember which ones you dismissed or why.
+  const LISTING_TABLE_COLUMNS = [
+    {
+      key: "address", label: "Address", type: "text", cls: "addr",
+      draw: (l) => `<button type="button" class="listing-link" data-id="${Utils.escapeHTML(l.id)}">${Utils.escapeHTML(
+        l.address
+      )}</button>${l.city ? `<span class="dim">, ${Utils.escapeHTML(l.city)}</span>` : ""}`,
+      sortValue: (l) => String(l.address || "").toLowerCase(),
+      tip: "Click an address to close this table, move the map to that house and open it with its block group - exactly as clicking its pin would.",
+    },
+    {
+      key: "status", label: "Status", type: "text",
+      draw: (l) => {
+        const note = noteFor(l.id);
+        if (note.status === "removed") return '<span class="tag removed">Removed</span>';
+        if (note.status === "notInterested") {
+          return `<span class="tag cold">Not interested</span>${
+            note.reason ? `<div class="tag-reason">${Utils.escapeHTML(note.reason)}</div>` : ""
+          }`;
+        }
+        return '<span class="tag live">Active</span>';
+      },
+      sortValue: (l) => ({ removed: 2, notInterested: 1 }[noteFor(l.id).status] || 0),
+      tip: "What you decided about this house, and why. Removed and not-interested homes are hidden or greyed on the map, which is why they are all listed here.",
+    },
+    { key: "price", label: "Price", type: "number", cls: "num", draw: (l) => Utils.fmtCurrency(l.price), sortValue: (l) => l.price || 0, tip: "Asking price from the Redfin export." },
+    {
+      key: "ppsf", label: "$/ft²", type: "number", cls: "num",
+      draw: (l) => (l.sqft ? Utils.fmtCurrency(Math.round(l.price / l.sqft)) : "-"),
+      sortValue: (l) => (l.sqft ? l.price / l.sqft : 0),
+      tip: "Asking price over interior floor area, as the listing states it.",
+    },
+    { key: "sqft", label: "Sq ft", type: "number", cls: "num", draw: (l) => (l.sqft ? Utils.fmtNumber(l.sqft) : "-"), sortValue: (l) => l.sqft || 0, tip: "Interior floor area as the listing agent entered it." },
+    { key: "lot", label: "Lot", type: "number", cls: "num", draw: (l) => (l.lotSqft ? Utils.fmtNumber(l.lotSqft) : "-"), sortValue: (l) => l.lotSqft || 0, tip: "Lot area, converted from acres where Redfin switched units." },
+    { key: "beds", label: "Beds", type: "number", cls: "num", draw: (l) => l.beds || "-", sortValue: (l) => l.beds || 0, tip: "Bedrooms as listed." },
+    { key: "baths", label: "Baths", type: "number", cls: "num", draw: (l) => l.baths || "-", sortValue: (l) => l.baths || 0, tip: "Bathrooms as listed." },
+    {
+      key: "dom", label: "Days on mkt", type: "number", cls: "num",
+      draw: (l) => { const d = daysOnMarket(l); return d === null ? "-" : d; },
+      sortValue: (l) => daysOnMarket(l) || 0,
+      tip: "Counted forward from the listing date, which is the download date minus the days-on-market in the file.",
+    },
+    {
+      key: "added", label: "In list since", type: "number",
+      draw: (l) => (noteFor(l.id).added || "").slice(0, 10) || "-",
+      sortValue: (l) => (noteFor(l.id).added || ""),
+      tip: "The first download of yours this home appeared in.",
+    },
+  ];
+
+  let listingSort = { key: "price", dir: -1 };
+
+  function closeListingsTable() {
+    const box = document.getElementById("listings-table");
+    if (box) box.classList.add("hidden");
+  }
+
+  // Clicking a row is meant to be indistinguishable from clicking the pin, so
+  // it goes through the same selectHouse() - but the map has to be looking at
+  // the house first, and the block group layer only loads for the viewport it
+  // is shown. So: move, wait for the polygons, then select.
+  async function focusListing(listing) {
+    closeListingsTable();
+    map.setView([listing.lat, listing.lon], Math.max(map.getZoom(), BG_CONFIG.MIN_ZOOM.blockGroup + 2));
+    if (enabled.blockGroup) {
+      const deadline = Date.now() + 6000;
+      while (Date.now() < deadline && !blockGroupLayerAt(listing.lat, listing.lon)) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    }
+    selectHouse(listing);
+  }
+
+  function renderListingsTable() {
+    const box = document.getElementById("listings-table");
+    if (!box) return;
+    const rows = (listingsData || []).slice();
+    const column = LISTING_TABLE_COLUMNS.find((c) => c.key === listingSort.key) || LISTING_TABLE_COLUMNS[0];
+    const ordered = sortRows(rows, column, listingSort.dir);
+    const counts = ordered.reduce(
+      (acc, l) => {
+        const st = noteFor(l.id).status || "active";
+        acc[st] = (acc[st] || 0) + 1;
+        return acc;
+      },
+      {}
+    );
+
+    const body = ordered
+      .map(
+        (l) =>
+          `<tr class="${noteFor(l.id).status || "active"}">${LISTING_TABLE_COLUMNS.map(
+            (c) => `<td class="${c.cls || ""}">${c.draw(l)}</td>`
+          ).join("")}</tr>`
+      )
+      .join("");
+
+    box.classList.remove("hidden");
+    box.innerHTML = `
+      <div class="listings-inner">
+        <button class="sales-close" type="button">&times;</button>
+        <h3>Every listing in your folder</h3>
+        <p class="src-note">${ordered.length} home${ordered.length === 1 ? "" : "s"} from
+          <code>${BG_CONFIG.LISTINGS_DIR}</code> - ${counts.active || 0} active,
+          ${counts.notInterested || 0} not interested, ${counts.removed || 0} removed.
+          <strong>Click an address</strong> to jump to it on the map and open its card.
+          Click a column heading to sort.</p>
+        <div class="sales-scroll">
+          <table class="sales-table listings-table-grid">
+            <thead><tr>${sortableHead(LISTING_TABLE_COLUMNS, listingSort)}</tr></thead>
+            <tbody>${body || `<tr><td colspan="${LISTING_TABLE_COLUMNS.length}">No listings yet. Drop Redfin exports in ${BG_CONFIG.LISTINGS_DIR} and reload.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>`;
+
+    box.querySelector(".sales-close").addEventListener("click", closeListingsTable);
+    box.querySelectorAll(".sort-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = btn.dataset.sort;
+        if (listingSort.key === key) listingSort.dir = -listingSort.dir;
+        else listingSort = { key, dir: (LISTING_TABLE_COLUMNS.find((c) => c.key === key) || {}).type === "text" ? 1 : -1 };
+        renderListingsTable();
+      });
+    });
+    box.querySelectorAll(".listing-link").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const listing = (listingsData || []).find((l) => l.id === btn.dataset.id);
+        if (listing) focusListing(listing);
+      });
+    });
+  }
+
+  async function openListingsTable() {
+    await loadListings();
+    renderListingsTable();
+  }
+
   // --- The individual sales behind a count --------------------------------
   let salesData = null;
   let salesMeta = null;
@@ -1936,6 +2077,143 @@ const BlockGroupApp = (() => {
     if (panel) panel.classList.add("hidden");
   }
 
+  // One place that knows what each column of the sales file is: which cell it
+  // reads, how to draw it, how to sort it, and where the number came from.
+  // The table, its headers and its sorting are all generated from this, so a
+  // column cannot end up in a different order in the body than in the head -
+  // which is exactly what happened when beds and baths were added by hand.
+  const SALES_COLUMNS = [
+    {
+      key: "addr", label: "Address", cell: 0, type: "text", cls: "addr",
+      draw: (r) => r[0] || "-",
+      tip: "The property address as the assessor records it (Property Location).",
+    },
+    {
+      key: "recorded", label: "Recorded", cell: 1, type: "number",
+      draw: (r) => readableDate(r[1]),
+      sortValue: (r) => Number(String(r[1] || "").replace(/\D/g, "").slice(0, 8)) || 0,
+      tip: "The day the deed was recorded, which is what this year's row is built from - not the day the deal was agreed.",
+    },
+    {
+      key: "sqft", label: "Sq ft", cell: 2, type: "number", cls: "num",
+      draw: (r) => (r[2] ? Utils.fmtNumber(r[2]) : "-"),
+      tip: "Building square footage from the roll. It is the county's own measurement, which often differs from a listing agent's.",
+    },
+    { key: "built", label: "Built", cell: 7, type: "number", cls: "num", draw: (r) => r[7] || "-", tip: "Year built from the roll." },
+    {
+      key: "beds", label: "Beds", cell: 8, type: "number", cls: "num", draw: (r) => r[8] || "-",
+      tip: "Bedrooms as the assessor records them, which is a valuation record rather than a marketing one - it will not count a converted garage the way a listing does.",
+    },
+    { key: "baths", label: "Baths", cell: 9, type: "number", cls: "num", draw: (r) => r[9] || "-", tip: "Bathrooms as the assessor records them." },
+    { key: "land", label: "Land", cell: 3, type: "number", cls: "num", draw: (r) => money(r[3]), tip: "The assessed LAND value set at this transfer." },
+    {
+      key: "improvement", label: "Improvement", cell: 4, type: "number", cls: "num",
+      draw: (r) => money(r[4]),
+      tip: "The assessed value of the buildings, set at the same transfer.",
+    },
+    {
+      key: "exemption", label: "Exemption", cell: 5, type: "number", cls: "num",
+      draw: (r) => (r[5] ? `-${money(r[5])}` : "-"),
+      tip: "What comes off land plus improvements to reach the taxable value - the homeowners' exemption is $7,000. It does not change the price.",
+    },
+    {
+      key: "assessed", label: "Assessed", cell: 6, type: "number", cls: "num total",
+      draw: (r) => money(r[6]),
+      tip:
+        "Land plus improvements: the figure this row is priced on, and what the median on the card is built from. " +
+        "It is an ASSESSMENT, not a sale price - but Proposition 13 reset it to the purchase price at this transfer, " +
+        "so for the year it changed hands the two are close.",
+    },
+    {
+      key: "ppsf", label: "$/ft²", type: "number", cls: "num",
+      draw: (r) => (r[2] && r[6] ? money(Math.round(r[6] / r[2])) : "-"),
+      sortValue: (r) => (r[2] && r[6] ? r[6] / r[2] : 0),
+      tip: "Assessed value over building square footage. Blank where the roll carries no floor area.",
+    },
+  ];
+
+  // Dearest first to start with: the top of a block group's range is what
+  // tells you what the good houses on that street go for.
+  let salesSort = { key: "assessed", dir: -1 };
+  let salesContext = null;   // what the open panel is showing, for a re-sort
+
+  function sortValueOf(column, row) {
+    if (column.sortValue) return column.sortValue(row);
+    const raw = row[column.cell];
+    return column.type === "number" ? Number(raw) || 0 : String(raw || "").toLowerCase();
+  }
+
+  // Shared by both sortable tables. A stable comparator, so rows that tie keep
+  // the order they were in rather than shuffling on every re-sort.
+  function sortRows(rows, column, dir) {
+    return rows
+      .map((row, i) => [row, i])
+      .sort(([a, ai], [b, bi]) => {
+        const va = sortValueOf(column, a);
+        const vb = sortValueOf(column, b);
+        if (va < vb) return -dir;
+        if (va > vb) return dir;
+        return ai - bi;
+      })
+      .map(([row]) => row);
+  }
+
+  function sortableHead(columns, state) {
+    return columns
+      .map((c) => {
+        const active = state.key === c.key;
+        const arrow = active ? (state.dir === 1 ? " \u25b2" : " \u25bc") : "";
+        return `<th><button type="button" class="sort-btn${active ? " sorted" : ""}" data-sort="${c.key}"
+          aria-label="Sort by ${c.label}">${c.label}${arrow}</button>${infoIcon(c.tip)}</th>`;
+      })
+      .join("");
+  }
+
+  function renderSalesTable() {
+    const panel = document.getElementById("sales-panel");
+    if (!panel || !salesContext) return;
+    const { rows, year, label } = salesContext;
+    const column = SALES_COLUMNS.find((c) => c.key === salesSort.key) || SALES_COLUMNS[0];
+    const ordered = sortRows(rows, column, salesSort.dir);
+
+    const body = ordered
+      .map(
+        (r) =>
+          `<tr>${SALES_COLUMNS.map(
+            (c) => `<td class="${c.cls || ""}">${c.draw(r)}</td>`
+          ).join("")}</tr>`
+      )
+      .join("");
+
+    panel.innerHTML = `
+      <div class="sales-inner">
+        <button class="sales-close" type="button">&times;</button>
+        <h3>${label} &middot; ${year}</h3>
+        <p class="src-note">${rows.length} single-family transfer${rows.length === 1 ? "" : "s"} recorded that year.
+          <strong>Click any column heading to sort by it</strong>, again to reverse. Land and improvement are the
+          assessed values set at the transfer, and Assessed is the two added together - the figure the median on the
+          card is built from. The exemption is what comes off them to reach the taxable value, and does not change
+          the price.</p>
+        <div class="sales-scroll">
+          <table class="sales-table">
+            <thead><tr>${sortableHead(SALES_COLUMNS, salesSort)}</tr></thead>
+            <tbody>${body || `<tr><td colspan="${SALES_COLUMNS.length}">No sales recorded for this year.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>`;
+    panel.querySelector(".sales-close").addEventListener("click", closeSalesPanel);
+    panel.querySelectorAll(".sort-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = btn.dataset.sort;
+        // Same column again reverses; a new column starts descending for
+        // numbers and ascending for text, which is what you want in each case.
+        if (salesSort.key === key) salesSort.dir = -salesSort.dir;
+        else salesSort = { key, dir: (SALES_COLUMNS.find((c) => c.key === key) || {}).type === "text" ? 1 : -1 };
+        renderSalesTable();
+      });
+    });
+  }
+
   async function openSalesPanel(geoid, year, label) {
     const panel = document.getElementById("sales-panel");
     panel.classList.remove("hidden");
@@ -1958,66 +2236,8 @@ const BlockGroupApp = (() => {
       return;
     }
 
-    // Dearest first: the top of a block group's range is what tells you what
-    // the good houses on that street go for.
-    rows.sort((a, b) => (b[6] || 0) - (a[6] || 0));
-
-    const body = rows
-      .map(
-        (r) => `<tr>
-          <td class="addr">${r[0] || "-"}</td>
-          <td>${readableDate(r[1])}</td>
-          <td class="num">${r[2] ? Utils.fmtNumber(r[2]) : "-"}</td>
-          <td class="num">${r[7] || "-"}</td>
-          <td class="num">${r[8] || "-"}</td>
-          <td class="num">${r[9] || "-"}</td>
-          <td class="num">${money(r[3])}</td>
-          <td class="num">${money(r[4])}</td>
-          <td class="num">${r[5] ? `-${money(r[5])}` : "-"}</td>
-          <td class="num total">${money(r[6])}</td>
-          <td class="num">${r[2] && r[6] ? money(Math.round(r[6] / r[2])) : "-"}</td>
-        </tr>`
-      )
-      .join("");
-
-    panel.innerHTML = `
-      <div class="sales-inner">
-        <button class="sales-close" type="button">&times;</button>
-        <h3>${label} &middot; ${year}</h3>
-        <p class="src-note">${rows.length} single-family transfer${rows.length === 1 ? "" : "s"} recorded that year,
-          dearest first. Land and improvement are the assessed values set at the transfer, and Assessed is the two
-          added together - the figure the median on the card is built from. The exemption is what comes off them to
-          reach the taxable value, and does not change the price.</p>
-        <div class="sales-scroll">
-          <table class="sales-table">
-            <thead>
-              <tr>
-                <th>Address${infoIcon("The property address as the assessor records it (Property Location).")}</th>
-                <th>Recorded${infoIcon(
-                  "The day the deed was recorded, which is what this year's row is built from - not the day the deal was agreed."
-                )}</th>
-                <th>Sq ft${infoIcon("Building square footage from the roll. It is the county's own measurement, which often differs from a listing agent's.")}</th>
-                <th>Built${infoIcon("Year built from the roll.")}</th>
-                <th>Beds${infoIcon("Bedrooms as the assessor records them, which is a valuation record rather than a marketing one - it will not count a converted garage the way a listing does.")}</th>
-                <th>Baths${infoIcon("Bathrooms as the assessor records them.")}</th>
-                <th>Land${infoIcon("The assessed LAND value set at this transfer.")}</th>
-                <th>Improvement${infoIcon("The assessed value of the buildings, set at the same transfer.")}</th>
-                <th>Exemption${infoIcon(
-                  "What comes off land plus improvements to reach the taxable value - the homeowners' exemption is $7,000. It does not change the price."
-                )}</th>
-                <th>Assessed${infoIcon(
-                  "Land plus improvements: the figure this row is priced on, and what the median on the card is built from. " +
-                    "It is an ASSESSMENT, not a sale price - but Proposition 13 reset it to the purchase price at this transfer, " +
-                    "so for the year it changed hands the two are close."
-                )}</th>
-                <th>$/ft&sup2;${infoIcon("Assessed value over building square footage. Blank where the roll carries no floor area.")}</th>
-              </tr>
-            </thead>
-            <tbody>${body || '<tr><td colspan="11">No sales recorded for this year.</td></tr>'}</tbody>
-          </table>
-        </div>
-      </div>`;
-    panel.querySelector(".sales-close").addEventListener("click", closeSalesPanel);
+    salesContext = { rows, year, label };
+    renderSalesTable();
   }
 
   // The card is re-rendered constantly and exists in two places, so this
@@ -5325,6 +5545,8 @@ const BlockGroupApp = (() => {
     loadListings();
     loadOrsKey();
     renderFilterRows();
+    document.getElementById("open-listings-table").addEventListener("click", openListingsTable);
+
     document.getElementById("toggle-listings").addEventListener("change", async (e) => {
       enabled.listings = e.target.checked;
       await showListingsFor();

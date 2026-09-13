@@ -411,6 +411,19 @@ get the date the home was listed, and counts forward from there.
 Lot size is here too, which the assessor roll lacks - so listings show
 **$/ft² of lot** as well as of floor area.
 
+#### The listings table
+
+**Open the listings table** in the sidebar puts every home in your folder in
+one sortable table over the map - including the ones taken off it. A removed or
+not-interested house is invisible on the map by design, which is fine until
+three weeks later when you cannot remember which ones you dismissed or why. The
+table shows all of them with their status and your reason.
+
+Click an address and the table closes, the map moves to that house, and its
+card opens with its block group - the same as clicking its pin, so a removed
+house can be reopened and marked interested again. Click any column heading to
+sort; click again to reverse. The assessor's sales table sorts the same way.
+
 #### What you decide about a house
 
 The house card carries three things that are yours rather than Redfin's:

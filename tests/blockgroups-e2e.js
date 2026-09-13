@@ -2249,6 +2249,119 @@ async function main() {
     );
     await failedPage.close();
 
+    // --- The listings table ------------------------------------------------
+    // Mark one house not interested and remove another, so the table has all
+    // three states to show.
+    await page.evaluate(() => {
+      const key = "la-home-map.listings.v1";
+      const store = JSON.parse(localStorage.getItem(key) || "{}");
+      const cold = "https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903";
+      const gone = "https://www.redfin.com/CA/Burbank/other/home/1";
+      store[cold] = { ...(store[cold] || {}), status: "notInterested", reason: "Backs onto the 5", statusAt: new Date().toISOString() };
+      store[gone] = { ...(store[gone] || {}), status: "removed", statusAt: new Date().toISOString() };
+      localStorage.setItem(key, JSON.stringify(store));
+      return BlockGroupApp.reloadListingsForTest();
+    });
+    await page.waitForTimeout(500);
+    await page.click("#open-listings-table");
+    await page.waitForTimeout(600);
+    step("the sidebar button opens a table over the map", await page.locator("#listings-table").isVisible());
+    const tableRows = await page.evaluate(() =>
+      [...document.querySelectorAll("#listings-table tbody tr")].map((tr) =>
+        [...tr.children].map((td) => td.textContent.trim())
+      )
+    );
+    step(
+      "it lists EVERY listing, including the ones taken off the map",
+      tableRows.length === 4,
+      `${tableRows.length} rows for 4 homes (one removed, one not interested)`
+    );
+    step(
+      "a removed home is shown as removed, rather than silently missing",
+      tableRows.some((r) => r.some((c) => /^Removed/.test(c))),
+      JSON.stringify(tableRows.map((r) => r[1]))
+    );
+    step(
+      "a not-interested home shows the reason you gave",
+      tableRows.some((r) => r.some((c) => /Not interested/.test(c) && /Backs onto the 5/.test(c))),
+      JSON.stringify(tableRows.find((r) => r.some((c) => /Not interested/.test(c))))
+    );
+    step(
+      "it starts sorted by price, dearest first",
+      tableRows[0][2] === "$2,000,000",
+      tableRows.map((r) => r[2]).join(" > ")
+    );
+    await page.click('#listings-table .sort-btn[data-sort="sqft"]');
+    await page.waitForTimeout(200);
+    step(
+      "the listings table sorts by any column too, numerically",
+      await (async () => {
+        const idx = await page.evaluate(() =>
+          [...document.querySelectorAll("#listings-table th")].findIndex((th) => th.textContent.includes("Sq ft"))
+        );
+        const col = await page.evaluate(
+          (n) => [...document.querySelectorAll("#listings-table tbody tr")].map((tr) => tr.children[n].textContent.trim()),
+          idx
+        );
+        // 2,000 / 1,921 / 1,721 / 1,000 - as text "1,921" would beat "2,000"
+        return col.join() === "2,000,1,921,1,721,1,000";
+      })(),
+      await page.evaluate(() => {
+        const idx = [...document.querySelectorAll("#listings-table th")].findIndex((th) => th.textContent.includes("Sq ft"));
+        return [...document.querySelectorAll("#listings-table tbody tr")].map((tr) => tr.children[idx].textContent.trim()).join(" > ");
+      })
+    );
+
+    // Clicking an address must behave exactly like clicking the pin.
+    await page.evaluate(() => {
+      BlockGroupApp.state.map.setView([34.05, -118.25], 12);
+    });
+    await page.waitForTimeout(400);
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll("#listings-table .listing-link")].find((b) =>
+        b.textContent.includes("9 Olive Ct")
+      );
+      btn.click();
+    });
+    await page.waitForTimeout(2500);
+    step(
+      "clicking an address closes the table",
+      !(await page.locator("#listings-table").isVisible())
+    );
+    step(
+      "...moves the map to that house",
+      await page.evaluate(() => {
+        const c = BlockGroupApp.state.map.getCenter();
+        return Math.abs(c.lat - 34.05) < 0.01 && Math.abs(c.lng - -118.21) < 0.01;
+      }),
+      await page.evaluate(() => JSON.stringify(BlockGroupApp.state.map.getCenter()))
+    );
+    step(
+      "...and opens the house card with its block group, as a pin click would",
+      (await page.locator("#house-card").isVisible()) &&
+        (await page.evaluate(() => BlockGroupApp.state.selectedProps.GEOID)) === "060372011003" &&
+        (await page.locator(".leaflet-popup").count()) === 1,
+      `selected ${await page.evaluate(() => BlockGroupApp.state.selectedProps && BlockGroupApp.state.selectedProps.GEOID)}`
+    );
+    step(
+      "a REMOVED house can still be opened from the table - that is how you undo it",
+      (await page.locator("#house-card .house-price").innerText()).startsWith("$780,000"),
+      await page.locator("#house-card .house-price").innerText()
+    );
+    // Put the fixture back for the checks that follow.
+    await page.evaluate(async () => {
+      localStorage.removeItem("la-home-map.listings.v1");
+      await BlockGroupApp.reloadListingsForTest();
+    });
+    await page.locator("#house-card .house-close").click();
+    await page.evaluate(() => {
+      BlockGroupApp.state.map.setView([34.05, -118.25], 13);
+      BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+        if (l.feature.properties.GEOID === "060372011001") l.fire("click");
+      });
+    });
+    await page.waitForTimeout(700);
+
     // --- Data sources table ---
     await page.evaluate(() => document.getElementById("sources-details").setAttribute("open", "open"));
     await page.waitForTimeout(300);
@@ -2432,6 +2545,62 @@ async function main() {
       (await page.locator("#sales-panel").count()) === 1 &&
         (await page.locator("#sales-panel .sales-table tbody tr").count()) === 1
     );
+    // --- Sorting the sales table ------------------------------------------
+    const salesCol = async (i) =>
+      page.evaluate(
+        (n) => [...document.querySelectorAll("#sales-panel .sales-table tbody tr")].map((tr) => tr.children[n].textContent.trim()),
+        i
+      );
+    const headerIndex = async (label) =>
+      page.evaluate(
+        (l) => [...document.querySelectorAll("#sales-panel .sales-table th")].findIndex((th) => th.textContent.includes(l)),
+        label
+      );
+    await page.click('#detail-panel .price-table .sales-link[data-year="2021"]');
+    await page.waitForTimeout(500);
+    step(
+      "the sales table starts dearest first",
+      (await salesCol(await headerIndex("Assessed"))).join() === "$1,400,000,$1,050,000,$880,000",
+      (await salesCol(await headerIndex("Assessed"))).join(" > ")
+    );
+    await page.click('#sales-panel .sort-btn[data-sort="assessed"]');
+    await page.waitForTimeout(200);
+    step(
+      "clicking the sorted column again reverses it",
+      (await salesCol(await headerIndex("Assessed"))).join() === "$880,000,$1,050,000,$1,400,000",
+      (await salesCol(await headerIndex("Assessed"))).join(" < ")
+    );
+    await page.click('#sales-panel .sort-btn[data-sort="sqft"]');
+    await page.waitForTimeout(200);
+    step(
+      "sorting by square feet sorts numerically, not as text",
+      // 1,150 / 1,480 / 2,100 - as strings "1,150" would sort after "2,100"
+      (await salesCol(await headerIndex("Sq ft"))).join() === "2,100,1,480,1,150",
+      (await salesCol(await headerIndex("Sq ft"))).join(" > ")
+    );
+    await page.click('#sales-panel .sort-btn[data-sort="recorded"]');
+    await page.waitForTimeout(200);
+    step(
+      "sorting by date is chronological, not alphabetical by the rendered text",
+      // Rendered MM-DD-YYYY, so "04-15-2021" sorts before "09-02-2021" as text
+      // but 11-18 is the latest date and must come first descending.
+      (await salesCol(await headerIndex("Recorded"))).join() === "11-18-2021,09-02-2021,04-15-2021",
+      (await salesCol(await headerIndex("Recorded"))).join(" > ")
+    );
+    await page.click('#sales-panel .sort-btn[data-sort="addr"]');
+    await page.waitForTimeout(200);
+    step(
+      "a text column starts A to Z, not Z to A",
+      (await salesCol(await headerIndex("Address")))[0].startsWith("123"),
+      (await salesCol(await headerIndex("Address"))).join(" | ")
+    );
+    step(
+      "the sorted column is marked, so you can see what you are looking at",
+      (await page.locator("#sales-panel .sort-btn.sorted").count()) === 1 &&
+        /Address/.test(await page.locator("#sales-panel .sort-btn.sorted").innerText()),
+      await page.locator("#sales-panel .sort-btn.sorted").innerText()
+    );
+
     await page.click("#sales-panel .sales-close");
     await page.waitForTimeout(200);
     step("the panel closes", !(await page.locator("#sales-panel").isVisible()));

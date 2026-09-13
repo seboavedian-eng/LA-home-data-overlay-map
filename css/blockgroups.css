@@ -693,3 +693,73 @@ html, body {
    SVG inside is the pin, so clicks between pins reach the map. */
 .house-pin { background: none; border: none; }
 .house-pin svg { display: block; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35)); }
+
+/* --- Sortable table headers --- */
+.sort-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  cursor: pointer;
+  text-align: inherit;
+  white-space: nowrap;
+}
+.sort-btn:hover { text-decoration: underline; }
+.sort-btn.sorted { color: #14663a; }
+
+/* --- The listings table, overlaid on the map --- */
+#listings-table {
+  position: absolute;
+  z-index: 1200;
+  inset: 16px;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+.listings-inner { position: relative; height: 100%; display: flex; flex-direction: column; padding: 14px 16px 12px; }
+.listings-inner h3 { margin: 0 24px 4px 0; font-size: 0.95rem; }
+.listings-inner .sales-scroll { flex: 1; overflow: auto; }
+.listings-table-grid td.addr { max-width: none; white-space: nowrap; }
+.listing-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: #1b4d8c;
+  cursor: pointer;
+  text-align: left;
+}
+.listing-link:hover { text-decoration: underline; }
+.sales-table tr.removed { opacity: 0.55; }
+.sales-table tr.notInterested { background: #fbfcfd; }
+.tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 9px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.tag.live { background: #e6f4ec; color: #14663a; }
+.tag.cold { background: #eef1f4; color: #5b6570; }
+.tag.removed { background: #fdecea; color: #b3261e; }
+.tag-reason { font-size: 0.7rem; color: var(--muted); font-style: italic; margin-top: 2px; max-width: 220px; }
+.panel-btn {
+  margin-top: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fbfcfd;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+.panel-btn:hover { background: #eef1f4; border-color: #b9c2cb; }
