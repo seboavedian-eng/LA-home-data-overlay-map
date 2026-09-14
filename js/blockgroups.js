@@ -1259,6 +1259,31 @@ const BlockGroupApp = (() => {
     return noteFor(id).status || "active";
   }
 
+  // A shortlist is a different axis from "removed" or "not interested": you
+  // can heart a house and later go off it, and the note you took standing in
+  // its garden is worth keeping either way. So these are stored beside the
+  // status rather than replacing it.
+  function toggleFavourite(id) {
+    const note = listingStore[id] || (listingStore[id] = {});
+    if (note.favourite) delete note.favourite;
+    else note.favourite = new Date().toISOString();
+    saveListingStore();
+    return !!note.favourite;
+  }
+
+  function setListingNotes(id, text) {
+    const note = listingStore[id] || (listingStore[id] = {});
+    const trimmed = (text || "").trim();
+    if (trimmed) {
+      note.notes = trimmed;
+      note.notesAt = new Date().toISOString();
+    } else {
+      delete note.notes;
+      delete note.notesAt;
+    }
+    saveListingStore();
+  }
+
   function setListingStatus(id, status, reason) {
     const note = listingStore[id] || (listingStore[id] = {});
     if (status === "active") delete note.status;
@@ -1601,8 +1626,12 @@ const BlockGroupApp = (() => {
   function listingMarker(listing) {
     const selected = listing.id === selectedListingId;
     const cold = listingStatus(listing.id) === "notInterested";
+    const loved = !!noteFor(listing.id).favourite;
+    // Shortlisted houses are gold, so a map full of pins still shows at a
+    // glance which ones you are actually going to go and see.
+    const fill = cold ? "#98a2ac" : loved ? "#c98a00" : selected ? "#7f1d1d" : "#b3261e";
     return L.marker([listing.lat, listing.lon], {
-      icon: pinIcon(cold ? "#98a2ac" : selected ? "#7f1d1d" : "#b3261e", selected),
+      icon: pinIcon(fill, selected),
       opacity: cold ? 0.8 : 1,
       pane: "listings",
       riseOnHover: true,
@@ -1732,7 +1761,12 @@ const BlockGroupApp = (() => {
       }
       <p class="house-price">${Utils.fmtCurrency(listing.price)}${
         isNewListing(listing) ? '<span class="new-badge">NEW</span>' : ""
-      }</p>
+      }<button type="button" class="heart${note.favourite ? " on" : ""}" data-act="favourite"
+        aria-pressed="${note.favourite ? "true" : "false"}"
+        aria-label="${note.favourite ? "Remove from your shortlist" : "Add to your shortlist"}"
+        title="${note.favourite ? "Shortlisted - click to remove" : "Shortlist this house"}">${
+        note.favourite ? "&#9829;" : "&#9825;"
+      }</button></p>
       <p class="house-rates">
         ${perSqft ? `<strong class="${bgPpsf ? (perSqft <= bgPpsf.value ? "cheaper" : "dearer") : ""}">${Utils.fmtCurrency(
           Math.round(perSqft)
@@ -1799,6 +1833,19 @@ const BlockGroupApp = (() => {
             : '<button type="button" class="house-btn" data-act="not-interested">Not interested</button>'
         }
       </div>
+      <div class="house-notes">
+        <label for="house-notes-text">Your notes${infoIcon(
+          "Whatever you want to remember about this house - what it was like to stand in, what the neighbour said, " +
+            "what the agent dodged. Saved as you type, in this browser, alongside your shortlist and your reasons."
+        )}</label>
+        <textarea id="house-notes-text" rows="3"
+          placeholder="Visited 3pm Saturday. Kitchen smaller than photos. Garage would take an ADU.">${esc(
+            note.notes || ""
+          )}</textarea>
+        <p class="src-note notes-saved">${
+          note.notesAt ? `Saved ${note.notesAt.slice(0, 10)}` : "Not saved yet"
+        }</p>
+      </div>
       <form class="house-reason hidden">
         <label for="house-reason-text">Why not?</label>
         <input id="house-reason-text" type="text" maxlength="140" placeholder="Backs onto the freeway" />
@@ -1863,6 +1910,39 @@ const BlockGroupApp = (() => {
     const form = card.querySelector(".house-reason");
     const input = form.querySelector("input");
 
+    const heart = card.querySelector(".heart");
+    if (heart) {
+      heart.addEventListener("click", () => {
+        toggleFavourite(listing.id);
+        renderHouseCard();      // the heart fills in
+        showListingsFor();      // ...and the pin turns gold
+        if (document.getElementById("listings-table") && !document.getElementById("listings-table").classList.contains("hidden")) {
+          renderListingsTable();
+        }
+      });
+    }
+
+    // Saved as you type rather than behind a button: a note you have to
+    // remember to save is a note you lose. Debounced so a long note is not
+    // written to storage on every keystroke.
+    const notes = card.querySelector("#house-notes-text");
+    if (notes) {
+      let notesTimer = null;
+      notes.addEventListener("input", () => {
+        clearTimeout(notesTimer);
+        notesTimer = setTimeout(() => {
+          setListingNotes(listing.id, notes.value);
+          const stamp = card.querySelector(".notes-saved");
+          if (stamp) stamp.textContent = notes.value.trim() ? `Saved ${new Date().toISOString().slice(0, 10)}` : "Not saved yet";
+        }, 400);
+      });
+      // ...and immediately if the card is closed or the page goes away.
+      notes.addEventListener("blur", () => {
+        clearTimeout(notesTimer);
+        setListingNotes(listing.id, notes.value);
+      });
+    }
+
     card.querySelectorAll(".house-actions [data-act]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const act = btn.dataset.act;
@@ -1900,6 +1980,17 @@ const BlockGroupApp = (() => {
   // removed or not-interested house is invisible on the map by design, and
   // three weeks later you cannot remember which ones you dismissed or why.
   const LISTING_TABLE_COLUMNS = [
+    {
+      key: "fav", label: "\u2661", type: "number", cls: "fav",
+      draw: (l) => {
+        const on = !!noteFor(l.id).favourite;
+        return `<button type="button" class="heart small${on ? " on" : ""}" data-fav="${Utils.escapeHTML(l.id)}"
+          aria-pressed="${on ? "true" : "false"}" aria-label="${on ? "Remove from shortlist" : "Add to shortlist"}"
+          >${on ? "&#9829;" : "&#9825;"}</button>`;
+      },
+      sortValue: (l) => (noteFor(l.id).favourite ? 1 : 0),
+      tip: "Your shortlist. Sort by this column to bring the houses you actually want to see to the top.",
+    },
     {
       key: "address", label: "Address", type: "text", cls: "addr",
       draw: (l) => `<button type="button" class="listing-link" data-id="${Utils.escapeHTML(l.id)}">${Utils.escapeHTML(
@@ -1945,6 +2036,17 @@ const BlockGroupApp = (() => {
       draw: (l) => (noteFor(l.id).added || "").slice(0, 10) || "-",
       sortValue: (l) => (noteFor(l.id).added || ""),
       tip: "The first download of yours this home appeared in.",
+    },
+    {
+      key: "notes", label: "Your notes", type: "text", cls: "notes-cell",
+      draw: (l) => {
+        const text = noteFor(l.id).notes || "";
+        if (!text) return "";
+        const short = text.length > 70 ? `${text.slice(0, 70)}\u2026` : text;
+        return `<span title="${Utils.escapeHTML(text)}">${Utils.escapeHTML(short)}</span>`;
+      },
+      sortValue: (l) => (noteFor(l.id).notes ? 0 : 1),   // ones with notes first
+      tip: "What you wrote on the house card. Hover to read a long note in full; sort to bring the houses you have visited together.",
     },
   ];
 
@@ -2020,6 +2122,14 @@ const BlockGroupApp = (() => {
         if (listingSort.key === key) listingSort.dir = -listingSort.dir;
         else listingSort = { key, dir: (LISTING_TABLE_COLUMNS.find((c) => c.key === key) || {}).type === "text" ? 1 : -1 };
         renderListingsTable();
+      });
+    });
+    box.querySelectorAll("[data-fav]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        toggleFavourite(btn.dataset.fav);
+        renderListingsTable();
+        showListingsFor();
+        if (currentListing && currentListing.id === btn.dataset.fav) renderHouseCard();
       });
     });
     box.querySelectorAll(".listing-link").forEach((btn) => {

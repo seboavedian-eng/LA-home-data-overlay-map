@@ -763,3 +763,33 @@ html, body {
   cursor: pointer;
 }
 .panel-btn:hover { background: #eef1f4; border-color: #b9c2cb; }
+
+/* --- Shortlist heart and visit notes --- */
+.heart {
+  border: none;
+  background: none;
+  padding: 0 0 0 8px;
+  font-size: 1.15rem;
+  line-height: 1;
+  color: #b9c2cb;
+  cursor: pointer;
+  vertical-align: 4px;
+}
+.heart:hover { color: #c98a00; }
+.heart.on { color: #c98a00; }
+.heart.small { font-size: 1rem; padding: 0; vertical-align: 0; }
+.sales-table td.fav { width: 1%; text-align: center; }
+.sales-table td.notes-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-style: italic; }
+.house-notes { margin-top: 10px; }
+.house-notes label { display: block; font-size: 0.75rem; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+.house-notes textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.78rem;
+  resize: vertical;
+}
+.notes-saved { margin: 3px 0 0; font-size: 0.68rem; }

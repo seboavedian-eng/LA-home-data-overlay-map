@@ -1724,6 +1724,83 @@ async function main() {
       (await page.locator("#house-card .new-badge").count()) === 0
     );
 
+    // --- Shortlist and visit notes ----------------------------------------
+    step(
+      "the house card offers a heart, empty to start with",
+      (await page.locator("#house-card .heart").count()) === 1 &&
+        (await page.locator("#house-card .heart.on").count()) === 0
+    );
+    await page.locator("#house-card .heart").click();
+    await page.waitForTimeout(400);
+    step(
+      "clicking it shortlists the house",
+      (await page.locator("#house-card .heart.on").count()) === 1 &&
+        (await page.evaluate(() => {
+          const store = JSON.parse(localStorage.getItem("la-home-map.listings.v1"));
+          return !!store["https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903"].favourite;
+        }))
+    );
+    step(
+      "a shortlisted house gets a gold pin, so it stands out on a crowded map",
+      await page.evaluate(() => {
+        let gold = 0;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (isPin(l) && pinFill(l) === "#c98a00") gold += 1;
+        });
+        return gold === 1;
+      })
+    );
+    await page.locator("#house-card #house-notes-text").fill("Visited Saturday. Garage would take an ADU.");
+    await page.waitForTimeout(700);
+    step(
+      "notes are saved as you type, without a save button to forget",
+      await page.evaluate(() => {
+        const store = JSON.parse(localStorage.getItem("la-home-map.listings.v1"));
+        const note = store["https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903"];
+        return note.notes === "Visited Saturday. Garage would take an ADU." && !!note.notesAt;
+      })
+    );
+    step(
+      "...and the card says when it saved them",
+      /Saved \d{4}-\d{2}-\d{2}/.test(await page.locator("#house-card .notes-saved").innerText()),
+      await page.locator("#house-card .notes-saved").innerText()
+    );
+    // Shortlisting is a separate axis from the status, so it survives being
+    // marked not interested and comes back if you change your mind.
+    step(
+      "the heart survives a re-render of the card",
+      await (async () => {
+        await page.evaluate(() => {
+          BlockGroupApp.state.map.eachLayer((l) => {
+            if (isPin(l) && l.getLatLng().lat === 34.052) l.fire("click", { latlng: l.getLatLng() });
+          });
+        });
+        await page.waitForTimeout(400);
+        return (await page.locator("#house-card .heart.on").count()) === 1;
+      })(),
+      "it is stored, not held in the open card"
+    );
+    // Un-shortlist it before moving on: a favourite pin is GOLD, and the
+    // checks further down count red ones.
+    await page.locator("#house-card .heart").click();
+    await page.waitForTimeout(400);
+    step(
+      "clicking the heart again takes it off the shortlist",
+      (await page.locator("#house-card .heart.on").count()) === 0 &&
+        (await page.evaluate(() => {
+          const store = JSON.parse(localStorage.getItem("la-home-map.listings.v1"));
+          return !store["https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903"].favourite;
+        }))
+    );
+    step(
+      "...but the note you took is kept - going off a house does not unsee it",
+      await page.evaluate(() => {
+        const store = JSON.parse(localStorage.getItem("la-home-map.listings.v1"));
+        return store["https://www.redfin.com/CA/Burbank/322-S-Lincoln-St-91506/home/5327903"].notes ===
+          "Visited Saturday. Garage would take an ADU.";
+      })
+    );
+
     // --- What you decide about a house ---
     // The card is showing 322 S Lincoln St, which was already in the July
     // download.
@@ -2266,6 +2343,16 @@ async function main() {
     await page.click("#open-listings-table");
     await page.waitForTimeout(600);
     step("the sidebar button opens a table over the map", await page.locator("#listings-table").isVisible());
+    const listingCol = async (label) => {
+      const idx = await page.evaluate(
+        (l) => [...document.querySelectorAll("#listings-table th")].findIndex((th) => th.textContent.includes(l)),
+        label
+      );
+      return page.evaluate(
+        (n) => [...document.querySelectorAll("#listings-table tbody tr")].map((tr) => tr.children[n].textContent.trim()),
+        idx
+      );
+    };
     const tableRows = await page.evaluate(() =>
       [...document.querySelectorAll("#listings-table tbody tr")].map((tr) =>
         [...tr.children].map((td) => td.textContent.trim())
@@ -2279,7 +2366,7 @@ async function main() {
     step(
       "a removed home is shown as removed, rather than silently missing",
       tableRows.some((r) => r.some((c) => /^Removed/.test(c))),
-      JSON.stringify(tableRows.map((r) => r[1]))
+      JSON.stringify(await listingCol("Status"))
     );
     step(
       "a not-interested home shows the reason you gave",
@@ -2287,9 +2374,19 @@ async function main() {
       JSON.stringify(tableRows.find((r) => r.some((c) => /Not interested/.test(c))))
     );
     step(
+      "the table shows the shortlist heart, and it is clickable from there too",
+      (await page.locator("#listings-table .heart").count()) === 4,
+      `${await page.locator("#listings-table .heart").count()} hearts for 4 homes`
+    );
+    step(
+      "your notes appear in the table, so a visited house is obvious at a glance",
+      (await listingCol("Your notes")).some((c) => /Garage would take an ADU/.test(c)),
+      JSON.stringify((await listingCol("Your notes")).filter(Boolean))
+    );
+    step(
       "it starts sorted by price, dearest first",
-      tableRows[0][2] === "$2,000,000",
-      tableRows.map((r) => r[2]).join(" > ")
+      (await listingCol("Price"))[0] === "$2,000,000",
+      (await listingCol("Price")).join(" > ")
     );
     await page.click('#listings-table .sort-btn[data-sort="sqft"]');
     await page.waitForTimeout(200);
@@ -3572,10 +3669,14 @@ async function main() {
       return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
     });
     await pageBad.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    // Wait for the app to bind its handlers, then for the layer itself -
+    // checking the box earlier ticks it without firing anything, and a line in
+    // the log can be written before the polygons are on the map.
+    await pageBad.waitForFunction(() => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.map);
     await pageBad.check("#toggle-bg");
     await pageBad.waitForFunction(
-      () => document.getElementById("status-log").textContent.includes("Block group data"),
-      { timeout: 10000 }
+      () => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.layers.blockGroup,
+      { timeout: 15000 }
     );
     await pageBad.evaluate(() => {
       BlockGroupApp.state.layers.blockGroup.eachLayer((l) => l.fire("click"));
