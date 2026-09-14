@@ -433,6 +433,13 @@ The house card carries three things that are yours rather than Redfin's:
   If a download made *after* you removed it still contains the home, it comes
   back on its own: a sale usually shows up as a listing that simply stops
   appearing, so anything still being published is still for sale.
+* **The heart** - your shortlist. A shortlisted house gets a gold pin, so a map
+  full of red ones still shows at a glance which you actually mean to go and
+  see. It is a separate axis from the status: you can heart a house and later
+  go off it, and both facts are kept.
+* **Your notes** - a free-text box on the house card, saved as you type. A note
+  you have to remember to save is a note you lose. They appear in the listings
+  table too, so a house you have already visited is obvious.
 * **Not interested** - asks why in one line, records it, greys the dot out and
   shows the reason above the price the next time you open the card. The
   buttons then become **Remove** and **Interested**, so you can change your
