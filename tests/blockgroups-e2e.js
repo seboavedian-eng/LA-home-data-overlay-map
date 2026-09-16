@@ -43,6 +43,21 @@ const BG_C = esriPolygon({ GEOID: "060372011003", NAME: "Block Group 3, Census T
 // visible in one view. A third polygon is "Non-Wildland/Non-Urban" - real
 // CAL FIRE data is full of those, and painting them grey blankets flat LA in
 // a colour that means nothing.
+// Development context: a city polygon covering the western block groups, a
+// zoning polygon, an HPOZ, and one parcel outline.
+const CITY_POLY = esriPolygon({ CITY_NAME: "Burbank" }, [
+  [-118.28, 34.02], [-118.28, 34.08], [-118.22, 34.08], [-118.22, 34.02],
+]);
+const ZONE_POLY = esriPolygon({ ZONE_CMPLT: "R1-1-HCR" }, [
+  [-118.30, 34.00], [-118.30, 34.10], [-118.18, 34.10], [-118.18, 34.00],
+]);
+const HPOZ_POLY = esriPolygon({ NAME: "Spaulding Square HPOZ" }, [
+  [-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04],
+]);
+const PARCEL_POLY = esriPolygon({ AIN: "5555001001" }, [
+  [-118.2505, 34.0495], [-118.2505, 34.0505], [-118.2495, 34.0505], [-118.2495, 34.0495],
+]);
+
 const FIRE_VERY_HIGH = esriPolygon({ HAZ_CLASS: "Very High", OBJECTID: 1 }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04],
 ]);
@@ -567,8 +582,43 @@ async function main() {
   // UPPER_SNAKE_CASE, and it carries the "SRA/LRA Awaiting Zoning"
   // placeholder that was being painted as a real hazard zone.
   let countyFireQueries = [];
+  let devQueries = [];
+  let parcelQueries = [];
   await page.route("**://public.gis.lacounty.gov/**", (route) => {
     const url = route.request().url();
+
+    // The county publishes many services on this host. Route by service name,
+    // or the development lookups land in the fire layer's query counter and
+    // break assertions that have nothing to do with them.
+    if (/Political_Boundaries/.test(url)) {
+      if (url.includes("/query")) {
+        devQueries.push(url);
+        // Block group A sits inside the mocked city; C is outside it, which is
+        // how "unincorporated" is exercised.
+        const lon = Number(decodeURIComponent(url.match(/geometry=([^&]*)/)[1]).split(",")[0]);
+        return route.fulfill(json(lon < -118.22 ? esriFC([CITY_POLY]) : esriFC([])));
+      }
+      return route.fulfill(json({ layers: [{ id: 0, name: "City Boundaries", geometryType: "esriGeometryPolygon" }] }));
+    }
+    if (/\/Zoning\//.test(url)) {
+      if (url.includes("/query")) {
+        devQueries.push(url);
+        return route.fulfill(json(esriFC([ZONE_POLY])));
+      }
+      return route.fulfill(json({ layers: [{ id: 0, name: "Zoning", geometryType: "esriGeometryPolygon" }] }));
+    }
+    if (/\/Parcel\//.test(url)) {
+      if (url.includes("/query")) {
+        parcelQueries.push(url);
+        return route.fulfill(json(esriFC([PARCEL_POLY])));
+      }
+      return route.fulfill(json({ layers: [{ id: 0, name: "Parcels", geometryType: "esriGeometryPolygon" }] }));
+    }
+    if (/\/Planning\//.test(url)) {
+      if (url.includes("/query")) return route.fulfill(json(esriFC([])));
+      return route.fulfill(json({ layers: [] }));
+    }
+
     if (url.includes("/query")) {
       countyFireQueries.push(url);
       const geom = decodeURIComponent(url.match(/geometry=([^&]*)/)[1]).split(",").map(Number);
@@ -662,6 +712,12 @@ async function main() {
       if (url.includes("/4/query")) return route.fulfill(json(esriFC([ZONE_ELEM])));
       if (url.includes("/5/query")) return route.fulfill(json(esriFC([ZONE_MIDDLE])));
       if (url.includes("/6/query")) return route.fulfill(json(esriFC([ZONE_HIGH])));
+      // The HPOZ layer, which the development lookup asks for by name.
+      if (url.includes("/9/query")) {
+        devQueries.push(url);
+        const lon = Number(decodeURIComponent(url.match(/geometry=([^&]*)/)[1]).split(",")[0]);
+        return route.fulfill(json(lon < -118.24 ? esriFC([HPOZ_POLY]) : esriFC([])));
+      }
       return route.fulfill(json(esriFC([])));
     }
     return route.fulfill(
@@ -672,6 +728,7 @@ async function main() {
           { id: 5, name: "LAUSD Attendance Boundary (Middle Schools)", geometryType: "esriGeometryPolygon" },
           { id: 6, name: "LAUSD Attendance Boundary (High Schools)", geometryType: "esriGeometryPolygon" },
           { id: 7, name: "LAUSD Attendance Boundary Key Codes (Elementary Schools)", geometryType: "esriGeometryPolygon" },
+          { id: 9, name: "HPOZ (Historic Preservation Overlay Zone)", geometryType: "esriGeometryPolygon" },
         ],
       })
     );
@@ -1724,6 +1781,65 @@ async function main() {
       (await page.locator("#house-card .new-badge").count()) === 0
     );
 
+    // --- Development: jurisdiction, zoning, historic ----------------------
+    // Point lookups, never area ones: zoning changes across a street, so a
+    // block group answer would be a fiction.
+    await page.waitForTimeout(1200);
+    const devCard = await page.locator("#house-card").innerText();
+    step(
+      "the house card says which city's rules apply",
+      /Jurisdiction\D*Burbank/.test(devCard),
+      devCard.replace(/\s+/g, " ").match(/Jurisdiction.{0,30}/)
+    );
+    step(
+      "...and the zone code the parcel sits in",
+      /Zoning\D*R1-1-HCR/.test(devCard),
+      devCard.replace(/\s+/g, " ").match(/Zoning.{0,24}/)
+    );
+    step(
+      "...and whether it is in a mapped historic district",
+      /Spaulding Square HPOZ/.test(devCard),
+      devCard.replace(/\s+/g, " ").match(/Historic district.{0,40}/)
+    );
+    step(
+      "jurisdiction is the highlighted figure, because everything else hangs off it",
+      await page.evaluate(() =>
+        [...document.querySelectorAll("#house-card .key-figure")].some((el) => /Burbank/.test(el.textContent))
+      )
+    );
+    step(
+      "the lookups are per point, not per block group",
+      devQueries.every((u) => /geometryType=esriGeometryPoint/.test(u)) && devQueries.length > 0,
+      `${devQueries.length} point queries`
+    );
+    // A different house costs three lookups; coming back to one already seen
+    // costs none. Ends on the house the checks below expect to be open.
+    const devBefore = devQueries.length;
+    // 1 Ranch Rd has not been opened yet in this run, so it is genuinely cold.
+    await page.evaluate(() => {
+      BlockGroupApp.state.map.eachLayer((l) => {
+        if (isPin(l) && l.getLatLng().lat === 34.055) l.fire("click", { latlng: l.getLatLng() });
+      });
+    });
+    await page.waitForTimeout(1200);
+    const afterOther = devQueries.length;
+    await page.evaluate(() => {
+      BlockGroupApp.state.map.eachLayer((l) => {
+        if (isPin(l) && l.getLatLng().lat === 34.052) l.fire("click", { latlng: l.getLatLng() });
+      });
+    });
+    await page.waitForTimeout(900);
+    step(
+      "a different house costs one round of lookups",
+      afterOther - devBefore === 3,
+      `${afterOther - devBefore} queries for jurisdiction, zoning and historic`
+    );
+    step(
+      "coming back to a house already looked up costs nothing",
+      devQueries.length === afterOther,
+      `${devQueries.length - afterOther} new queries`
+    );
+
     // --- Shortlist and visit notes ----------------------------------------
     step(
       "the house card offers a heart, empty to start with",
@@ -2459,6 +2575,115 @@ async function main() {
     });
     await page.waitForTimeout(700);
 
+    // --- Adding a house by hand --------------------------------------------
+    // Not everything comes from a Redfin export: a for-sale sign, a tip.
+    await page.fill("#add-listing-address", "410 W Temple St");
+    await page.fill("#add-listing-price", "$1,250,000");
+    await page.click('#add-listing button[type="submit"]');
+    await page.waitForTimeout(2500);
+    step(
+      "an address typed by hand is geocoded and added",
+      /Added /.test(await page.locator("#add-listing-status").innerText()),
+      await page.locator("#add-listing-status").innerText()
+    );
+    step(
+      "it is stored with your notes, not written into the CSV folder",
+      await page.evaluate(() => {
+        const store = JSON.parse(localStorage.getItem("la-home-map.listings.v1"));
+        const manual = Object.values(store.__manual || {});
+        return manual.length === 1 && manual[0].price === 1250000 && manual[0].manual === true;
+      }),
+      "the page cannot write files, and a hand-added house is your record"
+    );
+    step(
+      "...and it opens straight away, like any other house",
+      (await page.locator("#house-card").isVisible()) &&
+        /1,250,000/.test(await page.locator("#house-card .house-price").innerText()),
+      await page.locator("#house-card .house-price").innerText().catch(() => "no card")
+    );
+    step(
+      "a hand-added house survives a re-read of the CSV folder",
+      await page.evaluate(async () => {
+        await BlockGroupApp.reloadListingsForTest();
+        return (BlockGroupApp.state.listingsData || []).some((l) => l.manual);
+      }),
+      "merged back in on every load"
+    );
+    step(
+      "it appears in the listings table alongside the rest",
+      await (async () => {
+        await page.click("#open-listings-table");
+        await page.waitForTimeout(500);
+        const rows = await page.evaluate(() => document.querySelectorAll("#listings-table tbody tr").length);
+        await page.click("#listings-table .sales-close");
+        return rows === 5;
+      })(),
+      "four from the CSVs plus the one added by hand"
+    );
+    // Clear it so the counts below are the ones the rest of the run expects.
+    await page.evaluate(async () => {
+      const key = "la-home-map.listings.v1";
+      const store = JSON.parse(localStorage.getItem(key));
+      delete store.__manual;
+      localStorage.setItem(key, JSON.stringify(store));
+      await BlockGroupApp.reloadListingsForTest();
+    });
+    await page.waitForTimeout(400);
+
+    // --- Aerial imagery and parcel outlines --------------------------------
+    await page.check("#toggle-satellite");
+    await page.waitForTimeout(600);
+    step(
+      "the satellite toggle puts aerial imagery on the map",
+      (await page.locator('.leaflet-rasterOverlay-pane img[src*="World_Imagery"]').count()) > 0,
+      `${await page.locator('.leaflet-rasterOverlay-pane img[src*="World_Imagery"]').count()} imagery tiles`
+    );
+    step(
+      "...with place labels over it, or nothing is findable",
+      (await page.locator('.leaflet-rasterOverlay-pane img[src*="World_Boundaries_and_Places"]').count()) > 0
+    );
+    await page.uncheck("#toggle-satellite");
+    await page.waitForTimeout(300);
+    step(
+      "turning it off removes it",
+      (await page.locator('.leaflet-rasterOverlay-pane img[src*="World_Imagery"]').count()) === 0
+    );
+
+    const parcelsBefore = parcelQueries.length;
+    await page.evaluate(() => BlockGroupApp.state.map.setZoom(14));
+    await page.waitForTimeout(600);
+    await page.check("#toggle-parcels");
+    await page.waitForTimeout(800);
+    step(
+      "parcel outlines are not fetched when zoomed too far out",
+      parcelQueries.length === parcelsBefore,
+      "2.4 million parcels is not a viewport"
+    );
+    step(
+      "...and the log says how far to zoom in",
+      /Zoom to 16\+ to see parcel outlines/.test(await page.locator("#status-log").innerText())
+    );
+    await page.evaluate(() => BlockGroupApp.state.map.setZoom(17));
+    await page.waitForTimeout(1500);
+    step(
+      "at street zoom the outlines are drawn",
+      parcelQueries.length > parcelsBefore &&
+        (await page.evaluate(() => !!BlockGroupApp.state.layers.parcels)),
+      `${parcelQueries.length - parcelsBefore} parcel queries`
+    );
+    step(
+      "parcel geometry is generalised server-side, like every other layer",
+      parcelQueries.every((u) => /maxAllowableOffset=/.test(u)),
+      parcelQueries[0] && parcelQueries[0].slice(0, 120)
+    );
+    await page.uncheck("#toggle-parcels");
+    await page.evaluate(() => BlockGroupApp.state.map.setZoom(13));
+    await page.waitForTimeout(600);
+    step(
+      "turning parcels off removes them",
+      await page.evaluate(() => !BlockGroupApp.state.layers.parcels)
+    );
+
     // --- Data sources table ---
     await page.evaluate(() => document.getElementById("sources-details").setAttribute("open", "open"));
     await page.waitForTimeout(300);
@@ -2469,7 +2694,7 @@ async function main() {
     );
     step(
       "the sources table lists every dataset with its table number and contents",
-      sourceRows.length >= 30 && sourceRows.every((r) => r[0] && r[1] && r[2]),
+      sourceRows.length >= 35 && sourceRows.every((r) => r[0] && r[1] && r[2]),
       `${sourceRows.length} sources listed`
     );
     step(
@@ -3639,10 +3864,11 @@ async function main() {
       return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
     });
     await winPage.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    await winPage.waitForFunction(() => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.map);
     await winPage.check("#toggle-bg");
     await winPage.waitForFunction(
-      () => document.getElementById("status-log").textContent.includes("Block group data"),
-      { timeout: 10000 }
+      () => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.layers.blockGroup,
+      { timeout: 15000 }
     );
     await winPage.evaluate(() => {
       BlockGroupApp.state.layers.blockGroup.eachLayer((l) => l.fire("click"));

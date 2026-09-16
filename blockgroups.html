@@ -137,6 +137,26 @@
         <div id="wind-legend" class="legend-box hidden"></div>
       </section>
 
+      <section id="aerial-section">
+        <h2>Aerial view</h2>
+        <ul class="toggle-list">
+          <li>
+            <input type="checkbox" id="toggle-satellite" />
+            <label for="toggle-satellite">
+              <span>Satellite imagery</span>
+              <span class="layer-desc">Swaps the map for aerial photography. Where the trees, the slope and the real setbacks are - which answers more development questions than any attribute table.</span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-parcels" />
+            <label for="toggle-parcels">
+              <span>Parcel outlines</span>
+              <span class="layer-desc">The county's lot boundaries, drawn over whatever basemap is showing. Zoom <span class="zoom-req">16+</span>.</span>
+            </label>
+          </li>
+        </ul>
+      </section>
+
       <section id="listings-section">
         <h2>Homes for sale</h2>
         <ul class="toggle-list">
@@ -148,6 +168,15 @@
             </label>
           </li>
         </ul>
+        <form id="add-listing" autocomplete="off">
+          <label for="add-listing-address">Add a house by address</label>
+          <input type="text" id="add-listing-address" placeholder="331 N Reese Pl, Burbank" />
+          <div class="add-row">
+            <input type="text" id="add-listing-price" inputmode="numeric" placeholder="Price" />
+            <button type="submit" class="panel-btn compact">Add</button>
+          </div>
+          <p id="add-listing-status" class="hint"></p>
+        </form>
         <button type="button" id="open-listings-table" class="panel-btn">Open the listings table</button>
       </section>
 

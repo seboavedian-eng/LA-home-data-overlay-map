@@ -486,6 +486,111 @@ const BG_CONFIG = {
   ORS_KEY_FILE: "ors-api-key.txt",
   ORS_DIRECTIONS: "https://api.openrouteservice.org/v2/directions/driving-car",
 
+  // --- What you could build on it -----------------------------------------
+  // Everything about developing a lot - fees, timing, what is allowed at all -
+  // hangs off WHICH CITY you are in. LA County has 88 cities plus large
+  // unincorporated areas, and they are four or five different rulebooks. So
+  // jurisdiction is looked up first and everything else is read in its light.
+  //
+  // These are POINT lookups, not area ones: zoning changes across a street,
+  // let alone across a block group, so they are answered for a specific house
+  // or dropped pin and never averaged over an area.
+  PARCEL_CONTEXT: {
+    jurisdiction: {
+      label: "Jurisdiction",
+      // Which city, or unincorporated county. The county publishes city
+      // boundaries on its public GIS; the two hosts below have swapped over
+      // the years, so both are tried.
+      servers: [
+        {
+          url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Political_Boundaries/MapServer",
+          discover: { match: /city boundar|cities|incorporated/i, exclude: /annex|island|sphere/i, polygonsOnly: true, fallbackId: 0 },
+        },
+        {
+          url: "https://arcgis.gis.lacounty.gov/arcgis/rest/services/LACounty_Dynamic/Political_Boundaries/MapServer",
+          discover: { match: /city boundar|cities|incorporated/i, exclude: /annex|island|sphere/i, polygonsOnly: true, fallbackId: 0 },
+        },
+      ],
+      fields: ["CITY_NAME", "CITY", "NAME", "CITY_LABEL", "FEATURE_NAME"],
+      // No polygon contains the point: that is unincorporated county, which is
+      // an answer rather than a failure - and often the permissive one.
+      absent: "Unincorporated LA County",
+      tip:
+        "Which city's rules apply, or unincorporated LA County. This decides everything else about building here - " +
+        "what is permitted, what a permit costs and how long it takes all vary city by city, and unincorporated " +
+        "county is a different rulebook again. Read every other row in this section in its light.",
+    },
+    zoning: {
+      label: "Zoning",
+      // LA City and unincorporated county publish separate zoning layers, and
+      // a parcel is in one or the other. Both are asked; whichever answers is
+      // the one that governs.
+      servers: [
+        {
+          url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Zoning/MapServer",
+          discover: { match: /zoning/i, exclude: /label|annotation/i, polygonsOnly: true, fallbackId: 0 },
+        },
+        {
+          url: "https://maps.lacity.org/lahub/rest/services/Boundaries/MapServer",
+          discover: { match: /zoning/i, exclude: /label|annotation/i, polygonsOnly: true, fallbackId: 0 },
+        },
+      ],
+      fields: ["ZONE_CMPLT", "ZONE_CLASS", "ZONING", "ZONE", "ZONE_CODE", "ZONE_NM"],
+      tip:
+        "The zone code the parcel sits in. It is the code ONLY - what that code lets you build (lot coverage, " +
+        "height, setbacks, whether an ADU is by right) lives in the municipal code, not in any map service. " +
+        "Treat it as the question to ask, not the answer.",
+    },
+    historic: {
+      label: "Historic district",
+      // LA City's HPOZs. Being inside one means design review on anything
+      // visible from the street, which is the difference between a remodel
+      // and a two-year conversation.
+      servers: [
+        {
+          url: "https://maps.lacity.org/lahub/rest/services/Boundaries/MapServer",
+          discover: { match: /hpoz|historic preservation|historic district/i, polygonsOnly: true },
+        },
+        {
+          url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Planning/MapServer",
+          discover: { match: /hpoz|historic/i, polygonsOnly: true },
+        },
+      ],
+      fields: ["NAME", "HPOZ_NAME", "DISTRICT", "LABEL"],
+      absent: "Not in a mapped historic district",
+      tip:
+        "Historic Preservation Overlay Zones, which LA City maps. Inside one, anything visible from the street goes " +
+        "through design review - the difference between a remodel and a long conversation. Only mapped districts are " +
+        "checked: an individually listed landmark, or a district in another city, will not show here.",
+    },
+  },
+
+  // Parcel outlines, drawn over aerial imagery so you can see where the lot
+  // actually ends - which answers more development questions than any
+  // attribute table does.
+  PARCELS: {
+    label: "Parcel outlines",
+    minZoom: 16,   // any wider and it is tens of thousands of polygons
+    servers: [
+      {
+        url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Parcel/MapServer",
+        discover: { match: /parcel/i, exclude: /label|annotation|point/i, polygonsOnly: true, fallbackId: 0 },
+      },
+      {
+        url: "https://arcgis.gis.lacounty.gov/arcgis/rest/services/LACounty_Dynamic/Parcel/MapServer",
+        discover: { match: /parcel/i, exclude: /label|annotation|point/i, polygonsOnly: true, fallbackId: 0 },
+      },
+    ],
+  },
+
+  // Aerial imagery, as an alternative basemap. Esri's World Imagery is the
+  // same service already used as the raster fallback, so nothing new is
+  // trusted here.
+  SATELLITE_TILES:
+    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  SATELLITE_LABELS:
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+
   // Produced by scripts/fetch-blockgroup-data.py (see README).
   BLOCK_GROUP_DATA: "js/data/bg-la-county.json",
   // The schema this build of the page expects. Bumped whenever the fetch
@@ -514,6 +619,7 @@ const BlockGroupApp = (() => {
     fire: false, pollution: false, wind: false,
     flood: false, seismic: false, noise: false, noiseSurface: false,
     schools: false,
+    parcels: false,
     listings: false,   // "show every listing", rather than only the selected block group's
   };
   const loadedBBox = {};    // key -> padded bbox covered by the current layer
@@ -1542,7 +1648,9 @@ const BlockGroupApp = (() => {
       }
     }
 
-    listingsData = [...merged.values()];
+    // Hand-added houses live in the note store, not in the CSV folder, so they
+    // are merged in here - on every load, and after every re-download.
+    listingsData = [...merged.values(), ...manualListings()];
     const back = reconcileListingStore(listingsData);
     const latest = files.reduce((a, f) => (a && a > f.downloaded ? a : f.downloaded), null);
     listingsMeta = {
@@ -1738,6 +1846,11 @@ const BlockGroupApp = (() => {
     openHouseCard(listing);
   }
 
+  // Filled in once the three point lookups answer for the open house, then
+  // the card is re-rendered. Kept beside currentListing rather than inside the
+  // listing, which is rebuilt from the CSVs on every load.
+  let listingContext = null;
+
   function houseCardHTML(listing) {
     const note = noteFor(listing.id);
     const cold = note.status === "notInterested";
@@ -1833,6 +1946,11 @@ const BlockGroupApp = (() => {
             : '<button type="button" class="house-btn" data-act="not-interested">Not interested</button>'
         }
       </div>
+      <div class="house-development">${
+        listingContext
+          ? developmentRows(listingContext)
+          : `${sectionLabel("Development")}<p class="src-note">Checking jurisdiction, zoning and historic districts&hellip;</p>`
+      }</div>
       <div class="house-notes">
         <label for="house-notes-text">Your notes${infoIcon(
           "Whatever you want to remember about this house - what it was like to stand in, what the neighbour said, " +
@@ -1867,7 +1985,16 @@ const BlockGroupApp = (() => {
   function openHouseCard(listing) {
     selectedListingId = listing.id;
     currentListing = listing;
+    listingContext = null;
     renderHouseCard();
+    // Asynchronous, so the card appears at once and the development rows fill
+    // in behind it - three network round trips should not hold up the price.
+    lookupDevelopment(listing.lat, listing.lon).then((context) => {
+      if (currentListing && currentListing.id === listing.id) {
+        listingContext = context;
+        renderHouseCard();
+      }
+    });
     // Redraw so the chosen dot is the highlighted one. The block group card is
     // deliberately left alone: the point is to read both at once.
     showListingsFor();
@@ -1972,6 +2099,111 @@ const BlockGroupApp = (() => {
       renderHouseCard();
       showListingsFor();
     });
+  }
+
+  // --- What you could build on this lot -----------------------------------
+  // Answered for a POINT, never for an area: zoning changes across a street,
+  // so a block group average would be a fiction. Cached by rounded coordinate
+  // so re-opening the same house costs nothing.
+  const contextCache = new Map();
+  const contextSources = {};
+
+  function contextKey(lat, lon) {
+    return `${lat.toFixed(5)},${lon.toFixed(5)}`;
+  }
+
+  async function resolveContextSource(key) {
+    if (contextSources[key]) return contextSources[key];
+    const spec = BG_CONFIG.PARCEL_CONTEXT[key];
+    const problems = [];
+    for (const server of spec.servers) {
+      try {
+        const sublayers = await resolveOverlaySublayers(server.url, server.discover);
+        if (sublayers.length) {
+          contextSources[key] = { url: server.url, sublayers };
+          Utils.logStatus(
+            "development",
+            "ok",
+            `${spec.label}: using ${sublayers.map((l) => l.name).join(", ")} from ${server.url.split("/services/")[1] || server.url}.`
+          );
+          return contextSources[key];
+        }
+        problems.push(`${server.url}: no matching layer`);
+      } catch (err) {
+        problems.push(`${server.url}: ${err.message}`);
+      }
+    }
+    throw new Error(problems.join(" | ") || "no service answered");
+  }
+
+  async function queryContextAt(key, lat, lon) {
+    const spec = BG_CONFIG.PARCEL_CONTEXT[key];
+    const source = await resolveContextSource(key);
+    for (const sub of source.sublayers) {
+      const url = Utils.arcgisQueryUrl(source.url, sub.id, {
+        outFields: "*",
+        extraParams: {
+          geometry: `${lon},${lat}`,
+          geometryType: "esriGeometryPoint",
+          inSR: "4326",
+          spatialRel: "esriSpatialRelIntersects",
+          returnGeometry: "false",
+        },
+      });
+      const data = await Utils.fetchJSON(url, { timeoutMs: 20000 });
+      const hit = (data.features || [])[0];
+      if (hit) {
+        const value = Utils.pickField(hit.attributes || {}, spec.fields);
+        if (value) return String(value).trim();
+      }
+    }
+    // Nothing covered the point. For jurisdiction that IS the answer.
+    return spec.absent || null;
+  }
+
+  // All three at once, and one failing does not lose the others.
+  async function lookupDevelopment(lat, lon) {
+    const key = contextKey(lat, lon);
+    if (contextCache.has(key)) return contextCache.get(key);
+    const pending = (async () => {
+      const keys = Object.keys(BG_CONFIG.PARCEL_CONTEXT);
+      const results = await Promise.all(
+        keys.map(async (k) => {
+          try {
+            return [k, { value: await queryContextAt(k, lat, lon) }];
+          } catch (err) {
+            Utils.logStatus("development", "warn", `${BG_CONFIG.PARCEL_CONTEXT[k].label} lookup failed: ${err.message}`);
+            return [k, { error: err.message }];
+          }
+        })
+      );
+      return Object.fromEntries(results);
+    })();
+    contextCache.set(key, pending);
+    return pending;
+  }
+
+  function developmentRows(context) {
+    if (!context) return "";
+    const rows = Object.entries(BG_CONFIG.PARCEL_CONTEXT)
+      .map(([key, spec]) => {
+        const got = context[key] || {};
+        if (got.error) {
+          return cardRow(spec.label, '<span class="dim">lookup failed</span>', `${spec.tip} (The service did not answer: ${got.error})`);
+        }
+        return cardRow(spec.label, got.value ? Utils.escapeHTML(got.value) : '<span class="dim">not mapped</span>', spec.tip, {
+          key: key === "jurisdiction",
+        });
+      })
+      .filter(Boolean)
+      .join("");
+    if (!rows) return "";
+    return `${sectionLabel(
+      "Development",
+      "What the public maps say about building on this exact spot - not the block group, because zoning changes " +
+        "across a street. It is a screening answer: it tells you which questions to ask and whom to ask them of, " +
+        "and none of it is a substitute for the city's own counter."
+    )}${cardTable(rows)}`;
   }
 
   // --- Every listing in one table -----------------------------------------
@@ -2137,6 +2369,82 @@ const BlockGroupApp = (() => {
         const listing = (listingsData || []).find((l) => l.id === btn.dataset.id);
         if (listing) focusListing(listing);
       });
+    });
+  }
+
+  // --- Adding a house by hand ---------------------------------------------
+  // Not everything worth looking at comes from a Redfin export - a for-sale
+  // sign, a friend's tip, a pocket listing. These are kept in the SAME store
+  // as your notes rather than written into the CSV folder, because the page
+  // cannot write files and because a hand-added house is your record, not
+  // Redfin's. They are merged into the listings on every load.
+  function manualListings() {
+    const saved = listingStore.__manual || {};
+    return Object.values(saved).filter((l) => l && l.lat && l.lon);
+  }
+
+  function addManualListing({ address, price, lat, lon }) {
+    const id = `manual:${address.toLowerCase().replace(/\s+/g, " ").trim()}`;
+    const bucket = listingStore.__manual || (listingStore.__manual = {});
+    const now = new Date().toISOString();
+    bucket[id] = {
+      id,
+      address,
+      price: price || 0,
+      lat,
+      lon,
+      source: "Added by hand",
+      firstSeen: (bucket[id] && bucket[id].firstSeen) || now,
+      lastSeen: now,
+      manual: true,
+    };
+    const note = listingStore[id] || (listingStore[id] = {});
+    if (!note.added) note.added = now;
+    saveListingStore();
+    return bucket[id];
+  }
+
+  function initAddListing() {
+    const form = document.getElementById("add-listing");
+    if (!form) return;
+    const addressInput = document.getElementById("add-listing-address");
+    const priceInput = document.getElementById("add-listing-price");
+    const status = document.getElementById("add-listing-status");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const address = addressInput.value.trim();
+      if (!address) return;
+      status.className = "hint";
+      status.textContent = "Looking up the address\u2026";
+      try {
+        // Geocoded through the same Nominatim the search box uses, so a
+        // hand-added house lands in exactly the same place a searched one
+        // would - and gets a block group, schools and zoning for free.
+        const matches = await suggestAddresses(address);
+        if (!matches.length) {
+          status.className = "hint error";
+          status.textContent = "No match for that address. Try adding the city.";
+          return;
+        }
+        const hit = matches[0];
+        const price = Number(String(priceInput.value).replace(/[^0-9.]/g, "")) || 0;
+        const listing = addManualListing({
+          address: hit.matchedAddress || address,
+          price,
+          lat: hit.coordinates.y,
+          lon: hit.coordinates.x,
+        });
+        listingsData = (listingsData || []).filter((l) => l.id !== listing.id).concat(listing);
+        status.className = "hint ok";
+        status.textContent = `Added ${listing.address}.`;
+        addressInput.value = "";
+        priceInput.value = "";
+        await focusListing(listing);
+      } catch (err) {
+        status.className = "hint error";
+        status.textContent = `Could not add it: ${err.message}`;
+      }
     });
   }
 
@@ -3162,7 +3470,7 @@ const BlockGroupApp = (() => {
   // straddle two attendance zones, so its card can only report the zone at
   // its centre; a dropped pin has exact coordinates, and those are what
   // actually decide which school a house is assigned to.
-  function renderAddressCard({ address, lat, lon, schools, district, status }) {
+  function renderAddressCard({ address, lat, lon, schools, district, status, context }) {
     const box = document.getElementById("address-card");
     if (!address) {
       box.classList.add("hidden");
@@ -3194,11 +3502,19 @@ const BlockGroupApp = (() => {
             "This is the address-level answer - the block group card can only report the zone at the block " +
             "group's centre, and a block group can straddle two zones.")}
         ${schoolHtml}
+        ${
+          status === "loading"
+            ? `${sectionLabel("Development")}<p class="src-note">Checking jurisdiction, zoning and historic districts&hellip;</p>`
+            : developmentRows(context)
+        }
       </div>`;
   }
 
   async function describeAddress(address, lat, lon) {
     renderAddressCard({ address, lat, lon, status: "loading" });
+    // Started now, awaited later: the three development lookups are
+    // independent of the school ones and there is no reason to queue them.
+    const contextPromise = lookupDevelopment(lat, lon);
     try {
       const schools = await queryZonesAtPoint(lat, lon);
       let district = null;
@@ -3229,9 +3545,9 @@ const BlockGroupApp = (() => {
           /* the district name is a nicety, not worth failing the card for */
         }
       }
-      renderAddressCard({ address, lat, lon, schools, district });
+      renderAddressCard({ address, lat, lon, schools, district, context: await contextPromise });
     } catch (err) {
-      renderAddressCard({ address, lat, lon, schools: [], district: null });
+      renderAddressCard({ address, lat, lon, schools: [], district: null, context: await contextPromise });
       Utils.logStatus("schoolZones", "warn", `Could not look up schools for this address: ${err.message}`);
     }
   }
@@ -5501,7 +5817,12 @@ const BlockGroupApp = (() => {
     ["Seismic hazard zones", "CA Geological Survey", "Liquefaction and landslide zones", () => "live", "Liquefaction & landslide toggle"],
     ["National Transportation Noise Map", "BTS / DOT", "Modelled aviation, road and rail noise", () => "live", "The two noise toggles, and the Aviation noise card rows"],
     ["Global Wind Atlas 3", "DTU / World Bank", "Mean wind speed at 100 m", () => metaDate(windGrid && windGrid.meta), "Wind toggle, and the Wind card rows"],
-    ["Nominatim", "OpenStreetMap", "Address search and reverse geocoding", () => "live", "The address box and the dropped pin"],
+    ["City boundaries", "LA County GIS", "Which of the 88 cities, or unincorporated county", () => "live", "House and pin cards: Development - Jurisdiction"],
+    ["Zoning", "LA County / LA City GIS", "The zone code a parcel sits in", () => "live", "House and pin cards: Development - Zoning"],
+    ["HPOZ", "LA City GIS", "Historic Preservation Overlay Zone boundaries", () => "live", "House and pin cards: Development - Historic district"],
+    ["Parcels", "LA County GIS", "Lot boundaries, 2.4 million of them", () => "live", "Parcel outlines toggle (zoom 16+)"],
+    ["World Imagery", "Esri", "Aerial photography", () => "live", "Satellite imagery toggle"],
+    ["Nominatim", "OpenStreetMap", "Address search and reverse geocoding", () => "live", "The address box, the dropped pin, and adding a house by hand"],
     ["OpenRouteService", "HeiGIT", "Driving directions and duration", () => "live", "Commute time from the pin to your destination"],
   ];
 
@@ -5561,6 +5882,87 @@ const BlockGroupApp = (() => {
     }).addTo(map);
     basemapKind = "raster";
     Utils.logStatus("basemap", "warn", `Using the Esri raster basemap: ${reason}. It is only published to zoom ${BG_CONFIG.FALLBACK_MAX_NATIVE_ZOOM}, so it softens past that.`);
+  }
+
+  // --- Aerial imagery -----------------------------------------------------
+  // Not a replacement basemap so much as a different question: the vector map
+  // tells you what things are called, the photo tells you what is actually
+  // there - the mature oak, the slope, where the lot really ends.
+  let satelliteLayers = null;
+
+  function setSatellite(on) {
+    if (on && !satelliteLayers) {
+      satelliteLayers = [
+        L.tileLayer(BG_CONFIG.SATELLITE_TILES, {
+          maxZoom: BG_CONFIG.MAX_ZOOM,
+          maxNativeZoom: 19,
+          attribution: "Imagery &copy; Esri",
+          pane: "rasterOverlay",
+          opacity: 1,
+        }),
+        // Place names over the photo, or nothing is findable.
+        L.tileLayer(BG_CONFIG.SATELLITE_LABELS, {
+          maxZoom: BG_CONFIG.MAX_ZOOM,
+          maxNativeZoom: 19,
+          pane: "rasterOverlay",
+          opacity: 0.9,
+        }),
+      ];
+      satelliteLayers.forEach((l) => l.addTo(map));
+      Utils.logStatus("satellite", "ok", "Aerial imagery on (Esri World Imagery), sharp to zoom 19.");
+    } else if (!on && satelliteLayers) {
+      satelliteLayers.forEach((l) => map.removeLayer(l));
+      satelliteLayers = null;
+      Utils.logStatus("satellite", "info", "Aerial imagery off.");
+    }
+  }
+
+  // Parcel outlines. Drawn like the other viewport layers, but only when
+  // zoomed right in: the county has 2.4 million of them.
+  let parcelSource = null;
+
+  async function refreshParcels() {
+    if (!enabled.parcels) return;
+    if (map.getZoom() < BG_CONFIG.PARCELS.minZoom) {
+      if (layers.parcels) {
+        map.removeLayer(layers.parcels);
+        delete layers.parcels;
+      }
+      return;
+    }
+    try {
+      if (!parcelSource) {
+        const problems = [];
+        for (const server of BG_CONFIG.PARCELS.servers) {
+          try {
+            const sublayers = await resolveOverlaySublayers(server.url, server.discover);
+            if (sublayers.length) {
+              parcelSource = { url: server.url, id: sublayers[0].id };
+              break;
+            }
+            problems.push(`${server.url}: no parcel layer`);
+          } catch (err) {
+            problems.push(`${server.url}: ${err.message}`);
+          }
+        }
+        if (!parcelSource) throw new Error(problems.join(" | "));
+      }
+      const b = map.getBounds();
+      const url = Utils.arcgisQueryUrl(parcelSource.url, parcelSource.id, {
+        outFields: "AIN,APN",
+        extraParams: { maxAllowableOffset: "0.000002" },
+        bbox: { xmin: b.getWest(), ymin: b.getSouth(), xmax: b.getEast(), ymax: b.getNorth() },
+      });
+      const geojson = await Utils.fetchEsriAsGeoJSON(url, { timeoutMs: 25000 });
+      if (layers.parcels) map.removeLayer(layers.parcels);
+      layers.parcels = L.geoJSON(geojson, {
+        style: { color: "#f5d90a", weight: 1, fill: false, opacity: 0.95 },
+        pane: "overlayPane",
+      }).addTo(map);
+      Utils.logStatus("parcels", "ok", `${(geojson.features || []).length} parcel outlines drawn.`);
+    } catch (err) {
+      Utils.logStatus("parcels", "error", `Parcel outlines failed: ${err.message}`);
+    }
   }
 
   function addBasemap() {
@@ -5655,6 +6057,23 @@ const BlockGroupApp = (() => {
     loadListings();
     loadOrsKey();
     renderFilterRows();
+    document.getElementById("toggle-satellite").addEventListener("change", (e) => setSatellite(e.target.checked));
+
+    document.getElementById("toggle-parcels").addEventListener("change", (e) => {
+      enabled.parcels = e.target.checked;
+      if (!enabled.parcels && layers.parcels) {
+        map.removeLayer(layers.parcels);
+        delete layers.parcels;
+        Utils.logStatus("parcels", "info", "Parcel outlines off.");
+      } else if (enabled.parcels) {
+        if (map.getZoom() < BG_CONFIG.PARCELS.minZoom) {
+          Utils.logStatus("parcels", "info", `Zoom to ${BG_CONFIG.PARCELS.minZoom}+ to see parcel outlines - there are 2.4 million of them.`);
+        }
+        refreshParcels();
+      }
+    });
+
+    initAddListing();
     document.getElementById("open-listings-table").addEventListener("click", openListingsTable);
 
     document.getElementById("toggle-listings").addEventListener("change", async (e) => {
@@ -5737,6 +6156,7 @@ const BlockGroupApp = (() => {
         refreshLayer("flood");
         refreshLayer("seismic");
         refreshLayer("schools");
+        refreshParcels();
       }, 400);
       updateZoomHint();
     });

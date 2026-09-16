@@ -793,3 +793,21 @@ html, body {
   resize: vertical;
 }
 .notes-saved { margin: 3px 0 0; font-size: 0.68rem; }
+
+/* --- Add a house by hand --- */
+#add-listing { margin-top: 10px; }
+#add-listing label { display: block; font-size: 0.75rem; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+#add-listing input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.78rem;
+}
+#add-listing .add-row { display: flex; gap: 6px; margin-top: 6px; }
+#add-listing .add-row input { flex: 1; }
+.panel-btn.compact { width: auto; margin-top: 0; padding: 6px 14px; }
+#add-listing-status:empty { display: none; }
+#add-listing-status { margin: 6px 0 0; font-size: 0.72rem; }

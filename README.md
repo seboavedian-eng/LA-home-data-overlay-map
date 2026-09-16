@@ -728,6 +728,31 @@ to the requested box, that negative sentinels become nulls instead of
 negative wind speeds, and that a projected or ungeoreferenced file is
 rejected with an actionable message. No GWA download is needed to run it.
 
+## What you could build on it
+
+A **Development** section on the house card and the dropped-pin card, answered
+for that exact point rather than for the block group - zoning changes across a
+street, so an area answer would be a fiction.
+
+| Row | Source | What it is |
+|---|---|---|
+| **Jurisdiction** | LA County city boundaries | Which of the 88 cities, or unincorporated county. This is the keystone: what is permitted, what a permit costs and how long it takes all vary city by city. Every other row is read in its light. |
+| **Zoning** | LA County / LA City | The zone code. The **code only** - what it lets you build lives in the municipal code, not in any map service. |
+| **Historic district** | LA City HPOZ | Inside one, anything visible from the street goes through design review. |
+
+Plus two toggles that answer more development questions than any attribute
+table: **Satellite imagery** (Esri World Imagery) and **Parcel outlines** (the
+county's lot boundaries, zoom 16+). Together they show where the trees, the
+slope and the real setbacks are.
+
+**Adding a house by hand.** Not everything comes from a Redfin export - a
+for-sale sign, a friend's tip. Type an address and a price in the sidebar and
+it is geocoded through the same Nominatim the search box uses, so it lands
+where a searched address would and gets a block group, schools and zoning for
+free. Hand-added houses live in the browser store beside your notes rather than
+in the CSV folder (a page served off disk cannot write files), and are merged
+back in on every load.
+
 ## Keeping it consistent
 
 Two rules are enforced by tests rather than remembered.
