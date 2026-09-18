@@ -2383,7 +2383,17 @@ const BlockGroupApp = (() => {
     return Object.values(saved).filter((l) => l && l.lat && l.lon);
   }
 
-  function addManualListing({ address, price, lat, lon }) {
+  // Everything past address/price is optional: typed by hand there is only an
+  // address and a price, but when the extractor has read a listing page the
+  // rest of the card can be filled in too, and it uses the SAME field names
+  // the Redfin parser produces so every card, table and filter downstream
+  // cannot tell the two apart.
+  const MANUAL_EXTRA_FIELDS = [
+    "city", "zip", "beds", "baths", "sqft", "lotSqft",
+    "yearBuilt", "hoa", "type", "status", "mls", "url", "listedOn",
+  ];
+
+  function addManualListing({ address, price, lat, lon, ...extra }) {
     const id = `manual:${address.toLowerCase().replace(/\s+/g, " ").trim()}`;
     const bucket = listingStore.__manual || (listingStore.__manual = {});
     const now = new Date().toISOString();
@@ -2398,10 +2408,48 @@ const BlockGroupApp = (() => {
       lastSeen: now,
       manual: true,
     };
+    // Only fields with a real value: a null from the extractor means the page
+    // did not say, and an undefined row is what the card renders as absent.
+    MANUAL_EXTRA_FIELDS.forEach((field) => {
+      const value = extra[field];
+      if (value !== null && value !== undefined && value !== "") bucket[id][field] = value;
+    });
     const note = listingStore[id] || (listingStore[id] = {});
     if (!note.added) note.added = now;
     saveListingStore();
     return bucket[id];
+  }
+
+  // Geocode, store and fly to a house. Shared by the typed form and the
+  // extractor so a house added either way behaves identically afterwards.
+  async function commitManualListing(fields, status) {
+    const address = String(fields.address || "").trim();
+    if (!address) throw new Error("no address");
+    // The geocoder wants the city; a listing page gives it separately.
+    const query = fields.city && !address.toLowerCase().includes(String(fields.city).toLowerCase())
+      ? `${address}, ${fields.city}`
+      : address;
+    status.className = "hint";
+    status.textContent = "Looking up the address\u2026";
+    // Geocoded through the same Nominatim the search box uses, so a
+    // hand-added house lands in exactly the same place a searched one
+    // would - and gets a block group, schools and zoning for free.
+    const matches = await suggestAddresses(query);
+    if (!matches.length) {
+      status.className = "hint error";
+      status.textContent = "No match for that address. Try adding the city.";
+      return null;
+    }
+    const hit = matches[0];
+    const listing = addManualListing({
+      ...fields,
+      address: hit.matchedAddress || address,
+      lat: hit.coordinates.y,
+      lon: hit.coordinates.x,
+    });
+    listingsData = (listingsData || []).filter((l) => l.id !== listing.id).concat(listing);
+    await focusListing(listing);
+    return listing;
   }
 
   function initAddListing() {
@@ -2415,35 +2463,134 @@ const BlockGroupApp = (() => {
       e.preventDefault();
       const address = addressInput.value.trim();
       if (!address) return;
-      status.className = "hint";
-      status.textContent = "Looking up the address\u2026";
       try {
-        // Geocoded through the same Nominatim the search box uses, so a
-        // hand-added house lands in exactly the same place a searched one
-        // would - and gets a block group, schools and zoning for free.
-        const matches = await suggestAddresses(address);
-        if (!matches.length) {
-          status.className = "hint error";
-          status.textContent = "No match for that address. Try adding the city.";
-          return;
-        }
-        const hit = matches[0];
         const price = Number(String(priceInput.value).replace(/[^0-9.]/g, "")) || 0;
-        const listing = addManualListing({
-          address: hit.matchedAddress || address,
-          price,
-          lat: hit.coordinates.y,
-          lon: hit.coordinates.x,
-        });
-        listingsData = (listingsData || []).filter((l) => l.id !== listing.id).concat(listing);
+        const listing = await commitManualListing({ address, price }, status);
+        if (!listing) return;
         status.className = "hint ok";
         status.textContent = `Added ${listing.address}.`;
         addressInput.value = "";
         priceInput.value = "";
-        await focusListing(listing);
       } catch (err) {
         status.className = "hint error";
         status.textContent = `Could not add it: ${err.message}`;
+      }
+    });
+  }
+
+  // --- Reading a listing page for you -------------------------------------
+  // The page cannot do this alone. A static file cannot hold an API key
+  // without handing it to anyone who opens the page, so the work happens in
+  // scripts/listing-server.py and the box below only appears when that is
+  // what is serving the page. Served by `python -m http.server`, the probe
+  // 404s and the box stays hidden rather than offering a dead button.
+
+  const EXTRACT_NUMERIC = ["price", "beds", "baths", "sqft", "lotSqft", "yearBuilt", "hoa", "daysOnMarket"];
+
+  function cleanExtracted(fields) {
+    const out = {};
+    Object.keys(fields || {}).forEach((key) => {
+      let value = fields[key];
+      if (value === null || value === undefined || value === "") return;
+      if (EXTRACT_NUMERIC.includes(key)) {
+        value = Number(String(value).replace(/[^0-9.]/g, ""));
+        if (!Number.isFinite(value) || value <= 0) return;
+      }
+      out[key] = value;
+    });
+    // Days on market is stated relative to today, which is the only date the
+    // page can be sure of - the same arithmetic the Redfin parser does.
+    if (out.daysOnMarket) {
+      out.listedOn = localDay(new Date(Date.now() - out.daysOnMarket * 86400000));
+      delete out.daysOnMarket;
+    }
+    return out;
+  }
+
+  // What the extractor found, so you can see it was read rather than guessed.
+  function extractedSummary(fields) {
+    const bits = [];
+    if (fields.price) bits.push(Utils.fmtCurrency(fields.price));
+    if (fields.beds) bits.push(`${fields.beds} bd`);
+    if (fields.baths) bits.push(`${fields.baths} ba`);
+    if (fields.sqft) bits.push(`${Utils.fmtNumber(fields.sqft)} ft\u00b2`);
+    if (fields.yearBuilt) bits.push(`built ${fields.yearBuilt}`);
+    return bits.join(" \u00b7 ");
+  }
+
+  async function initExtractListing() {
+    const box = document.getElementById("extract-listing");
+    if (!box) return;
+    const input = document.getElementById("extract-listing-text");
+    const button = document.getElementById("extract-listing-run");
+    const status = document.getElementById("extract-listing-status");
+
+    let ready;
+    try {
+      const probe = await fetch("/api/extract", { method: "GET" });
+      ready = probe.ok ? await probe.json() : null;
+    } catch (err) {
+      ready = null;
+    }
+    if (!ready) {
+      Utils.logStatus(
+        "extract",
+        "info",
+        "Listing extraction is off: this page is being served by a plain file server. " +
+          "Run `python scripts/listing-server.py` instead to switch it on."
+      );
+      return;
+    }
+
+    box.hidden = false;
+    if (!ready.ready) {
+      // The server is there but cannot call the API. Say which half is
+      // missing rather than failing on the first click.
+      status.className = "hint error";
+      status.textContent = !ready.haveSdk
+        ? "Run `pip install anthropic`, then restart the server."
+        : "No API key found. Put ANTHROPIC_API_KEY in a .env file next to blockgroups.html and restart the server.";
+      button.disabled = true;
+      return;
+    }
+    Utils.logStatus("extract", "ok", `Listing extraction is on, using ${ready.model}.`);
+
+    button.addEventListener("click", async () => {
+      const raw = input.value.trim();
+      if (!raw) return;
+      // A bare URL goes to the server to fetch; anything else is the page
+      // text you pasted, which always works where fetching often does not.
+      const isUrl = /^https?:\/\/\S+$/i.test(raw);
+      button.disabled = true;
+      status.className = "hint";
+      status.textContent = isUrl ? "Fetching and reading the page\u2026" : "Reading the page\u2026";
+      try {
+        const response = await fetch("/api/extract", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(isUrl ? { url: raw } : { text: raw }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        if (data.fields && data.fields.problem) throw new Error(data.fields.problem);
+
+        const fields = cleanExtracted(data.fields);
+        if (isUrl) fields.url = raw;
+        if (!fields.address) throw new Error("No address in that page. Paste the listing text instead.");
+
+        const listing = await commitManualListing(fields, status);
+        if (!listing) return;
+        const summary = extractedSummary(fields);
+        status.className = "hint ok";
+        status.textContent = summary
+          ? `Added ${listing.address} \u2014 ${summary}.`
+          : `Added ${listing.address}.`;
+        input.value = "";
+      } catch (err) {
+        status.className = "hint error";
+        status.textContent = err.message;
+      } finally {
+        button.disabled = false;
       }
     });
   }
@@ -6074,6 +6221,7 @@ const BlockGroupApp = (() => {
     });
 
     initAddListing();
+    initExtractListing();
     document.getElementById("open-listings-table").addEventListener("click", openListingsTable);
 
     document.getElementById("toggle-listings").addEventListener("change", async (e) => {

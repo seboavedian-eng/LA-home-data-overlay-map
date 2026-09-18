@@ -450,6 +450,57 @@ because a page served off disk cannot write files back to it. They survive
 reloads and re-downloads, and they are per-browser: they do not travel to
 another machine, and clearing site data clears them.
 
+### Optional: have a listing page read for you
+
+Typing beds, baths, square feet and year built out of a browser tab is the
+tedious half of adding a house by hand. This reads the page for you and fills
+the card in.
+
+```
+pip install anthropic
+```
+
+Then put your key in a file called `.env` next to `blockgroups.html`:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+and start the page with **this instead of `python -m http.server`**:
+
+```
+python scripts/listing-server.py
+```
+
+A **paste box** appears under "Add a house by address". Paste a listing URL,
+or - more reliably - open the listing, select all, copy, and paste the text.
+It comes back with address, price, beds, baths, square feet, lot size, year
+built, HOA, type, status and MLS number, and the house lands on the map like
+any other.
+
+**Why this needs a server at all.** The page cannot do it alone, and the
+reason is worth understanding rather than working around: anything in `js/` is
+readable by anyone the page is shown to, so a key put there is a published
+key. A static page also cannot read a file outside itself. `listing-server.py`
+serves exactly what `python -m http.server` served, plus one endpoint that
+holds the key on your side of the wire. `.env` is gitignored.
+
+**What it costs.** Effectively nothing. Reading a listing page is about 4,000
+tokens in and a few hundred out - fractions of a cent on the default
+`claude-haiku-4-5`. Twenty listings a week is pennies a month. Set
+`LISTING_MODEL=claude-opus-5` in `.env` if a page ever defeats the cheap model.
+
+**What it will not do.** It reports only what the page states, and returns
+nothing for a field the page omits - no estimating, and no borrowing a number
+from the "similar homes" section, which is the failure mode that would quietly
+put a neighbour's square footage on your card. A page that is not a single
+listing is refused rather than added. Fetching a bare URL works sometimes;
+Redfin and Zillow block scripts often enough that pasting the text is the path
+that always works, and the error says so.
+
+Without any of this, everything else is unchanged: `python -m http.server`
+still works, the paste box simply does not appear, and the status log says why.
+
 ### Optional: commute times
 
 Put a free [OpenRouteService](https://openrouteservice.org/dev/#/signup) key
@@ -782,6 +833,19 @@ after a ten-minute download. `tests/test_compaction.py` runs the whole thing
 against fake responses in under a second. A static check also refuses any local
 that shadows a function in the same module.
 
+**The extractor is tested without spending a cent.** `tests/test_listing_server.py`
+runs the real server on a random port and drives it over HTTP. It asserts the
+things that would leak or waste the key rather than the model's answers: that a
+key exported in the shell beats a stale one in `.env`, that the status probe
+reports missing package and missing key separately instead of claiming to be
+ready, that a request with neither text nor a URL is refused before any API
+call is made, and that a wrong key fails as an authentication error rather than
+as "you have no key" - which would send you to fix a `.env` that is already
+correct. The page's half is covered in the browser suite with the endpoint
+stubbed: the probe that decides whether to offer the box at all, a bare URL
+being sent as a URL rather than as pasted text, a null field being left off the
+card instead of drawn as `$0`, and a page that is not a listing being refused.
+
 ## Project layout
 
 ```
@@ -791,6 +855,8 @@ css/blockgroups.css    ...its styles
 scripts/fetch-blockgroup-data.py   One-time block-group ACS fetch
 scripts/fetch-wind-data.py         One-time Global Wind Atlas GeoTIFF -> JSON grid
 scripts/fetch-parcel-data.py       One-time Assessor roll -> per-year prices and sales
+scripts/listing-server.py          Serves the page AND reads listing pages for you (optional)
+.env                               Your API key for the above. Gitignored, never in js/
 raw-data/redfin-listings/          Drop Redfin CSV exports here - the page reads them directly
 
 index.html

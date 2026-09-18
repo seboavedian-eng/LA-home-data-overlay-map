@@ -811,3 +811,21 @@ html, body {
 .panel-btn.compact { width: auto; margin-top: 0; padding: 6px 14px; }
 #add-listing-status:empty { display: none; }
 #add-listing-status { margin: 6px 0 0; font-size: 0.72rem; }
+
+/* The paste box. Hidden unless listing-server.py is the thing serving the
+   page - offering a button that cannot work is worse than not offering it. */
+#extract-listing { margin-top: 12px; }
+#extract-listing label { display: block; font-size: 0.75rem; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+#extract-listing textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.78rem;
+  resize: vertical;
+}
+#extract-listing .add-row { display: flex; gap: 6px; margin-top: 6px; }
+#extract-listing-status:empty { display: none; }
+#extract-listing-status { margin: 6px 0 0; font-size: 0.72rem; }

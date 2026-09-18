@@ -498,6 +498,45 @@ async function main() {
     route.fulfill({ contentType: "image/png", body: BLANK_PNG })
   );
 
+  // The listing extractor's endpoint. The real one lives in
+  // scripts/listing-server.py and is not what serves the page under test, so
+  // it is stubbed - what is being tested is the page's half: the probe that
+  // decides whether to offer the box at all, a URL being sent as a URL rather
+  // than as pasted text, nulls being dropped instead of drawn as zero, and a
+  // house built this way behaving like any other house on the map.
+  let extractRequests = [];
+  let extractStatus = { ready: true, haveKey: true, haveSdk: true, model: "claude-haiku-4-5" };
+  let extractReply = {
+    status: 200,
+    body: {
+      fields: {
+        address: "410 W Temple St",
+        city: "Los Angeles",
+        zip: "90012",
+        price: 1450000,
+        beds: 3,
+        baths: 2.5,
+        sqft: 1840,
+        lotSqft: 6100,
+        yearBuilt: 1951,
+        hoa: null,
+        type: "Single Family Residential",
+        status: "Active",
+        mls: "SR24001234",
+        daysOnMarket: 12,
+        problem: null,
+      },
+      model: "claude-haiku-4-5",
+      usage: { input: 4210, output: 180 },
+    },
+  };
+  await page.route("**/api/extract", (route) => {
+    const request = route.request();
+    if (request.method() === "GET") return route.fulfill(json(extractStatus));
+    extractRequests.push(JSON.parse(request.postData() || "{}"));
+    return route.fulfill({ ...json(extractReply.body), status: extractReply.status });
+  });
+
   // The listings folder. python's http.server publishes a directory index for
   // it and the page scrapes the .csv links out of that, so the stub has to be
   // an index page and not a JSON manifest - a manifest would test something
@@ -2620,6 +2659,107 @@ async function main() {
       })(),
       "four from the CSVs plus the one added by hand"
     );
+    // --- Having a listing page read for you --------------------------------
+    // Typing beds, baths, square feet and year built out of a browser tab is
+    // the tedious half of adding a house. The paste box hands the page to a
+    // model and fills them in - but only when scripts/listing-server.py is
+    // what is serving this page, because a static file cannot hold an API key
+    // without handing it to everyone who opens it.
+    step(
+      "the paste box is offered when the server can do the work",
+      !(await page.locator("#extract-listing").isHidden()),
+      "hidden unless /api/extract answers"
+    );
+    step(
+      "and the log names the model it will use",
+      /extraction is on, using claude-haiku-4-5/.test(await page.locator("#status-log").innerText()),
+      (await page.locator("#status-log").innerText()).match(/extraction is on.{0,40}/)
+    );
+
+    await page.fill("#extract-listing-text", "3 bd 2.5 ba 1,840 sq ft ... the whole listing page pasted");
+    await page.click("#extract-listing-run");
+    await page.waitForTimeout(2500);
+    step(
+      "pasted text is sent as text, not mistaken for a URL",
+      extractRequests.length === 1 && !!extractRequests[0].text && !extractRequests[0].url,
+      JSON.stringify(Object.keys(extractRequests[0] || {}))
+    );
+    step(
+      "the house it read is added and opened like any other",
+      (await page.locator("#house-card").isVisible()) &&
+        /1,450,000/.test(await page.locator("#house-card .house-price").innerText()),
+      await page.locator("#house-card .house-price").innerText().catch(() => "no card")
+    );
+    const extractedCard = await page.locator("#house-card").innerText();
+    step(
+      "every field it found reaches the card, not just the price",
+      /1,840/.test(extractedCard) && /2\.5/.test(extractedCard) && /1951/.test(extractedCard),
+      extractedCard.replace(/\s+/g, " ").slice(0, 160)
+    );
+    step(
+      "a field the page never stated is left off, not drawn as zero",
+      !/\$0\/mo/.test(extractedCard),
+      "hoa came back null"
+    );
+    step(
+      "days on market becomes a listed-on date, as it does for a Redfin row",
+      await page.evaluate(() => {
+        const store = JSON.parse(localStorage.getItem("la-home-map.listings.v1"));
+        const house = Object.values(store.__manual || {})[0] || {};
+        return !!house.listedOn && house.daysOnMarket === undefined && house.sqft === 1840;
+      }),
+      "the model reports a span; the store keeps a date"
+    );
+    step(
+      "the status line shows what was read, so you can see it was not guessed",
+      /1,840/.test(await page.locator("#extract-listing-status").innerText()),
+      await page.locator("#extract-listing-status").innerText()
+    );
+
+    // A bare URL is the server's job to fetch, and often fails - Redfin and
+    // Zillow block scripts. The page still has to send it as a URL.
+    await page.fill("#extract-listing-text", "https://www.redfin.com/CA/Los-Angeles/410-W-Temple-St/home/12345");
+    await page.click("#extract-listing-run");
+    await page.waitForTimeout(2500);
+    step(
+      "a bare URL is sent as a URL for the server to fetch",
+      extractRequests.length === 2 && !!extractRequests[1].url && !extractRequests[1].text,
+      JSON.stringify(Object.keys(extractRequests[1] || {}))
+    );
+    step(
+      "...and the listing keeps the link, so the card can open it again",
+      await page.evaluate(() => {
+        const store = JSON.parse(localStorage.getItem("la-home-map.listings.v1"));
+        const house = Object.values(store.__manual || {})[0] || {};
+        return /redfin\.com/.test(house.url || "");
+      }),
+      "url carried through"
+    );
+
+    // What the page must NOT do is add a house from something that was not a
+    // listing. The model says so in `problem`; the page has to believe it.
+    extractReply = { status: 200, body: { fields: { address: null, problem: "This page is a search results list, not one home." }, model: "claude-haiku-4-5" } };
+    await page.fill("#extract-listing-text", "Homes for sale in Burbank, CA | 412 results");
+    await page.click("#extract-listing-run");
+    await page.waitForTimeout(1500);
+    step(
+      "a page that is not a listing is refused rather than added",
+      /not one home/.test(await page.locator("#extract-listing-status").innerText()) &&
+        (await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem("la-home-map.listings.v1")).__manual || {}).length)) === 1,
+      await page.locator("#extract-listing-status").innerText()
+    );
+    // And a server that fails says why, in the words the server chose.
+    extractReply = { status: 502, body: { error: "Could not fetch that page (HTTP Error 403). Redfin and Zillow block scripts - paste the text instead." } };
+    await page.fill("#extract-listing-text", "https://www.zillow.com/homedetails/99999_zpid/");
+    await page.click("#extract-listing-run");
+    await page.waitForTimeout(1500);
+    step(
+      "a blocked fetch tells you to paste instead, rather than failing silently",
+      /paste the text instead/.test(await page.locator("#extract-listing-status").innerText()),
+      await page.locator("#extract-listing-status").innerText()
+    );
+    extractReply.status = 200;
+
     // Clear it so the counts below are the ones the rest of the run expects.
     await page.evaluate(async () => {
       const key = "la-home-map.listings.v1";
@@ -3916,6 +4056,40 @@ async function main() {
     );
     await page404.close();
     await pageBad.close();
+
+    // --- Served by a plain file server: no extractor, and it says so --------
+    // `python -m http.server` has no /api/extract, so the probe 404s. Offering
+    // a button that cannot work is worse than not offering it, and silence is
+    // worse than either - the log has to name the command that switches it on.
+    const pagePlain = await browser.newPage();
+    await pagePlain.route("**://tile.openstreetmap.org/**", (route) =>
+      route.fulfill({ contentType: "image/png", body: BLANK_PNG })
+    );
+    await pagePlain.route("**://tigerweb.geo.census.gov/**", (route) => {
+      const url = route.request().url();
+      if (url.includes("/10/query")) return route.fulfill(json(esriFC([BG_A])));
+      return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
+    });
+    await pagePlain.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    await pagePlain.waitForFunction(() => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.map);
+    await pagePlain.waitForTimeout(800);
+    step(
+      "a plain file server hides the paste box rather than offering a dead button",
+      await pagePlain.locator("#extract-listing").isHidden(),
+      "no /api/extract to answer the probe"
+    );
+    const plainLog = await pagePlain.locator("#status-log").innerText();
+    step(
+      "...and the log names the command that switches it on",
+      /extraction is off/.test(plainLog) && /listing-server\.py/.test(plainLog),
+      plainLog.replace(/\s+/g, " ").match(/extraction is off.{0,110}/)
+    );
+    step(
+      "typing a house by hand still works without the extractor",
+      !(await pagePlain.locator("#add-listing").isHidden()),
+      "the manual form is not gated on the server"
+    );
+    await pagePlain.close();
 
     // --- file:// origin (double-clicking the .html instead of serving it) ---
     // The single most likely setup mistake: the map looks fine because

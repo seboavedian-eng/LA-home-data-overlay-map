@@ -14,3 +14,6 @@ js/data/*.json
 
 # Download packages built for hand-off
 *.zip
+
+# The API key for scripts/listing-server.py. Never commit this.
+.env
