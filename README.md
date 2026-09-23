@@ -16,6 +16,17 @@ Everything is plain HTML/CSS/JS (Leaflet + turf.js, vendored locally in
 `vendor/`) - no build tool, no server, no API keys required to get it
 running.
 
+## Documentation
+
+Four short documents in `docs/`:
+
+- **[PRD.md](docs/PRD.md)** — what this is for, what's built, what's missing, what's next
+- **[DATA-FLOW.md](docs/DATA-FLOW.md)** — every data source, how it arrives, how it fails, what to watch
+- **[USER-GUIDE.md](docs/USER-GUIDE.md)** — how to actually use the thing
+- **[DECISIONS.md](docs/DECISIONS.md)** — the non-obvious calls, so we don't re-argue them
+
+The rest of this file is the setup detail behind them.
+
 ## Running it
 
 1. **Recommended, one time:** `bash scripts/fetch-census-data.sh` - pulls the
