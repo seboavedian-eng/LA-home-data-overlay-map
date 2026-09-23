@@ -369,6 +369,20 @@ const BG_CONFIG = {
     high: { label: "High schools", short: "High" },
   },
 
+  // Attendance zones saved from a district's own ArcGIS webmap, converted by
+  // scripts/convert-arcgis-webmap.py. Where a district appears here, these
+  // are drawn INSTEAD of the county-wide SABS layer for that district: same
+  // likely vintage, but no network dependency and guaranteed coverage.
+  SCHOOL_ZONES_LOCAL_URL: "js/data/school-zones-local.json",
+
+  // Districts publish an official address lookup that is current and
+  // authoritative. The zone popup links to it, because a polygon is for
+  // browsing and this is for deciding.
+  SCHOOL_FINDERS: {
+    "0615240": { name: "Glendale Unified", url: "https://www.gusd.net/8439_3" },
+    "0622710": { name: "Los Angeles Unified", url: "https://rsi.lausd.net/ResidentSchoolIdentifier/" },
+  },
+
   // Ratings, built on your machine by scripts/fetch-school-data.py.
   SCHOOL_RATINGS_URL: "js/data/schools-la-county.json",
   SCHOOL_RATINGS_SCHEMA: 1,
@@ -3588,13 +3602,29 @@ const BlockGroupApp = (() => {
   function schoolZonePopup(props, level) {
     const F = BG_CONFIG.SCHOOL_BOUNDARIES.FIELDS;
     const name = Utils.pickField(props, F.name) || "Attendance zone";
-    const source = (boundarySource && boundarySource.label) || "NCES SABS 2015-16";
+    const local = !!props.__source;
+    const source = props.__source || (boundarySource && boundarySource.label) || "NCES SABS 2015-16";
+    const district = String(Utils.pickField(props, F.district) || "").trim();
+    const finder = BG_CONFIG.SCHOOL_FINDERS[district] || null;
     return `<div class="school-popup"><strong>${Utils.escapeHTML(String(name))}</strong>
       <p class="zone-sub">${BG_CONFIG.SCHOOL_LEVELS[level].short} attendance zone</p>
       <table>${ratingRows(props, F, level)}</table>
-      <p class="src-note">Boundary from ${Utils.escapeHTML(source)}. NCES stopped running this survey after
-        2015-16, so it is the newest county-wide source that exists and it is ten years old.
-        <strong>Confirm with the district before you offer on a house.</strong></p>
+      <p class="src-note">Boundary from ${Utils.escapeHTML(source)}.
+        ${
+          local
+            ? "Saved from the district's own map. The file's own age signals are in the status log - a map's " +
+              "'updated' date records when someone last SAVED it, not when the lines were drawn."
+            : "NCES stopped running this survey after 2015-16, so it is the newest county-wide source that " +
+              "exists and it is ten years old."
+        }
+        <strong>Confirm before you offer on a house.</strong></p>
+      ${
+        finder
+          ? `<a href="${finder.url}" target="_blank" rel="noopener">Check the official ${Utils.escapeHTML(
+              finder.name
+            )} lookup &rarr;</a><br>`
+          : ""
+      }
       <a href="${Utils.greatSchoolsSearchUrl(name)}" target="_blank" rel="noopener">Look it up on GreatSchools &rarr;</a></div>`;
   }
 
@@ -3841,6 +3871,46 @@ const BlockGroupApp = (() => {
   let boundarySource = null;
   let boundaryCache = { bbox: null, features: null };
 
+  // Locally saved district zones. Loaded once; absent is normal.
+  let localZones = null;
+  let localZonesLoad = null;
+
+  function loadLocalZones() {
+    if (localZonesLoad) return localZonesLoad;
+    localZonesLoad = (async () => {
+      try {
+        const data = await Utils.fetchJSON(BG_CONFIG.SCHOOL_ZONES_LOCAL_URL, { timeoutMs: 20000 });
+        localZones = data;
+        const counts = (data.meta && data.meta.counts) || {};
+        Utils.logStatus(
+          "schools",
+          "ok",
+          `Local zones: ${(data.features || []).length} from ${(data.meta && data.meta.label) || "a saved webmap"} ` +
+            `(${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(", ")}). ` +
+            `These replace SABS for that district.`
+        );
+        (data.meta && data.meta.vintageSignals || []).forEach((signal) =>
+          Utils.logStatus("schools", "warn", `Local zones may still be old data: ${signal}`)
+        );
+      } catch (err) {
+        localZones = { features: [] };
+      }
+      return localZones;
+    })();
+    return localZonesLoad;
+  }
+
+  // Which districts the local file covers. SABS zones for these are dropped,
+  // so a district is never drawn twice from two sources.
+  function localDistricts() {
+    const out = new Set();
+    ((localZones && localZones.features) || []).forEach((f) => {
+      const id = f.properties && f.properties.district;
+      if (id) out.add(String(id).trim());
+    });
+    return out;
+  }
+
   async function fetchSchoolBoundaries(bbox) {
     const spec = BG_CONFIG.SCHOOL_BOUNDARIES;
     if (boundaryCache.features && boundaryCache.bbox === bbox) return boundaryCache.features;
@@ -3888,6 +3958,7 @@ const BlockGroupApp = (() => {
   // Boundaries and dots for ONE level, as a single collection the existing
   // layer machinery can draw.
   async function fetchSchoolLevel(level, bbox) {
+    await loadLocalZones();
     const [boundaries, points] = await Promise.all([
       fetchSchoolBoundaries(bbox).catch((err) => {
         Utils.logStatus("schools", "warn", `No attendance boundaries: ${err.message}`);
@@ -3900,12 +3971,35 @@ const BlockGroupApp = (() => {
       loadSchoolRatings(),
     ]);
 
-    const zones = boundaries
-      .filter((f) => {
-        const tagged = f.properties && f.properties.__level;
-        return tagged ? tagged === level : boundaryLevels(f.properties).includes(level);
-      })
-      .map((f) => ({ ...f, properties: { ...f.properties, __kind: "zone", __level: level } }));
+    // Local zones first, then SABS for every district the local file does not
+    // cover. Drawing both for one district would stack two polygons for the
+    // same school and make the translucent fill lie about the overlap.
+    const covered = localDistricts();
+    const local = ((localZones && localZones.features) || [])
+      .filter((f) => f.properties && f.properties.level === level)
+      .map((f) => ({
+        ...f,
+        properties: {
+          ...f.properties,
+          __kind: "zone",
+          __level: level,
+          __source: (localZones.meta && localZones.meta.label) || "saved webmap",
+        },
+      }));
+
+    const zones = local.concat(
+      boundaries
+        .filter((f) => {
+          const props = f.properties || {};
+          const district = String(
+            Utils.pickField(props, BG_CONFIG.SCHOOL_BOUNDARIES.FIELDS.district) || ""
+          ).trim();
+          if (district && covered.has(district)) return false;
+          const tagged = props.__level;
+          return tagged ? tagged === level : boundaryLevels(props).includes(level);
+        })
+        .map((f) => ({ ...f, properties: { ...f.properties, __kind: "zone", __level: level } }))
+    );
 
     const dots = (points.features || [])
       .filter((f) => pointLevels(f.properties).includes(level))

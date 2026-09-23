@@ -143,22 +143,22 @@ const ZONE_HIGH = esriPolygon({ SCHOOL: "Downtown Senior High" }, [
 // is how a polygon finds its school's rating - so the fixtures carry both,
 // written the way SABS writes them.
 const SABS_ELEM = esriPolygon(
-  { schnam: "Spring Street Elementary", ncessch: "062271000001", gslo: "KG", gshi: "05", level: "1" },
+  { schnam: "Spring Street Elementary", ncessch: "062271000001", leaid: "0622710", gslo: "KG", gshi: "05", level: "1" },
   [[-118.27, 34.03], [-118.27, 34.07], [-118.23, 34.07], [-118.23, 34.03]]
 );
 const SABS_MIDDLE = esriPolygon(
-  { schnam: "Civic Center Middle", ncessch: "062271000002", gslo: "06", gshi: "08", level: "2" },
+  { schnam: "Civic Center Middle", ncessch: "062271000002", leaid: "0622710", gslo: "06", gshi: "08", level: "2" },
   [[-118.28, 34.02], [-118.28, 34.08], [-118.22, 34.08], [-118.22, 34.02]]
 );
 const SABS_HIGH = esriPolygon(
-  { schnam: "Downtown Senior High", ncessch: "062271000003", gslo: "09", gshi: "12", level: "3" },
+  { schnam: "Downtown Senior High", ncessch: "062271000003", leaid: "0622710", gslo: "09", gshi: "12", level: "3" },
   [[-118.29, 34.01], [-118.29, 34.09], [-118.21, 34.09], [-118.21, 34.01]]
 );
 // A K-8 zone. It must appear under BOTH the elementary and the middle switch,
 // because it genuinely is both - the case a single "schools" toggle could
 // never express.
 const SABS_K8 = esriPolygon(
-  { schnam: "Riverside K-8", ncessch: "062271000004", gslo: "KG", gshi: "08", level: "1" },
+  { schnam: "Riverside K-8", ncessch: "062271000004", leaid: "0622710", gslo: "KG", gshi: "08", level: "1" },
   [[-118.30, 34.00], [-118.30, 34.10], [-118.20, 34.10], [-118.20, 34.00]]
 );
 
@@ -582,6 +582,38 @@ async function main() {
     return route.fulfill(
       json({ layers: [{ id: 0, name: "SABS_1516", geometryType: "esriGeometryPolygon" }] })
     );
+  });
+
+  // Zones saved from a district's own ArcGIS webmap. Glendale only - the
+  // SABS fixtures are LAUSD, so this exercises "local wins for ITS district
+  // and leaves the rest of the county to SABS".
+  const LOCAL_ZONES = {
+    meta: {
+      generated: "2026-09-01",
+      label: "Glendale Unified",
+      counts: { elementary: 1, high: 1 },
+      vintageSignals: ["layer built on ArcGIS 10.3 (that is roughly 2015)"],
+    },
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        geometry: { type: "Polygon", coordinates: [[[-118.30, 34.10], [-118.30, 34.20], [-118.20, 34.20], [-118.20, 34.10], [-118.30, 34.10]]] },
+        properties: { schnam: "BALBOA ELEMENTARY", level: "elementary", ncessch: "061524001919", district: "0615240" },
+      },
+      {
+        type: "Feature",
+        geometry: { type: "Polygon", coordinates: [[[-118.31, 34.11], [-118.31, 34.21], [-118.21, 34.21], [-118.21, 34.11], [-118.31, 34.11]]] },
+        properties: { schnam: "GLENDALE HIGH", level: "high", ncessch: "061524001931", district: "0615240" },
+      },
+    ],
+  };
+  let localZonesPayload = LOCAL_ZONES;
+  let localZonesRequested = 0;
+  await page.route("**/js/data/school-zones-local.json", (route) => {
+    localZonesRequested++;
+    if (!localZonesPayload) return route.fulfill({ status: 404, body: "not found" });
+    return route.fulfill(json(localZonesPayload));
   });
 
   // The ratings file, which is built on the user's own machine.
@@ -3659,6 +3691,66 @@ async function main() {
       "the legend warns the boundaries are ten years old, where it cannot be missed",
       /2015-16/.test(elementaryLegend) && /confirm with the district/i.test(elementaryLegend),
       elementaryLegend.replace(/\n/g, " | ").slice(0, 150)
+    );
+
+    // --- A district's own zones beat the county-wide layer ---
+    step(
+      "zones saved from a district's own map are drawn",
+      elementary.some((f) => /BALBOA/.test(f.name || "")),
+      JSON.stringify(elementary.map((f) => f.name))
+    );
+    step(
+      "the local file is read once, not once per switch",
+      localZonesRequested === 1,
+      `${localZonesRequested} requests`
+    );
+    step(
+      "SABS is still used for districts the local file does NOT cover",
+      elementary.some((f) => /Spring Street/.test(f.name || "")),
+      "Glendale is local; LAUSD still comes from SABS"
+    );
+    step(
+      "a district covered locally is not ALSO drawn from SABS",
+      await page.evaluate(() => {
+        let local = 0;
+        let sabsGlendale = 0;
+        BlockGroupApp.state.layers.schoolElementary.eachLayer((l) => {
+          const p = l.feature.properties;
+          if (p.__kind !== "zone") return;
+          if (p.__source) local++;
+          else if (String(p.leaid || "") === "0615240") sabsGlendale++;
+        });
+        return local > 0 && sabsGlendale === 0;
+      }),
+      "two polygons for one school would make the translucent fill lie about the overlap"
+    );
+    const localLog = await page.locator("#status-log").innerText();
+    step(
+      "the log says the local zones replace SABS for that district",
+      /Glendale Unified/.test(localLog) && /replace SABS/i.test(localLog),
+      (localLog.split("\n").find((l) => /Local zones/.test(l)) || "").slice(0, 130)
+    );
+    step(
+      "...and repeats the file's own age warning rather than burying it",
+      /may still be old data/i.test(localLog) && /2015/.test(localLog),
+      (localLog.split("\n").find((l) => /old data/.test(l)) || "").slice(0, 130)
+    );
+    const localPopup = await page.evaluate(() => {
+      let html = null;
+      BlockGroupApp.state.layers.schoolElementary.eachLayer((l) => {
+        if (/BALBOA/.test(l.feature.properties.schnam || "")) html = l.getPopup().getContent();
+      });
+      return html;
+    });
+    step(
+      "a local zone links to the district's OWN lookup, which is the current answer",
+      /gusd\.net/.test(localPopup || "") && /official/i.test(localPopup || ""),
+      (localPopup || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 150)
+    );
+    step(
+      "...and says an 'updated' date records a save, not when the lines were drawn",
+      /when someone last SAVED it/.test(localPopup || ""),
+      "the trap that makes a 2024 date look like 2024 data"
     );
 
     // --- Ratings ---

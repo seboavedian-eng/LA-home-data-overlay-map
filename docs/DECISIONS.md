@@ -47,3 +47,17 @@ The test caught it.
 
 **Tests use real mouse clicks where hit-testing matters.** `layer.fire("click")`
 bypasses the DOM, and 218 tests once passed while the map was unusable.
+
+**A district's own zones beat the county-wide layer, per district.** Drawing
+both would stack two polygons for one school and make the translucent fill lie
+about the overlap. Suppression is by district id, so Glendale can be local
+while the rest of the county stays on SABS.
+
+**An ArcGIS "updated" date is not a data date.** It records when someone last
+saved the map item - a colour change counts. It can only ever be later than the
+geometry. So the converter reports the signals it can actually see (ArcGIS
+version, SABS-style field names) and says what they mean.
+
+**ArcGIS marks polygon holes by winding order, not position.** Converting each
+ring to its own polygon turns one donut-shaped zone into two overlapping ones -
+which on a translucent layer reads as a darker patch, not as a bug.

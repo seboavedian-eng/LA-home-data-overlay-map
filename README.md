@@ -572,6 +572,40 @@ rating rests on. This is the intended route if you want real GreatSchools
 numbers for a shortlist: look them up yourself and paste them in. Every school
 and zone popup carries a GreatSchools lookup link for that.
 
+### Better zones for one district
+
+Some districts publish their attendance zones inside an ArcGIS webmap as an
+**embedded** feature collection rather than as a hosted service. There is no
+URL to query - the geometry sits inside the map item. Glendale Unified is one.
+
+Save the webmap's data and convert it:
+
+```
+# open this, save the response as raw-data/glendale-school-zones.json
+https://www.arcgis.com/sharing/rest/content/items/<ITEM_ID>/data?f=json
+
+python scripts/convert-arcgis-webmap.py raw-data/glendale-school-zones.json
+```
+
+Those zones are then drawn **instead of** SABS for that district, so nothing is
+ever drawn twice. Everywhere else still comes from SABS. The status log names
+which districts came from where.
+
+Two things this buys you even when the data is the same vintage: no network
+dependency for that district, and a zone popup that links to the district's own
+**official address lookup**, which is current and authoritative in a way no
+polygon is.
+
+**On "updated" dates.** An ArcGIS item's updated date records when someone last
+*saved the map* - which includes changing a colour or adding a bookmark. It does
+not date the geometry, and it can only ever be later than the data. The
+converter reports what it can actually see instead: the layer's ArcGIS version,
+and whether the fields use SABS's own `schnam` / `NCES_ID` naming. Both are
+printed and stored in the file, and the app repeats them in the status log.
+
+The only thing that settles it is checking a few addresses against the
+district's own finder.
+
 ### The three school switches
 
 Each switch draws one level's **attendance zones** as a translucent fill plus
@@ -966,6 +1000,7 @@ scripts/fetch-blockgroup-data.py   One-time block-group ACS fetch
 scripts/fetch-wind-data.py         One-time Global Wind Atlas GeoTIFF -> JSON grid
 scripts/fetch-parcel-data.py       One-time Assessor roll -> per-year prices and sales
 scripts/fetch-school-data.py       School directory + CAASPP -> the 1-10 ratings
+scripts/convert-arcgis-webmap.py   A district's own ArcGIS webmap -> local zone polygons
 raw-data/school-ratings/           Drop CSVs of school,rating here to override the computed ones
 scripts/listing-server.py          Serves the page AND reads listing pages for you (optional)
 .env                               Your API key for the above. Gitignored, never in js/
