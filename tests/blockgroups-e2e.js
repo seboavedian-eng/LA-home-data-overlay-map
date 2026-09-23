@@ -139,6 +139,78 @@ const ZONE_HIGH = esriPolygon({ SCHOOL: "Downtown Senior High" }, [
   [-118.29, 34.01], [-118.29, 34.09], [-118.21, 34.09], [-118.21, 34.01],
 ]);
 
+// SABS attendance boundaries. These carry a grade span and an NCES id, which
+// is how a polygon finds its school's rating - so the fixtures carry both,
+// written the way SABS writes them.
+const SABS_ELEM = esriPolygon(
+  { schnam: "Spring Street Elementary", ncessch: "062271000001", gslo: "KG", gshi: "05", level: "1" },
+  [[-118.27, 34.03], [-118.27, 34.07], [-118.23, 34.07], [-118.23, 34.03]]
+);
+const SABS_MIDDLE = esriPolygon(
+  { schnam: "Civic Center Middle", ncessch: "062271000002", gslo: "06", gshi: "08", level: "2" },
+  [[-118.28, 34.02], [-118.28, 34.08], [-118.22, 34.08], [-118.22, 34.02]]
+);
+const SABS_HIGH = esriPolygon(
+  { schnam: "Downtown Senior High", ncessch: "062271000003", gslo: "09", gshi: "12", level: "3" },
+  [[-118.29, 34.01], [-118.29, 34.09], [-118.21, 34.09], [-118.21, 34.01]]
+);
+// A K-8 zone. It must appear under BOTH the elementary and the middle switch,
+// because it genuinely is both - the case a single "schools" toggle could
+// never express.
+const SABS_K8 = esriPolygon(
+  { schnam: "Riverside K-8", ncessch: "062271000004", gslo: "KG", gshi: "08", level: "1" },
+  [[-118.30, 34.00], [-118.30, 34.10], [-118.20, 34.10], [-118.20, 34.00]]
+);
+
+// The ratings file, as scripts/fetch-school-data.py writes it.
+const SCHOOL_RATINGS = {
+  meta: {
+    generated: "2026-09-01",
+    schemaVersion: 1,
+    ratingBasis: "Decile of CAASPP percent met-or-exceeded. This is not the GreatSchools rating.",
+    counts: { elementary: 2, middle: 2, high: 1 },
+    rated: 4,
+    overridden: 1,
+    unrankedLevels: [],
+  },
+  schools: {
+    "19000000000001": {
+      name: "Spring Street Elementary", district: "Los Angeles Unified",
+      levels: ["elementary"], grades: "K-5", ratings: { elementary: 9 },
+      ela: 71.2, math: 63.5, tested: 340, nces: "062271000001",
+    },
+    "19000000000002": {
+      name: "Civic Center Middle", district: "Los Angeles Unified",
+      levels: ["middle"], grades: "6-8", ratings: { middle: 4 },
+      ela: 44.1, math: 33.0, tested: 410, nces: "062271000002",
+    },
+    "19000000000003": {
+      name: "Downtown Senior High", district: "Los Angeles Unified",
+      levels: ["high"], grades: "9-12", ratings: { high: 8 },
+      // Supplied by hand, so it must say so and must show no test rows.
+      ratingSource: "yours", nces: "062271000003",
+    },
+    "19000000000004": {
+      name: "Riverside K-8", district: "Los Angeles Unified",
+      levels: ["elementary", "middle"], grades: "K-8",
+      ratings: { elementary: 3, middle: 7 },
+      ela: 38.0, math: 29.9, tested: 280, nces: "062271000004",
+    },
+  },
+  byNces: {
+    "062271000001": "19000000000001",
+    "062271000002": "19000000000002",
+    "062271000003": "19000000000003",
+    "062271000004": "19000000000004",
+  },
+  byName: {
+    "spring street": "19000000000001",
+    "civic center": "19000000000002",
+    "downtown": "19000000000003",
+    "riverside k 8": "19000000000004",
+  },
+};
+
 const SCHOOL_DISTRICT = esriPolygon({ NAME: "Los Angeles Unified School District", BASENAME: "Los Angeles Unified" }, [
   [-118.40, 33.90], [-118.40, 34.20], [-118.10, 34.20], [-118.10, 33.90],
 ]);
@@ -497,6 +569,29 @@ async function main() {
   await page.route("**://tile.openstreetmap.org/**", (route) =>
     route.fulfill({ contentType: "image/png", body: BLANK_PNG })
   );
+
+  // NCES SABS: the only attendance-boundary source that covers every LA
+  // County district, and the one the three school switches draw.
+  let sabsQueries = [];
+  await page.route("**://nces.ed.gov/**", (route) => {
+    const url = route.request().url();
+    sabsQueries.push(url);
+    if (url.includes("/query")) {
+      return route.fulfill(json(esriFC([SABS_ELEM, SABS_MIDDLE, SABS_HIGH, SABS_K8])));
+    }
+    return route.fulfill(
+      json({ layers: [{ id: 0, name: "SABS_1516", geometryType: "esriGeometryPolygon" }] })
+    );
+  });
+
+  // The ratings file, which is built on the user's own machine.
+  let ratingsRequested = 0;
+  let ratingsPayload = SCHOOL_RATINGS;
+  await page.route("**/js/data/schools-la-county.json", (route) => {
+    ratingsRequested++;
+    if (!ratingsPayload) return route.fulfill({ status: 404, body: "not found" });
+    return route.fulfill(json(ratingsPayload));
+  });
 
   // The listing extractor's endpoint. The real one lives in
   // scripts/listing-server.py and is not what serves the page under test, so
@@ -3469,42 +3564,213 @@ async function main() {
         (await page.locator('img[src*="/tile/"]').count()) === 0
     );
 
-    // --- Schools: dots, zones, districts ---
-    await page.click("#toggle-schools");
-    await page.waitForTimeout(700);
-    const schoolDots = await page.evaluate(() => {
-      const out = [];
-      BlockGroupApp.state.layers.schools.eachLayer((l) =>
-        out.push({
-          name: l.feature.properties.SchoolName,
-          color: l.options.fillColor,
-        })
-      );
-      return out;
+    // --- Schools: one switch per level, zones AND dots ---
+    // The single "schools" toggle drew dots only. Three switches draw each
+    // level's attendance zones as well, which is the thing a buyer actually
+    // needs: not where the school building is, but whether this house is in
+    // its zone.
+    const schoolLayerContents = async (key) =>
+      page.evaluate((k) => {
+        const layer = BlockGroupApp.state.layers[k];
+        if (!layer) return null;
+        const out = [];
+        layer.eachLayer((l) =>
+          out.push({
+            kind: l.feature.properties.__kind,
+            name: l.feature.properties.schnam || l.feature.properties.SchoolName,
+            color: l.options.fillColor,
+          })
+        );
+        return out;
+      }, key);
+
+    await page.click("#toggle-schoolElementary");
+    await page.waitForTimeout(900);
+    const elementary = await schoolLayerContents("schoolElementary");
+    step(
+      "the elementary switch draws attendance zones, not only dots",
+      elementary.some((f) => f.kind === "zone") && elementary.some((f) => f.kind === "dot"),
+      JSON.stringify(elementary.map((f) => `${f.kind}:${f.name}`))
+    );
+    step(
+      "it draws ONLY elementary schools - no middle or high leaks in",
+      !elementary.some((f) => /Civic Center|Senior High/.test(f.name || "")),
+      JSON.stringify(elementary.map((f) => f.name))
+    );
+    step(
+      "closed school sites are still not drawn",
+      !elementary.some((f) => /Closed/.test(f.name || "")),
+      JSON.stringify(elementary.map((f) => f.name))
+    );
+    step(
+      "the zones are translucent, so two levels can be read on top of each other",
+      await page.evaluate(() => {
+        let opacity = null;
+        BlockGroupApp.state.layers.schoolElementary.eachLayer((l) => {
+          if (l.feature.properties.__kind === "zone") opacity = l.options.fillOpacity;
+        });
+        return opacity !== null && opacity > 0 && opacity < 0.4;
+      }),
+      "an opaque fill would hide every other layer under it"
+    );
+    step(
+      "the boundaries come from NCES SABS, the only county-wide source",
+      sabsQueries.some((u) => u.includes("/query")),
+      `${sabsQueries.length} NCES requests`
+    );
+
+    await page.click("#toggle-schoolHigh");
+    await page.waitForTimeout(900);
+    const high = await schoolLayerContents("schoolHigh");
+    step(
+      "two levels can be on at once, each with its own zones",
+      (await page.evaluate(() => !!BlockGroupApp.state.layers.schoolElementary && !!BlockGroupApp.state.layers.schoolHigh)) &&
+        high.some((f) => f.kind === "zone"),
+      JSON.stringify(high.map((f) => `${f.kind}:${f.name}`))
+    );
+    step(
+      "each level draws in its own colour, so the overlap is readable",
+      elementary.every((f) => f.color === "#2a7fbf") && high.every((f) => f.color === "#c2410c"),
+      JSON.stringify({ elementary: elementary[0].color, high: high[0].color })
+    );
+
+    // A K-8 is genuinely two schools. The old single toggle had to pick one
+    // level for it; three switches can put it under both.
+    await page.click("#toggle-schoolMiddle");
+    await page.waitForTimeout(900);
+    const middle = await schoolLayerContents("schoolMiddle");
+    step(
+      "a K-8 zone appears under BOTH the elementary and middle switches",
+      elementary.some((f) => /Riverside/.test(f.name || "")) &&
+        middle.some((f) => /Riverside/.test(f.name || "")),
+      JSON.stringify({
+        elementary: elementary.map((f) => f.name),
+        middle: middle.map((f) => f.name),
+      })
+    );
+
+    const elementaryLegend = await page.locator("#schoolElementary-legend").innerText();
+    step(
+      "each switch has its own legend naming the zone and the dot",
+      /attendance zone/i.test(elementaryLegend) && /elementary school/i.test(elementaryLegend),
+      elementaryLegend.replace(/\n/g, " | ")
+    );
+    step(
+      "the legend warns the boundaries are ten years old, where it cannot be missed",
+      /2015-16/.test(elementaryLegend) && /confirm with the district/i.test(elementaryLegend),
+      elementaryLegend.replace(/\n/g, " | ").slice(0, 150)
+    );
+
+    // --- Ratings ---
+    step(
+      "the ratings file is read once, not once per switch",
+      ratingsRequested === 1,
+      `${ratingsRequested} requests for the ratings file`
+    );
+    const zonePopup = await page.evaluate(() => {
+      let html = null;
+      BlockGroupApp.state.layers.schoolElementary.eachLayer((l) => {
+        if (l.feature.properties.__kind === "zone" && /Spring Street/.test(l.feature.properties.schnam)) {
+          html = l.getPopup().getContent();
+        }
+      });
+      return html;
     });
     step(
-      "closed school sites are not drawn",
-      schoolDots.length === 3 && !schoolDots.some((d) => /Closed/.test(d.name)),
-      JSON.stringify(schoolDots.map((d) => d.name))
+      "a zone popup carries the school's rating",
+      /9\/10/.test(zonePopup || ""),
+      (zonePopup || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 140)
     );
     step(
-      "school dots are colour-coded elementary / middle / high",
-      schoolDots.find((d) => /Elementary/.test(d.name)).color === "#2a7fbf" &&
-        schoolDots.find((d) => /Middle/.test(d.name)).color === "#7b3fa0" &&
-        schoolDots.find((d) => /High/.test(d.name)).color === "#c2410c",
-      JSON.stringify(schoolDots)
+      "...and the test scores the rating was computed from",
+      /71\.2/.test(zonePopup || "") && /63\.5/.test(zonePopup || ""),
+      "the card shows its working rather than a bare number"
     );
     step(
-      "a K-5 span is read as elementary and a 9-12 span as high, not both",
-      schoolDots.find((d) => /Elementary/.test(d.name)).color !==
-        schoolDots.find((d) => /High/.test(d.name)).color
+      "the popup says plainly that this is NOT the GreatSchools rating",
+      /not the greatschools rating/i.test(zonePopup || ""),
+      "a number labelled 'rating' next to a house would otherwise be read as GreatSchools'"
     );
-    const schoolsLegend = await page.locator("#schools-legend").innerText();
     step(
-      "the school legend names the three levels",
-      /elementary/i.test(schoolsLegend) && /middle/i.test(schoolsLegend) && /high/i.test(schoolsLegend),
-      schoolsLegend.replace(/\n/g, " | ")
+      "...and still offers a GreatSchools lookup, which is the legitimate way to their number",
+      /greatschools/i.test(zonePopup || "") && /<a [^>]*href=/.test(zonePopup || ""),
+      (zonePopup || "").match(/<a [^>]*>[^<]*<\/a>/) || "no link"
     );
+    const yoursPopup = await page.evaluate(() => {
+      let html = null;
+      BlockGroupApp.state.layers.schoolHigh.eachLayer((l) => {
+        if (l.feature.properties.__kind === "zone") html = l.getPopup().getContent();
+      });
+      return html;
+    });
+    step(
+      "a rating YOU supplied is labelled as yours, not as computed",
+      /8\/10/.test(yoursPopup || "") && /you supplied/i.test(yoursPopup || "") && !/71\.2/.test(yoursPopup || ""),
+      (yoursPopup || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 140)
+    );
+
+    // --- The rating filters ---
+    // The whole point: "elementary above 7" and everything below leaves the
+    // map, zones and dots together.
+    await page.fill("#school-filter-elementary-value", "7");
+    await page.waitForTimeout(700);
+    const filtered = await schoolLayerContents("schoolElementary");
+    step(
+      "filtering to 7+ removes the schools below it",
+      !filtered.some((f) => /Riverside/.test(f.name || "")),
+      JSON.stringify(filtered.map((f) => f.name))
+    );
+    step(
+      "...and keeps the ones at or above",
+      filtered.some((f) => /Spring Street/.test(f.name || "")),
+      JSON.stringify(filtered.map((f) => f.name))
+    );
+    step(
+      "the zone leaves with its dot - they are the same school",
+      filtered.filter((f) => /Riverside/.test(f.name || "")).length === 0 &&
+        filtered.some((f) => f.kind === "zone"),
+      "a zone left behind by its school would be a boundary with nothing in it"
+    );
+    step(
+      "the other levels are untouched by an elementary filter",
+      (await schoolLayerContents("schoolMiddle")).some((f) => /Riverside/.test(f.name || "")),
+      "Riverside is rated 7 at middle level and 3 at elementary"
+    );
+    const filterStatus = await page.locator("#school-filter-status").innerText();
+    step(
+      "the filter says how many it kept, rather than silently emptying the map",
+      /Elementary/.test(filterStatus) && /\d+ of \d+/.test(filterStatus),
+      filterStatus
+    );
+
+    // "Below" is the other half, and it must not be the same set inverted by
+    // accident - an unrated school is in neither.
+    await page.selectOption("#school-filter-elementary-mode", "below");
+    await page.waitForTimeout(700);
+    const below = await schoolLayerContents("schoolElementary");
+    step(
+      "switching to 'at or below' inverts which schools show",
+      below.some((f) => /Riverside/.test(f.name || "")) &&
+        !below.some((f) => /Spring Street/.test(f.name || "")),
+      JSON.stringify(below.map((f) => f.name))
+    );
+
+    await page.click('.school-filter-clear[data-level="elementary"]');
+    await page.waitForTimeout(700);
+    step(
+      "clearing the filter brings everything back",
+      (await schoolLayerContents("schoolElementary")).some((f) => /Riverside/.test(f.name || "")),
+      "clear means clear"
+    );
+    step(
+      "...and the filter line goes quiet again",
+      (await page.locator("#school-filter-status").innerText()).trim() === "",
+      await page.locator("#school-filter-status").innerText()
+    );
+
+    await page.click("#toggle-schoolMiddle");
+    await page.click("#toggle-schoolHigh");
+    await page.waitForTimeout(400);
 
     // Clicking a dot outlines that school's district. The polygon is fetched
     // for that one point, so nothing is downloaded until something is clicked.
@@ -3513,8 +3779,8 @@ async function main() {
       !(await page.evaluate(() => !!BlockGroupApp.state.districtLayer))
     );
     await page.evaluate(() => {
-      BlockGroupApp.state.layers.schools.eachLayer((l) => {
-        if (l.feature.properties.SchoolName === "Civic Center Middle") l.fire("click", { latlng: l.getLatLng() });
+      BlockGroupApp.state.layers.schoolElementary.eachLayer((l) => {
+        if (l.feature.properties.SchoolName === "Spring Street Elementary") l.fire("click", { latlng: l.getLatLng() });
       });
     });
     await page.waitForTimeout(900);
@@ -3565,11 +3831,15 @@ async function main() {
       !zoneQueries.some((u) => u.includes("/7/query"))
     );
 
-    await page.click("#toggle-schools");
+    await page.click("#toggle-schoolElementary");
     await page.waitForTimeout(300);
     step(
-      "turning schools off clears the district outline too",
+      "turning a school switch off clears the district outline too",
       !(await page.evaluate(() => !!BlockGroupApp.state.districtLayer))
+    );
+    step(
+      "...and removes that level's zones with it",
+      !(await page.evaluate(() => !!BlockGroupApp.state.layers.schoolElementary))
     );
 
     // --- Income filters step in $5k ---
@@ -4090,6 +4360,65 @@ async function main() {
       "the manual form is not gated on the server"
     );
     await pagePlain.close();
+
+    // --- No ratings file yet -------------------------------------------------
+    // The state every user is in before they run fetch-school-data.py. The
+    // zones and dots must still work: boundaries come from the network, only
+    // the ratings come from disk. And a rating filter must not silently empty
+    // the map - it has to say why nothing passed.
+    const pageNoRatings = await browser.newPage();
+    await pageNoRatings.route("**://tile.openstreetmap.org/**", (route) =>
+      route.fulfill({ contentType: "image/png", body: BLANK_PNG })
+    );
+    await pageNoRatings.route("**/js/data/schools-la-county.json", (route) =>
+      route.fulfill({ status: 404, body: "not found" })
+    );
+    await pageNoRatings.route("**://nces.ed.gov/**", (route) => {
+      const url = route.request().url();
+      if (url.includes("/query")) return route.fulfill(json(esriFC([SABS_ELEM, SABS_MIDDLE])));
+      return route.fulfill(json({ layers: [{ id: 0, name: "SABS_1516", geometryType: "esriGeometryPolygon" }] }));
+    });
+    await pageNoRatings.route("**://services3.arcgis.com/**", (route) =>
+      route.fulfill(json(esriFC([SCHOOL_ELEM, SCHOOL_MIDDLE])))
+    );
+    await pageNoRatings.route("**://tigerweb.geo.census.gov/**", (route) => {
+      const url = route.request().url();
+      if (url.includes("/10/query")) return route.fulfill(json(esriFC([BG_A])));
+      return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
+    });
+    await pageNoRatings.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    await pageNoRatings.waitForFunction(() => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.map);
+    await pageNoRatings.evaluate(() => BlockGroupApp.state.map.setView([34.05, -118.25], 13));
+    await pageNoRatings.check("#toggle-schoolElementary");
+    await pageNoRatings.waitForTimeout(1600);
+    step(
+      "without a ratings file the zones and dots still draw",
+      await pageNoRatings.evaluate(() => {
+        const layer = BlockGroupApp.state.layers.schoolElementary;
+        if (!layer) return false;
+        let zones = 0;
+        layer.eachLayer((l) => {
+          if (l.feature.properties.__kind === "zone") zones++;
+        });
+        return zones > 0;
+      }),
+      "boundaries come from the network; only the ratings come from disk"
+    );
+    const noRatingsLog = await pageNoRatings.locator("#status-log").innerText();
+    step(
+      "...and the log names the script that would add ratings",
+      /fetch-school-data\.py/.test(noRatingsLog),
+      (noRatingsLog.split("\n").find((l) => /school ratings/i.test(l)) || "").slice(0, 130)
+    );
+    await pageNoRatings.fill("#school-filter-elementary-value", "7");
+    await pageNoRatings.waitForTimeout(700);
+    const noRatingsStatus = await pageNoRatings.locator("#school-filter-status").innerText();
+    step(
+      "a filter with no ratings to filter on says so instead of emptying the map in silence",
+      /no school here carries a rating/i.test(noRatingsStatus) && /fetch-school-data/.test(noRatingsStatus),
+      noRatingsStatus
+    );
+    await pageNoRatings.close();
 
     // --- file:// origin (double-clicking the .html instead of serving it) ---
     // The single most likely setup mistake: the map looks fine because

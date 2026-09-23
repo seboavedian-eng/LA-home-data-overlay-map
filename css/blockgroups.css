@@ -829,3 +829,47 @@ html, body {
 #extract-listing .add-row { display: flex; gap: 6px; margin-top: 6px; }
 #extract-listing-status:empty { display: none; }
 #extract-listing-status { margin: 6px 0 0; font-size: 0.72rem; }
+
+/* --- The three school switches and their rating filters ----------------- */
+.section-intro {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+#school-filters { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+#school-filters h3 { margin: 0 0 4px; font-size: 0.78rem; }
+.school-filter { margin-bottom: 8px; }
+.school-filter > label {
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.school-filter-row { display: flex; gap: 5px; align-items: center; }
+.school-filter-row select,
+.school-filter-row input {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font: inherit;
+  font-size: 0.74rem;
+}
+.school-filter-row select { flex: 1; min-width: 0; }
+.school-filter-row input { width: 62px; }
+.school-filter-clear {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #fff;
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+.school-filter-clear:hover { background: #f3f4f6; }
+.school-filter.active > label { color: var(--accent, #1d4ed8); }
+#school-filter-status:empty { display: none; }
+#school-filter-status { margin: 6px 0 0; font-size: 0.72rem; }
+/* The legend's dot swatch is round, unlike the square area swatches. */
+.legend-row .school-dot-swatch { border-radius: 50%; }
+.school-popup .zone-sub { margin: 2px 0 6px; font-size: 0.72rem; color: var(--muted); }

@@ -190,16 +190,76 @@
 
       <section id="schools-section">
         <h2>Schools</h2>
+        <p class="section-intro">Each switch draws that level's <strong>attendance zones</strong> as a translucent
+          fill plus its <strong>school dots</strong>. Turn on two and you can see how the zones overlap. Zoom
+          <span class="zoom-req">11+</span>. <strong>Click a school</strong> to outline its district.</p>
         <ul class="toggle-list">
           <li>
-            <input type="checkbox" id="toggle-schools" />
-            <label for="toggle-schools">
-              <span>School locations</span>
-              <span class="layer-desc">CA Dept of Education 2024-25 public schools, coloured by level. Zoom <span class="zoom-req">11+</span>. <strong>Click a school</strong> to outline its district.</span>
+            <input type="checkbox" id="toggle-schoolElementary" />
+            <label for="toggle-schoolElementary">
+              <span><span class="school-dot" style="background:#2a7fbf"></span>Elementary schools</span>
+              <span class="layer-desc">Zones and dots for schools serving grade 5 and below.</span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-schoolMiddle" />
+            <label for="toggle-schoolMiddle">
+              <span><span class="school-dot" style="background:#7b3fa0"></span>Middle schools</span>
+              <span class="layer-desc">Grades 6 to 8. A K-8 school appears under this switch and the one above.</span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-schoolHigh" />
+            <label for="toggle-schoolHigh">
+              <span><span class="school-dot" style="background:#c2410c"></span>High schools</span>
+              <span class="layer-desc">Grade 9 and above.</span>
             </label>
           </li>
         </ul>
-        <div id="schools-legend" class="legend-box hidden"></div>
+
+        <div id="school-filters">
+          <h3>Filter by rating</h3>
+          <p class="section-intro">Show only schools rated above or below a number, and their zones leave the map
+            with them. A school with no rating is hidden by a filter too &mdash; it cannot be said to have passed.</p>
+          <div class="school-filter" data-level="elementary">
+            <label for="school-filter-elementary-value"><span class="school-dot" style="background:#2a7fbf"></span>Elementary</label>
+            <div class="school-filter-row">
+              <select id="school-filter-elementary-mode">
+                <option value="above">at or above</option>
+                <option value="below">at or below</option>
+              </select>
+              <input type="number" id="school-filter-elementary-value" min="1" max="10" step="1" placeholder="1-10" />
+              <button type="button" class="school-filter-clear" data-level="elementary">Clear</button>
+            </div>
+          </div>
+          <div class="school-filter" data-level="middle">
+            <label for="school-filter-middle-value"><span class="school-dot" style="background:#7b3fa0"></span>Middle</label>
+            <div class="school-filter-row">
+              <select id="school-filter-middle-mode">
+                <option value="above">at or above</option>
+                <option value="below">at or below</option>
+              </select>
+              <input type="number" id="school-filter-middle-value" min="1" max="10" step="1" placeholder="1-10" />
+              <button type="button" class="school-filter-clear" data-level="middle">Clear</button>
+            </div>
+          </div>
+          <div class="school-filter" data-level="high">
+            <label for="school-filter-high-value"><span class="school-dot" style="background:#c2410c"></span>High</label>
+            <div class="school-filter-row">
+              <select id="school-filter-high-mode">
+                <option value="above">at or above</option>
+                <option value="below">at or below</option>
+              </select>
+              <input type="number" id="school-filter-high-value" min="1" max="10" step="1" placeholder="1-10" />
+              <button type="button" class="school-filter-clear" data-level="high">Clear</button>
+            </div>
+          </div>
+          <p id="school-filter-status" class="hint"></p>
+        </div>
+
+        <div id="schoolElementary-legend" class="legend-box hidden"></div>
+        <div id="schoolMiddle-legend" class="legend-box hidden"></div>
+        <div id="schoolHigh-legend" class="legend-box hidden"></div>
       </section>
 
       <section id="density-section">

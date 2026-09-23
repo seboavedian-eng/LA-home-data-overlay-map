@@ -501,6 +501,95 @@ that always works, and the error says so.
 Without any of this, everything else is unchanged: `python -m http.server`
 still works, the paste box simply does not appear, and the status log says why.
 
+### Optional: school ratings (one script, a few minutes)
+
+The three school switches work without this - zones and dots come from the
+network. The **ratings and the three rating filters** come from a file you
+build:
+
+```
+python scripts/fetch-school-data.py
+```
+
+It downloads two public files from the CA Department of Education (the school
+directory and the CAASPP test results), keeps LA County, and writes
+`js/data/schools-la-county.json`. If CDE has moved a URL the script says
+exactly which file to fetch by hand and where to put it.
+
+**The rating is not the GreatSchools rating, and the app says so everywhere it
+appears.** GreatSchools has no free API; the paid tiers return bands ("above
+average") rather than a number, and their terms prohibit scraping. So this
+computes its own from the public test data their own test-score rating mostly
+rests on:
+
+> rating = decile of (ELA + Maths "percent met or exceeded standard"),
+> ranked against other **LA County** schools **at the same level**
+
+Three decisions inside that are worth knowing:
+
+- **It is a rank, not a score.** A 7 means "better than roughly 60-70% of LA
+  County elementary schools", not "70% of pupils can read".
+- **Ranked within the county, not the state.** You are choosing between LA
+  County houses; a statewide percentile compresses everything you can actually
+  buy into a narrow band.
+- **Each level is ranked separately,** and a K-8 is ranked in both - so it
+  gets an elementary rating and a middle rating, each fair against its peers.
+
+Two guards stop a confident-looking wrong number: a school with fewer than 25
+test-takers gets **no** rating rather than a noisy one, and a level with fewer
+than 20 rated schools gets no ratings at all (a decile drawn from five schools
+is not a decile). The run prints both.
+
+**What this measures.** Test scores track household income more tightly than
+they track teaching. Read it as a fair summary of measured outcomes and a poor
+summary of how good the school is. Every popup says this too.
+
+#### Your own ratings win
+
+Drop a CSV in `raw-data/school-ratings/` with `school` and `rating` columns
+(add `district` to break ties between schools sharing a name):
+
+```
+school,district,rating
+Eagle Rock Elementary,Los Angeles Unified,8
+Glenoaks Elementary,Glendale Unified,9
+```
+
+Anything matching overrides the computed rating, the popup says the number is
+yours, and the test-score rows disappear because they are no longer what the
+rating rests on. This is the intended route if you want real GreatSchools
+numbers for a shortlist: look them up yourself and paste them in. Every school
+and zone popup carries a GreatSchools lookup link for that.
+
+### The three school switches
+
+Each switch draws one level's **attendance zones** as a translucent fill plus
+that level's **school dots**, in one colour per level - so turning on two
+shows you how the zones overlap, which is the thing a single "schools" toggle
+could never express. A K-8 appears under both the elementary and the middle
+switch, because it genuinely is both.
+
+**The boundaries are from 2015-16, and this matters.** NCES ran the School
+Attendance Boundary Survey twice and stopped. SABS 2015-16 is the only dataset
+carrying attendance boundaries for *every* LA County district - Glendale,
+Burbank, Pasadena and the other 80-odd exist nowhere else as polygons. It is
+ten years old and boundaries move. The legend, the zone popup and the source
+table all say so, and all three tell you to confirm with the district before
+you offer on a house. LAUSD's own copy on the LA City GeoHub is the fallback
+if NCES does not answer; it is the same vintage and covers LAUSD only.
+
+The alternative considered and rejected was translating districts' written
+boundary descriptions ("north of Glenoaks, east of Brand") into polygons by
+hand. It is days of geometry in which a single mistake silently puts a house
+in the wrong school zone - the highest-stakes error this app could make - and
+it buys nothing SABS does not already cover.
+
+**The filters** work like the block group filters: set a level's threshold and
+everything failing it leaves the map, zone and dot together. A school with no
+rating is hidden by a filter too - an unrated school cannot be said to have
+passed - and the filter line says how many of how many survived, so it can
+never silently empty the map.
+
 ### Optional: commute times
 
 Put a free [OpenRouteService](https://openrouteservice.org/dev/#/signup) key
@@ -846,6 +935,16 @@ stubbed: the probe that decides whether to offer the box at all, a bare URL
 being sent as a URL rather than as pasted text, a null field being left off the
 card instead of drawn as `$0`, and a page that is not a listing being refused.
 
+**The school ratings are tested on synthetic files.** The two CDE downloads
+cannot be reached from a test, so `tests/test_school_data.py` builds both by
+hand - which is the right shape anyway, because every interesting failure here
+is a shape failure. It asserts that a district TOTAL row is never counted as a
+school (it would shift every decile), that a K-8 lands under both levels, that
+a school with five test-takers gets no rating rather than a loud wrong one,
+and that a level with too few schools to rank yields no rating rather than a
+bottom one. That last rule exists because the test caught it: a lone middle
+school was being rated 1 of 10 purely for being alone in its pool.
+
 ## Project layout
 
 ```
@@ -855,6 +954,8 @@ css/blockgroups.css    ...its styles
 scripts/fetch-blockgroup-data.py   One-time block-group ACS fetch
 scripts/fetch-wind-data.py         One-time Global Wind Atlas GeoTIFF -> JSON grid
 scripts/fetch-parcel-data.py       One-time Assessor roll -> per-year prices and sales
+scripts/fetch-school-data.py       School directory + CAASPP -> the 1-10 ratings
+raw-data/school-ratings/           Drop CSVs of school,rating here to override the computed ones
 scripts/listing-server.py          Serves the page AND reads listing pages for you (optional)
 .env                               Your API key for the above. Gitignored, never in js/
 raw-data/redfin-listings/          Drop Redfin CSV exports here - the page reads them directly

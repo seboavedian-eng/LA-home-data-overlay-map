@@ -315,6 +315,64 @@ const BG_CONFIG = {
     },
   },
 
+  // The three school switches. Each draws the attendance boundaries for one
+  // level as a translucent fill, plus that level's school dots.
+  //
+  // WHERE THE POLYGONS COME FROM, AND WHY THEY ARE OLD
+  // NCES ran the School Attendance Boundary Survey twice and then stopped.
+  // SABS 2015-16 is the ONLY dataset that carries attendance boundaries for
+  // every LA County district rather than one - Glendale, Burbank, Pasadena
+  // and the other 80-odd districts exist nowhere else as polygons. It is ten
+  // years old and boundaries have moved since, so the age is stated on the
+  // layer, on the card and in the source table rather than buried here.
+  // LAUSD's own copy on the LA City GeoHub is the fallback; it is the same
+  // vintage but covers LAUSD only.
+  SCHOOL_BOUNDARIES: {
+    servers: [
+      {
+        url: "https://nces.ed.gov/opengis/rest/services/K12_School_Locations/SABS_1516/MapServer",
+        layer: 0,
+        label: "NCES SABS 2015-16",
+        coverage: "every LA County district",
+      },
+      {
+        url: "https://maps.lacity.org/lahub/rest/services/LAUSD_Schools/MapServer",
+        // Elementary, middle and high are separate sublayers here, unlike
+        // SABS where one layer carries all three and a field says which.
+        layers: { elementary: 4, middle: 5, high: 6 },
+        label: "LAUSD GeoHub",
+        coverage: "LAUSD only",
+      },
+    ],
+    // Read by candidate list: the two services name nothing the same way.
+    FIELDS: {
+      name: ["schnam", "SCHNAM", "SCHOOL", "School", "SchoolName", "NAME", "Name"],
+      nces: ["ncessch", "NCESSCH", "NCES_ID"],
+      level: ["level", "LEVEL", "SchoolLevel"],
+      gradeLow: ["gslo", "GSLO", "GradeLow"],
+      gradeHigh: ["gshi", "GSHI", "GradeHigh"],
+      district: ["leaid", "LEAID", "District", "DISTRICT"],
+    },
+    minZoom: 11,
+    // Translucent on purpose: these overlap heavily - an address sits in one
+    // elementary, one middle and one high zone at once - and the whole point
+    // of three switches is being able to see that overlap.
+    fillOpacity: 0.18,
+    weight: 1.5,
+  },
+
+  // What each switch is called, and which colour it draws in. The colours are
+  // the ones the dots already used, so a polygon and its dots match.
+  SCHOOL_LEVELS: {
+    elementary: { label: "Elementary schools", short: "Elementary" },
+    middle: { label: "Middle schools", short: "Middle" },
+    high: { label: "High schools", short: "High" },
+  },
+
+  // Ratings, built on your machine by scripts/fetch-school-data.py.
+  SCHOOL_RATINGS_URL: "js/data/schools-la-county.json",
+  SCHOOL_RATINGS_SCHEMA: 1,
+
   // Clicking a school dot outlines the district that school sits in. The
   // polygon is fetched for that one point, so nothing is downloaded until
   // something is clicked.
@@ -618,7 +676,9 @@ const BlockGroupApp = (() => {
     zip: false, tract: false, blockGroup: false,
     fire: false, pollution: false, wind: false,
     flood: false, seismic: false, noise: false, noiseSurface: false,
-    schools: false,
+    schoolElementary: false,
+    schoolMiddle: false,
+    schoolHigh: false,
     parcels: false,
     listings: false,   // "show every listing", rather than only the selected block group's
   };
@@ -3405,8 +3465,8 @@ const BlockGroupApp = (() => {
     return "other";
   }
 
-  function schoolMarker(feature, latlng) {
-    const level = schoolLevel(feature.properties);
+  function schoolMarker(feature, latlng, forLevel) {
+    const level = forLevel || schoolLevel(feature.properties);
     return L.circleMarker(latlng, {
       radius: 5,
       color: "#ffffff",
@@ -3440,19 +3500,118 @@ const BlockGroupApp = (() => {
     );
   }
 
-  function schoolPopup(props) {
+  // --- The three school switches, by key -----------------------------------
+  const SCHOOL_LEVEL_KEYS = {
+    elementary: "schoolElementary",
+    middle: "schoolMiddle",
+    high: "schoolHigh",
+  };
+  const SCHOOL_KEY_LEVELS = Object.fromEntries(
+    Object.entries(SCHOOL_LEVEL_KEYS).map(([level, key]) => [key, level])
+  );
+
+  function schoolLevelKeyFor(level) {
+    return SCHOOL_LEVEL_KEYS[level];
+  }
+
+  function schoolKeyLevel(key) {
+    return SCHOOL_KEY_LEVELS[key] || null;
+  }
+
+  // What the rating IS, said in full wherever it appears. The one thing this
+  // must never do is read as though it were the GreatSchools number.
+  function ratingTip(level) {
+    const meta = (schoolRatings && schoolRatings.meta) || {};
+    return (
+      `A 1-10 rank of this school against other LA County ${level} schools, built from CAASPP ` +
+      "results - the state's own tests - as the percentage of pupils meeting or exceeding the standard in " +
+      "English and Maths, averaged. 10 is the top tenth of the county. " +
+      "IT IS NOT THE GREATSCHOOLS RATING: GreatSchools has no free feed, so this is computed from the public " +
+      "test data their own test-score rating mostly rests on, and the two will not agree exactly. " +
+      "Test scores track household income more tightly than they track teaching, so read this as a summary of " +
+      "measured outcomes rather than of how good the school is." +
+      (meta.generated ? ` Built ${meta.generated}.` : "")
+    );
+  }
+
+  function ratingRows(props, fields, level) {
+    const record = schoolRecordFor(props, fields);
+    if (!record) return "";
+    const rating = record.ratings && record.ratings[level];
+    const yours = record.ratingSource === "yours";
+    const rows = [
+      cardRow(
+        "Rating",
+        typeof rating === "number" ? `${rating}/10` : null,
+        yours
+          ? "The rating you supplied in raw-data/school-ratings/, which overrides the computed one."
+          : ratingTip(level),
+        { key: true }
+      ),
+    ];
+    if (!yours && record.ela != null) {
+      rows.push(
+        cardRow(
+          "English",
+          `${record.ela}% met`,
+          "Percentage of pupils meeting or exceeding the state standard in English language arts, from CAASPP. " +
+            "This is one of the two numbers the rating above is computed from."
+        )
+      );
+    }
+    if (!yours && record.math != null) {
+      rows.push(
+        cardRow(
+          "Maths",
+          `${record.math}% met`,
+          "Percentage of pupils meeting or exceeding the state standard in mathematics, from CAASPP. " +
+            "The other half of the rating above."
+        )
+      );
+    }
+    if (!yours && record.tested != null) {
+      rows.push(
+        cardRow(
+          "Pupils tested",
+          Utils.fmtNumber(record.tested),
+          "How many pupils sat the tests behind those percentages. A rating resting on a small number moves " +
+            "a lot year to year; under 25 no rating is given at all."
+        )
+      );
+    }
+    return rows.join("");
+  }
+
+  // The popup for an attendance ZONE, as opposed to a school dot. Its whole
+  // job is to say which school this address would be assigned to, and how
+  // much to trust that.
+  function schoolZonePopup(props, level) {
+    const F = BG_CONFIG.SCHOOL_BOUNDARIES.FIELDS;
+    const name = Utils.pickField(props, F.name) || "Attendance zone";
+    const source = (boundarySource && boundarySource.label) || "NCES SABS 2015-16";
+    return `<div class="school-popup"><strong>${Utils.escapeHTML(String(name))}</strong>
+      <p class="zone-sub">${BG_CONFIG.SCHOOL_LEVELS[level].short} attendance zone</p>
+      <table>${ratingRows(props, F, level)}</table>
+      <p class="src-note">Boundary from ${Utils.escapeHTML(source)}. NCES stopped running this survey after
+        2015-16, so it is the newest county-wide source that exists and it is ten years old.
+        <strong>Confirm with the district before you offer on a house.</strong></p>
+      <a href="${Utils.greatSchoolsSearchUrl(name)}" target="_blank" rel="noopener">Look it up on GreatSchools &rarr;</a></div>`;
+  }
+
+  function schoolPopup(props, forLevel) {
     const F = BG_CONFIG.SCHOOL_POINTS.FIELDS;
     const name = Utils.pickField(props, F.name) || "School";
+    const level = forLevel || schoolLevel(props);
     const rows = [
       ["District", Utils.pickField(props, F.district)],
       ["Grades", Utils.pickField(props, F.grades)],
-      ["Level", schoolLevel(props)],
+      ["Level", level],
       ["City", Utils.pickField(props, F.city)],
     ]
       .filter(([, v]) => v !== undefined && v !== null && v !== "")
       .map(([k, v]) => cardRow(k, v, SCHOOL_FIELD_TIPS[k] || "From the CA Department of Education's public school listing."))
       .join("");
-    return `<div class="school-popup"><strong>${name}</strong><table>${rows}</table>
+    return `<div class="school-popup"><strong>${name}</strong><table>${rows}${ratingRows(props, F, level)}</table>
       <p class="src-note">Its district is outlined on the map.</p>
       <a href="${Utils.greatSchoolsSearchUrl(name)}" target="_blank" rel="noopener">GreatSchools rating &rarr;</a></div>`;
   }
@@ -3548,6 +3707,351 @@ const BlockGroupApp = (() => {
       }
     }
     throw new Error(problems.join(" | "));
+  }
+
+  // --- School ratings ------------------------------------------------------
+  // Built on your machine from CAASPP by scripts/fetch-school-data.py. This
+  // is NOT the GreatSchools rating: GreatSchools has no free API, their paid
+  // tiers return bands rather than a number, and their terms forbid scraping.
+  // What this is instead is a decile of the public test data that their own
+  // test-score rating is mostly built from - and anything you put in
+  // raw-data/school-ratings/ overrides it.
+  let schoolRatings = null;
+  let schoolRatingsLoad = null;
+
+  function loadSchoolRatings() {
+    if (schoolRatingsLoad) return schoolRatingsLoad;
+    schoolRatingsLoad = (async () => {
+      try {
+        const data = await Utils.fetchJSON(BG_CONFIG.SCHOOL_RATINGS_URL, { timeoutMs: 20000 });
+        schoolRatings = data;
+        const meta = data.meta || {};
+        Utils.logStatus(
+          "schools",
+          "ok",
+          `School ratings: ${Object.keys(data.schools || {}).length} schools, ` +
+            `${meta.rated || 0} rated, built ${meta.generated || "unknown"}.`
+        );
+        if ((meta.unrankedLevels || []).length) {
+          Utils.logStatus(
+            "schools",
+            "warn",
+            `No ratings for ${meta.unrankedLevels.join(", ")} - too few schools with scores to rank.`
+          );
+        }
+      } catch (err) {
+        schoolRatings = { schools: {}, byNces: {}, byName: {}, missing: err.message };
+        Utils.logStatus(
+          "schools",
+          "info",
+          `No school ratings file (${err.message}). Dots and boundaries still work; ` +
+            `run ${ratingsCommand()} to add ratings and the rating filters.`
+        );
+      }
+      return schoolRatings;
+    })();
+    return schoolRatingsLoad;
+  }
+
+  function ratingsCommand() {
+    return navigator.platform && /win/i.test(navigator.platform)
+      ? "python scripts\\fetch-school-data.py"
+      : "python3 scripts/fetch-school-data.py";
+  }
+
+  // The same name-flattening the build script uses, so the two agree on what
+  // counts as the same school. Kept deliberately in step with normalise_name
+  // in scripts/fetch-school-data.py - if one changes the other must.
+  function normaliseSchoolName(name) {
+    return String(name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, " ")
+      .replace(
+        /\b(elementary|elem|el|middle|mid|junior|jr|senior|sr|high|hs|school|academy|center|centre)\b/g,
+        " "
+      )
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // Find the rating record for a boundary polygon or a school dot. The NCES
+  // id is the reliable join - SABS carries it and the build script indexes
+  // it - and the flattened name is the fallback for the point layers, which
+  // have no NCES id at all.
+  function schoolRecordFor(props, fields) {
+    if (!schoolRatings || !schoolRatings.schools) return null;
+    const nces = Utils.pickField(props, fields.nces || []);
+    if (nces) {
+      const cds = schoolRatings.byNces[String(nces).trim()];
+      if (cds && schoolRatings.schools[cds]) return schoolRatings.schools[cds];
+    }
+    const name = Utils.pickField(props, fields.name || []);
+    if (name) {
+      const cds = schoolRatings.byName[normaliseSchoolName(name)];
+      if (cds && schoolRatings.schools[cds]) return schoolRatings.schools[cds];
+    }
+    return null;
+  }
+
+  function ratingOf(props, fields, level) {
+    const record = schoolRecordFor(props, fields);
+    if (!record || !record.ratings) return null;
+    const value = record.ratings[level];
+    return typeof value === "number" ? value : null;
+  }
+
+  // --- Classifying an attendance boundary ---------------------------------
+  // SABS puts every level in one layer and distinguishes them with a `level`
+  // field plus a grade span. The grade span leads, for the same reason it
+  // does in the build script: it is what a parent actually cares about, and a
+  // K-8 zone genuinely IS both an elementary and a middle zone.
+
+  function gradeValue(token) {
+    const text = String(token == null ? "" : token).trim().toUpperCase();
+    if (!text) return null;
+    if (/^(K|P|PK|TK|PS|KG)$/.test(text)) return 0;
+    const digits = text.replace(/[^0-9]/g, "");
+    return digits ? Number(digits) : null;
+  }
+
+  function boundaryLevels(props) {
+    const F = BG_CONFIG.SCHOOL_BOUNDARIES.FIELDS;
+    const low = gradeValue(Utils.pickField(props, F.gradeLow));
+    const high = gradeValue(Utils.pickField(props, F.gradeHigh));
+    if (low !== null && high !== null) {
+      const levels = [];
+      if (low <= 5) levels.push("elementary");
+      if (low <= 8 && high >= 6) levels.push("middle");
+      if (high >= 9) levels.push("high");
+      if (levels.length) return levels;
+    }
+    // No usable grade span: fall back to whatever the level field says. SABS
+    // writes words in some rows and codes in others, so both are matched.
+    const raw = String(Utils.pickField(props, F.level) || "").toLowerCase();
+    if (/^1$|primary|elementary/.test(raw)) return ["elementary"];
+    if (/^2$|middle|junior/.test(raw)) return ["middle"];
+    if (/^3$|high|secondary/.test(raw)) return ["high"];
+    return [];
+  }
+
+  // --- Fetching the boundaries --------------------------------------------
+  // One fetch serves all three switches. SABS answers with every level at
+  // once, so querying it three times would download the same polygons three
+  // times and then throw two thirds away.
+  let boundarySource = null;
+  let boundaryCache = { bbox: null, features: null };
+
+  async function fetchSchoolBoundaries(bbox) {
+    const spec = BG_CONFIG.SCHOOL_BOUNDARIES;
+    if (boundaryCache.features && boundaryCache.bbox === bbox) return boundaryCache.features;
+
+    const candidates = boundarySource ? [boundarySource] : spec.servers;
+    const problems = [];
+    for (const server of candidates) {
+      try {
+        let features = [];
+        if (server.layers) {
+          // One sublayer per level: tag each feature with the level its
+          // sublayer represents, since these carry no grade span.
+          for (const [level, id] of Object.entries(server.layers)) {
+            const gj = await Utils.fetchEsriAsGeoJSON(
+              Utils.arcgisQueryUrl(server.url, id, { bbox, outFields: "*" }),
+              { timeoutMs: 40000 }
+            );
+            (gj.features || []).forEach((f) => {
+              f.properties = { ...f.properties, __level: level };
+              features.push(f);
+            });
+          }
+        } else {
+          const gj = await Utils.fetchEsriAsGeoJSON(
+            Utils.arcgisQueryUrl(server.url, server.layer, { bbox, outFields: "*" }),
+            { timeoutMs: 40000 }
+          );
+          features = gj.features || [];
+        }
+        boundarySource = server;
+        Utils.logStatus(
+          "schools",
+          "ok",
+          `Attendance boundaries: ${features.length} zones from ${server.label} (${server.coverage}).`
+        );
+        boundaryCache = { bbox, features };
+        return features;
+      } catch (err) {
+        problems.push(`${server.label}: ${err.message}`);
+      }
+    }
+    throw new Error(problems.join(" | ") || "no boundary service answered");
+  }
+
+  // Boundaries and dots for ONE level, as a single collection the existing
+  // layer machinery can draw.
+  async function fetchSchoolLevel(level, bbox) {
+    const [boundaries, points] = await Promise.all([
+      fetchSchoolBoundaries(bbox).catch((err) => {
+        Utils.logStatus("schools", "warn", `No attendance boundaries: ${err.message}`);
+        return [];
+      }),
+      fetchSchoolPoints(bbox).catch((err) => {
+        Utils.logStatus("schools", "warn", `No school dots: ${err.message}`);
+        return { features: [] };
+      }),
+      loadSchoolRatings(),
+    ]);
+
+    const zones = boundaries
+      .filter((f) => {
+        const tagged = f.properties && f.properties.__level;
+        return tagged ? tagged === level : boundaryLevels(f.properties).includes(level);
+      })
+      .map((f) => ({ ...f, properties: { ...f.properties, __kind: "zone", __level: level } }));
+
+    const dots = (points.features || [])
+      .filter((f) => pointLevels(f.properties).includes(level))
+      .map((f) => ({ ...f, properties: { ...f.properties, __kind: "dot", __level: level } }));
+
+    const collection = { type: "FeatureCollection", features: [...zones, ...dots] };
+    schoolGeojson[level] = collection;
+    return collection;
+  }
+
+  // Drawn features, per level. A filter change re-reads this instead of the
+  // network: the polygons have not changed, only which of them you want.
+  const schoolGeojson = { elementary: null, middle: null, high: null };
+
+  // Which switch a school DOT belongs under. The point layers carry a grade
+  // span too, so the same rule applies - and a K-8 dot shows under both.
+  function pointLevels(props) {
+    const F = BG_CONFIG.SCHOOL_POINTS.FIELDS;
+    const span = String(Utils.pickField(props, F.grades) || "");
+    const parts = span.split(/[-\u2013]/);
+    const low = gradeValue(parts[0]);
+    const high = gradeValue(parts[parts.length - 1]);
+    if (low !== null && high !== null) {
+      const levels = [];
+      if (low <= 5) levels.push("elementary");
+      if (low <= 8 && high >= 6) levels.push("middle");
+      if (high >= 9) levels.push("high");
+      if (levels.length) return levels;
+    }
+    const single = schoolLevel(props);
+    return single && single !== "other" ? [single] : [];
+  }
+
+  // --- The rating filters --------------------------------------------------
+  // One per level, working exactly like the block group filters: set a
+  // threshold and everything failing it leaves the map. Both the polygon and
+  // its dot go together, because they are the same school.
+  const schoolFilters = {
+    elementary: { mode: "above", value: null },
+    middle: { mode: "above", value: null },
+    high: { mode: "above", value: null },
+  };
+
+  // Re-draw one level against the current filter, without a fetch.
+  function applySchoolFilter(level) {
+    const key = schoolLevelKeyFor(level);
+    const collection = schoolGeojson[level];
+    updateSchoolFilterStatus();
+    renderOverlayLegend(key);
+    if (!enabled[key] || !collection) return;
+    if (layers[key]) map.removeLayer(layers[key]);
+    layers[key] = buildLayer(key, collection).addTo(map);
+    if (layers[key].bringToFront) layers[key].bringToFront();
+  }
+
+  // What the filters are currently doing, in words. Silence here was the
+  // thing that made the block group filters confusing before they said so.
+  function updateSchoolFilterStatus() {
+    const box = document.getElementById("school-filter-status");
+    if (!box) return;
+    const parts = [];
+    let noRatings = false;
+    Object.keys(BG_CONFIG.SCHOOL_LEVELS).forEach((level) => {
+      const filter = schoolFilters[level];
+      const row = document.querySelector(`.school-filter[data-level="${level}"]`);
+      if (row) row.classList.toggle("active", filter.value !== null);
+      if (filter.value === null) return;
+      const collection = schoolGeojson[level];
+      if (!collection) {
+        parts.push(
+          `${BG_CONFIG.SCHOOL_LEVELS[level].short}: ${filter.mode} ${filter.value} ` +
+            "(switch the layer on to see it)"
+        );
+        return;
+      }
+      const dots = collection.features.filter((f) => f.properties.__kind === "dot");
+      const kept = dots.filter((f) => schoolPasses(f.properties, level));
+      const rated = dots.filter(
+        (f) => ratingOf(f.properties, BG_CONFIG.SCHOOL_POINTS.FIELDS, level) !== null
+      );
+      if (dots.length && !rated.length) noRatings = true;
+      parts.push(
+        `${BG_CONFIG.SCHOOL_LEVELS[level].short}: ${kept.length} of ${dots.length} schools ` +
+          `rated ${filter.mode === "above" ? "\u2265" : "\u2264"} ${filter.value}`
+      );
+    });
+    if (!parts.length) {
+      box.className = "hint";
+      box.textContent = "";
+      return;
+    }
+    if (noRatings) {
+      box.className = "hint error";
+      box.textContent =
+        `No school here carries a rating, so this filter hides everything. Run ${ratingsCommand()} ` +
+        "to build the ratings file.";
+      return;
+    }
+    box.className = "hint ok";
+    box.textContent = parts.join(" \u00b7 ");
+  }
+
+  function initSchoolFilters() {
+    Object.keys(BG_CONFIG.SCHOOL_LEVELS).forEach((level) => {
+      const mode = document.getElementById(`school-filter-${level}-mode`);
+      const value = document.getElementById(`school-filter-${level}-value`);
+      if (!mode || !value) return;
+
+      const apply = () => {
+        const raw = value.value.trim();
+        const number = raw === "" ? null : Number(raw);
+        schoolFilters[level] = {
+          mode: mode.value,
+          // Out-of-range input is treated as no filter rather than as a
+          // filter nothing can pass, which would silently empty the map.
+          value: number === null || !Number.isFinite(number) || number < 1 || number > 10 ? null : number,
+        };
+        applySchoolFilter(level);
+      };
+
+      mode.addEventListener("change", apply);
+      value.addEventListener("input", apply);
+    });
+
+    document.querySelectorAll(".school-filter-clear").forEach((button) => {
+      button.addEventListener("click", () => {
+        const level = button.dataset.level;
+        const value = document.getElementById(`school-filter-${level}-value`);
+        if (value) value.value = "";
+        schoolFilters[level] = { mode: schoolFilters[level].mode, value: null };
+        applySchoolFilter(level);
+      });
+    });
+  }
+
+  function schoolPasses(props, level) {
+    const filter = schoolFilters[level];
+    if (!filter || filter.value === null) return true;
+    const fields =
+      props.__kind === "zone" ? BG_CONFIG.SCHOOL_BOUNDARIES.FIELDS : BG_CONFIG.SCHOOL_POINTS.FIELDS;
+    const rating = ratingOf(props, fields, level);
+    // A school with no rating cannot be said to pass a rating test. Hiding it
+    // is the honest answer: the alternative is showing an unrated school
+    // beside filtered ones as though it had qualified.
+    if (rating === null) return false;
+    return filter.mode === "above" ? rating >= filter.value : rating <= filter.value;
   }
 
   // --- Which schools serve this block group -------------------------------
@@ -5307,13 +5811,37 @@ const BlockGroupApp = (() => {
       });
     }
 
-    if (key === "schools") {
+    const schoolLevelKey = schoolKeyLevel(key);
+    if (schoolLevelKey) {
+      const color = BG_CONFIG.SCHOOL_LEVEL_COLORS[schoolLevelKey];
+      const spec = BG_CONFIG.SCHOOL_BOUNDARIES;
       return L.geoJSON(geojson, {
-        pointToLayer: schoolMarker,
+        pointToLayer: (feature, latlng) => schoolMarker(feature, latlng, schoolLevelKey),
+        // The zones are translucent so the three levels can be read on top of
+        // one another - seeing that overlap is the reason there are three
+        // switches rather than one.
+        style: () => ({
+          color,
+          weight: spec.weight,
+          fillColor: color,
+          fillOpacity: spec.fillOpacity,
+        }),
+        filter: (feature) => schoolPasses(feature.properties, schoolLevelKey),
         onEachFeature: (feature, layer) => {
-          const name = Utils.pickField(feature.properties, BG_CONFIG.SCHOOL_POINTS.FIELDS.name) || "School";
-          layer.bindTooltip(name);
-          layer.bindPopup(schoolPopup(feature.properties));
+          const zone = feature.properties.__kind === "zone";
+          const fields = zone ? spec.FIELDS : BG_CONFIG.SCHOOL_POINTS.FIELDS;
+          const name = Utils.pickField(feature.properties, fields.name) || "School";
+          const rating = ratingOf(feature.properties, fields, schoolLevelKey);
+          const badge = rating === null ? "" : ` \u00b7 rated ${rating}/10`;
+          layer.bindTooltip(
+            zone ? `${name} attendance zone${badge}` : `${name}${badge}`,
+            zone ? { sticky: true } : undefined
+          );
+          if (zone) {
+            layer.bindPopup(schoolZonePopup(feature.properties, schoolLevelKey));
+            return;
+          }
+          layer.bindPopup(schoolPopup(feature.properties, schoolLevelKey));
           // Clicking a dot outlines the district that school belongs to.
           layer.on("click", (e) => {
             const ll = e.latlng || layer.getLatLng();
@@ -5348,14 +5876,15 @@ const BlockGroupApp = (() => {
   }
 
   function labelFor(key) {
-    if (key === "schools") return BG_CONFIG.SCHOOL_POINTS.label;
+    const schoolLabelLevel = schoolKeyLevel(key);
+    if (schoolLabelLevel) return BG_CONFIG.SCHOOL_LEVELS[schoolLabelLevel].label;
     const overlay = BG_CONFIG.OVERLAYS[key];
     if (overlay) return overlay.label;
     return { zip: "Zip code borders", tract: "Census tract borders", blockGroup: "Block group borders" }[key];
   }
 
   function minZoomFor(key) {
-    if (key === "schools") return BG_CONFIG.SCHOOL_POINTS.minZoom;
+    if (schoolKeyLevel(key)) return BG_CONFIG.SCHOOL_BOUNDARIES.minZoom;
     const overlay = BG_CONFIG.OVERLAYS[key];
     return overlay ? overlay.minZoom : BG_CONFIG.MIN_ZOOM[key];
   }
@@ -5409,8 +5938,8 @@ const BlockGroupApp = (() => {
     Utils.logStatus(key, "info", `Loading ${label}...`);
     try {
       const geojson =
-        key === "schools"
-          ? await fetchSchoolPoints(bbox)
+        schoolKeyLevel(key)
+          ? await fetchSchoolLevel(schoolKeyLevel(key), bbox)
           : BG_CONFIG.OVERLAYS[key]
           ? await fetchOverlay(key, bbox)
           : await fetchBoundaries(key, bbox);
@@ -5421,7 +5950,11 @@ const BlockGroupApp = (() => {
       // Hazard and pollution are area fills: they belong under the boundary
       // lines and the block group polygons, not on top of them.
       if (BG_CONFIG.OVERLAYS[key] && layers[key].bringToBack) layers[key].bringToBack();
-      if (key === "schools" && layers[key].bringToFront) layers[key].bringToFront();
+      if (schoolKeyLevel(key) && layers[key].bringToFront) {
+        layers[key].bringToFront();
+        // Only now can the filter line count what is on the map.
+        updateSchoolFilterStatus();
+      }
       loadedBBox[key] = bbox;
       if (key === "pollution") renderSelection(); // the open card gains its CES rows
 
@@ -5544,8 +6077,8 @@ const BlockGroupApp = (() => {
         document.getElementById("detail-panel").innerHTML =
           '<p class="hint">Turn on <strong>Block Group Borders</strong>, zoom in, and click a block group.</p>';
       }
-      if (key === "schools") clearDistrictHighlight();
-      if (BG_CONFIG.OVERLAYS[key] || key === "schools") {
+      if (schoolKeyLevel(key)) clearDistrictHighlight();
+      if (BG_CONFIG.OVERLAYS[key] || schoolKeyLevel(key)) {
         renderOverlayLegend(key);
         if (key === "pollution") renderSelection();
       }
@@ -5553,7 +6086,7 @@ const BlockGroupApp = (() => {
       return;
     }
     if (key === "blockGroup") loadCensusData();
-    if (BG_CONFIG.OVERLAYS[key] || key === "schools" || key === "noise" || key === "noiseSurface") renderOverlayLegend(key);
+    if (BG_CONFIG.OVERLAYS[key] || schoolKeyLevel(key) || key === "noise" || key === "noiseSurface") renderOverlayLegend(key);
     refreshLayer(key, { force: true });
   }
 
@@ -5609,16 +6142,24 @@ const BlockGroupApp = (() => {
       rows.push(
         '<div class="legend-note">24-hour average (LAeq), not DNL: no night-time penalty, so it understates an airport that flies at night.</div>'
       );
-    } else if (key === "schools") {
-      rows = Object.entries(BG_CONFIG.SCHOOL_LEVEL_COLORS)
-        .filter(([name]) => name !== "other")
-        .map(
-          ([name, color]) =>
-            `<div class="legend-row"><span class="swatch" style="background:${color}"></span>${name.replace(
-              /^./,
-              (c) => c.toUpperCase()
-            )}</div>`
+    } else if (schoolKeyLevel(key)) {
+      const level = schoolKeyLevel(key);
+      const color = BG_CONFIG.SCHOOL_LEVEL_COLORS[level];
+      rows = [
+        `<div class="legend-row"><span class="swatch" style="background:${color};opacity:.35"></span>Attendance zone</div>`,
+        `<div class="legend-row"><span class="swatch school-dot-swatch" style="background:${color}"></span>${BG_CONFIG.SCHOOL_LEVELS[level].short} school</div>`,
+      ];
+      const filter = schoolFilters[level];
+      if (filter && filter.value !== null) {
+        rows.push(
+          `<div class="legend-note">Filtered to schools rated ${filter.mode} ${filter.value}. ` +
+            `Schools with no rating are hidden too - an unrated school cannot be said to have passed.</div>`
         );
+      }
+      rows.push(
+        '<div class="legend-note">Attendance boundaries are NCES SABS 2015-16, the only survey covering every ' +
+          'LA County district. It is ten years old and boundaries move - confirm with the district before you offer.</div>'
+      );
     } else {
       rows = BG_CONFIG.WIND_BUCKETS.map(
         (b) => `<div class="legend-row"><span class="swatch" style="background:${b.color}"></span>${b.label}</div>`
@@ -5956,8 +6497,11 @@ const BlockGroupApp = (() => {
     ["Assessor roll", "LA County", "Every parcel: assessed values, recording date, base year, size, beds, baths", () => metaDate(parcelMeta), "Card: the year-by-year Home prices table. Filters: median price, price per ft². House card: the block group comparison"],
     ["Assessor roll (sales)", "LA County", "One row per transfer behind each count", () => metaDate(parcelMeta), "The panel that opens when you click a sales count"],
     ["Redfin exports", "raw-data/redfin-listings/", "Active listings: price, size, lot, beds, baths, days on market", () => (listingsMeta && listingsMeta.latestDownloadLabel) || "not loaded", "The red dots on a selected block group, and the house card"],
-    ["CA school sites", "CA Dept of Education", "Every public school, with level", () => "live", "The school dots, and the assigned schools on the card"],
-    ["LAUSD boundaries", "LAUSD / SABS", "Attendance zones and district outlines", () => "live", "Assigned schools; clicking a dot outlines its district"],
+    ["CA school sites", "CA Dept of Education", "Every public school, with level and grade span", () => "live", "The school dots on all three school switches, and the assigned schools on the card"],
+    ["SABS 2015-16", "NCES (discontinued survey)", "Attendance boundary polygons for EVERY LA County district. Collected by NCES from districts; the survey was run twice and stopped, so this is ten years old", () => "2015-16 (fixed)", "The translucent zones on the three school switches"],
+    ["LAUSD boundaries", "LA City GeoHub", "LAUSD attendance zones only, same 2015 vintage. Fallback when NCES does not answer, and the point lookup behind 'assigned schools'", () => "live", "Assigned schools on the card; the zone fill when SABS is unreachable"],
+    ["CAASPP", "CA Dept of Education", "Smarter Balanced results per school: percent meeting the standard in English and Maths. Ranked into county deciles by scripts/fetch-school-data.py to make the 1-10 rating", () => metaDate(schoolRatings && schoolRatings.meta), "The school rating on every school and zone popup, and the three rating filters"],
+    ["Your ratings", "raw-data/school-ratings/", "Any CSV of school,rating you drop in - GreatSchools numbers you looked up by hand, for instance. Overrides the computed rating", () => ((schoolRatings && schoolRatings.meta && schoolRatings.meta.overridden) ? `${schoolRatings.meta.overridden} schools` : "none supplied"), "Replaces the CAASPP rating wherever it matches a school"],
     ["CalEnviroScreen 4.0", "OEHHA", "Pollution burden percentile by tract", () => "live", "Pollution toggle, and the Pollution burden card rows"],
     ["FHSZ", "CAL FIRE / OSFM", "Fire hazard severity zones", () => "live", "Fire toggle and its legend"],
     ["NFHL", "FEMA", "Flood zones, 1% and 0.2% annual chance", () => "live", "Flood toggle, and the Flood card rows"],
@@ -5969,6 +6513,8 @@ const BlockGroupApp = (() => {
     ["HPOZ", "LA City GIS", "Historic Preservation Overlay Zone boundaries", () => "live", "House and pin cards: Development - Historic district"],
     ["Parcels", "LA County GIS", "Lot boundaries, 2.4 million of them", () => "live", "Parcel outlines toggle (zoom 16+)"],
     ["World Imagery", "Esri", "Aerial photography", () => "live", "Satellite imagery toggle"],
+    ["Houses you added", "Your browser", "Addresses you typed or pasted in, geocoded through Nominatim and kept in local storage beside your notes", () => `${manualListings().length} added`, "Pins on the map and rows in the listings table, alongside the Redfin ones"],
+    ["Listing extractor", "Anthropic API (optional)", "Fields read out of a listing page you paste: price, size, lot, beds, baths, year built, HOA. Needs scripts/listing-server.py and your own key", () => (document.getElementById("extract-listing") && !document.getElementById("extract-listing").hidden ? "on" : "off - plain file server"), "Fills the house card when you paste a listing"],
     ["Nominatim", "OpenStreetMap", "Address search and reverse geocoding", () => "live", "The address box, the dropped pin, and adding a house by hand"],
     ["OpenRouteService", "HeiGIT", "Driving directions and duration", () => "live", "Commute time from the pin to your destination"],
   ];
@@ -6222,6 +6768,7 @@ const BlockGroupApp = (() => {
 
     initAddListing();
     initExtractListing();
+    initSchoolFilters();
     document.getElementById("open-listings-table").addEventListener("click", openListingsTable);
 
     document.getElementById("toggle-listings").addEventListener("change", async (e) => {
@@ -6270,7 +6817,11 @@ const BlockGroupApp = (() => {
     document.getElementById("toggle-fire").addEventListener("change", (e) => onToggle("fire", e.target.checked));
     document.getElementById("toggle-pollution").addEventListener("change", (e) => onToggle("pollution", e.target.checked));
     document.getElementById("toggle-wind").addEventListener("change", (e) => onToggle("wind", e.target.checked));
-    document.getElementById("toggle-schools").addEventListener("change", (e) => onToggle("schools", e.target.checked));
+    Object.keys(BG_CONFIG.SCHOOL_LEVELS).forEach((level) => {
+      const key = schoolLevelKeyFor(level);
+      const box = document.getElementById(`toggle-${key}`);
+      if (box) box.addEventListener("change", (e) => onToggle(key, e.target.checked));
+    });
     document.getElementById("toggle-flood").addEventListener("change", (e) => onToggle("flood", e.target.checked));
     document.getElementById("toggle-seismic").addEventListener("change", (e) => onToggle("seismic", e.target.checked));
     document.getElementById("toggle-noise").addEventListener("change", (e) => onToggle("noise", e.target.checked));
@@ -6303,7 +6854,9 @@ const BlockGroupApp = (() => {
         refreshLayer("pollution");
         refreshLayer("flood");
         refreshLayer("seismic");
-        refreshLayer("schools");
+        refreshLayer("schoolElementary");
+        refreshLayer("schoolMiddle");
+        refreshLayer("schoolHigh");
         refreshParcels();
       }, 400);
       updateZoomHint();
