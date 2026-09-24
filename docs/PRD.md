@@ -33,7 +33,7 @@ Zip codes are useless for this. A zip can span a canyon and a flood plain.
 | Redfin listings on the map | Your actual candidates, in context |
 | Favourites, notes, not-interested | It's a shortlist tool, not just a map |
 | Fire, flood, seismic, pollution, noise, wind | The six things that make a cheap house cheap |
-| Schools: zones + dots + ratings | Usually the single biggest driver of price |
+| Schools: zones + dots + your GreatSchools ratings | Usually the single biggest driver of price |
 | Jurisdiction, zoning, historic | Which rulebook applies to building here |
 | Satellite + parcel outlines | Where the trees, slope and lot lines actually are |
 | Add a house by address | Not everything comes from Redfin |
@@ -48,7 +48,6 @@ Zip codes are useless for this. A zip can span a canyon and a flood plain.
 | Easements (county-mapped) | A drainage easement kills an ADU outright | Nothing. Ready to build |
 | Easements (private) | The ones that actually bite | No GIS layer exists — they live in title reports |
 | Code enforcement history | Unpermitted work before you offer | Need to know which cities; most small ones publish nothing |
-| Real GreatSchools ratings | It's the number everyone actually uses | No free API, paid tiers give bands not numbers, scraping is against their terms |
 
 ## Limits
 
@@ -56,8 +55,8 @@ Zip codes are useless for this. A zip can span a canyon and a flood plain.
 
 - **School boundaries are from 2015-16.** NCES ran the survey twice and
   stopped. It's the only county-wide source. Confirm with the district.
-- **School ratings aren't GreatSchools'.** They're computed from state test
-  scores. Close in spirit, not the same number.
+- **School ratings are a snapshot of your GreatSchools table.** They are as
+  current as the day you collected them. Re-collect and re-run the script to refresh.
 - **Prices are reconstructed, not real sale prices.** The public roll has no
   sale price column. Prop 13 lets us infer it for recently-sold houses.
 - **ACS is a 5-year average.** It describes roughly 2-3 years ago, not today.
@@ -79,7 +78,8 @@ Things that would each open up a lot:
 
 1. **Export/import your shortlist** — ends the local-storage risk in an hour
    of work.
-2. **A paid GreatSchools licence** — drops straight into the ratings slot.
+2. **Current attendance zones** — per district where published, or a paid
+   county-wide source; 2015-16 is the weakest link in the school layer now.
 3. **A title report parser** — turns escrow docs into card rows.
 4. **Rental comps** — would make this work for investment, not just living.
 

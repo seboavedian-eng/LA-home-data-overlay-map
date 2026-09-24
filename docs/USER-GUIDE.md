@@ -76,18 +76,24 @@ Two things to know:
 
 - The boundaries are from **2015-16**. It's the only county-wide source that
   exists. Confirm with the district before you offer.
-- The rating is **not GreatSchools'**. It's computed from state test scores.
-  Every popup has a GreatSchools link if you want their number.
+- The rating is **GreatSchools'**, from your own table. Nothing is computed,
+  and a school your table doesn't list has no rating.
 
-If you want real GreatSchools ratings, look up your shortlist and put them in
-a CSV in `raw-data/school-ratings/`:
+### Adding or updating your ratings
 
-```
-school,district,rating
-Eagle Rock Elementary,Los Angeles Unified,8
-```
+1. Save your table as a CSV in `raw-data/school-ratings/`. It needs School
+   Name, Address, City, Zip, Elementary, Middle?, High? and GreatSchools
+   Rating columns.
+2. Run `python scripts/fetch-school-data.py`. **Dropping the CSV in is not
+   enough** - the script is what ties each row to a dot and a zone.
+3. Open `raw-data/school-ratings-match-report.csv`. Rows that didn't match are
+   at the top, each with the reason.
+4. To fix a row, add a `CDS` column and put the school's 14-digit state code
+   in it. Run the script again.
+5. Reload the page.
 
-Yours win.
+Your Yes/No columns decide which switch a school counts under. A school marked
+Elementary and Middle shows under both.
 
 ## Listings
 

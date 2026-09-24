@@ -1,54 +1,46 @@
 #!/usr/bin/env python3
 """
-Build a 1-10 rating for every public school in LA County, plus the directory
-the map needs to place and label them.
+Attach YOUR GreatSchools ratings to every LA County public school the map
+draws, so the three rating filters and every school popup use them.
 
-WHY NOT GREATSCHOOLS
---------------------
-GreatSchools has no free API. The paid plans return rating BANDS ("above
-average"), not the 1-10 number everyone actually means, and their terms
-prohibit scraping the site. So this script does not pretend to reproduce their
-rating - it computes its own, from the public data that GreatSchools' own test
-score rating is mostly built from, and says so everywhere it is shown.
+WHERE THE RATINGS COME FROM
+---------------------------
+One place only: the table(s) you put in raw-data/school-ratings/*.csv. Nothing
+is computed. A school your table does not list has no rating, and a rating
+filter hides it - an unrated school cannot be said to have passed.
 
-    rating = decile of (ELA + Math "percent met or exceeded standard"),
-             ranked against other LA COUNTY schools AT THE SAME LEVEL
+The columns this reads, by name (case and a trailing "?" do not matter):
 
-Two decisions inside that are worth stating plainly:
+    School Name, Address, City, Zip, Elementary, Middle?, High?, GreatSchools Rating
 
-  * It is a RANK, not a score. A 7 means "better than roughly 60-70% of LA
-    County elementary schools", not "70% of pupils can read". Ranking within
-    the county rather than the state is deliberate: you are choosing between
-    LA County houses, so a statewide percentile would compress every school
-    you can actually buy into a narrow band.
+Optional: a `CDS` or `NCES` column, which beats every other way of matching.
+Use it to pin down any row the match report says it could not place.
 
-  * Elementary, middle and high are ranked SEPARATELY. Test participation and
-    difficulty differ by level, so a single pooled ranking would say more
-    about which grades sit the test than about which school is better.
+WHY THE STATE DIRECTORY IS STILL DOWNLOADED
+-------------------------------------------
+Your table says which school and what rating. The map needs to know which
+DOT and which ZONE that is, and those carry the state's identifiers, not
+names:
 
-WHAT THIS IS NOT
-----------------
-Test scores track household income more tightly than they track teaching. A
-school serving wealthy families scores well largely because of who enrols
-there. This number is a fair summary of measured outcomes and a poor summary
-of how good the teaching is, and the app says so on the card.
+    your row  --(address + zip)-->  CDE directory  --CDS code-->  school dot
+                                                   --NCES id--->  attendance zone
 
-YOUR OWN RATINGS WIN
---------------------
-Anything in raw-data/school-ratings/*.csv overrides the computed value. Two
-columns, `school` and `rating`; a `district` column is used to break ties
-between schools that share a name. If you look up your shortlist on
-GreatSchools by hand, drop it in there and the map uses your numbers.
+Matching on address + zip is what makes this reliable. Names alone are not:
+"Eagle Rock Elementary" and "Eagle Rock High" are both LAUSD, and a name
+matcher that ignores the level word gives them the same rating. Two schools
+sharing one address (iLEAD Hybrid and iLEAD Online do) are told apart by name.
+
+EVERY ROW IS ACCOUNTED FOR
+--------------------------
+The run writes raw-data/school-ratings-match-report.csv: one line per row of
+your table, saying whether it matched, how, and to which state record - and
+for the ones that did not, why. Nothing is dropped silently.
 
 WHAT YOU NEED
 -------------
-Nothing, if the downloads work: the script fetches both files itself.
-
-  1. CAASPP Smarter Balanced research file (the test scores)
-  2. CDE public school directory (names, levels, coordinates, NCES IDs)
-
-If a download fails - CDE moves these URLs - the script says exactly which
-file to fetch and where to put it, and picks it up from raw-data/ next run.
+Your table, and the CDE directory, which this script downloads itself. If the
+download fails - CDE moves these URLs - the script says exactly which file to
+fetch and where to put it, and picks it up from raw-data/ next run.
 
 Run:  python scripts/fetch-school-data.py
 Output: js/data/schools-la-county.json
@@ -64,53 +56,26 @@ import re
 import sys
 import urllib.error
 import urllib.request
-import zipfile
 
-SCHEMA_VERSION = 1
+# 2: ratings come only from your table, byName maps to a LIST of schools.
+SCHEMA_VERSION = 2
 LA_COUNTY_CODE = "19"  # CDS county code for Los Angeles
 
 DEFAULT_OUT = os.path.join("js", "data", "schools-la-county.json")
 RAW_DIR = "raw-data"
-OVERRIDE_DIR = os.path.join("raw-data", "school-ratings")
+RATINGS_DIR = os.path.join("raw-data", "school-ratings")
+# Outside RATINGS_DIR on purpose: every CSV in there is read as a ratings table.
+REPORT_PATH = os.path.join("raw-data", "school-ratings-match-report.csv")
 
-# CDE republishes these every year and has moved them before, so each is a
-# candidate list and the script reports which one answered.
-CAASPP_URLS = [
-    "https://caaspp-elpac.ets.org/caaspp/researchfiles/sb_ca2025_all_csv_v1.zip",
-    "https://caaspp-elpac.ets.org/caaspp/researchfiles/sb_ca2024_all_csv_v1.zip",
-    "https://caaspp-elpac.ets.org/caaspp/researchfiles/sb_ca2023_all_csv_v1.zip",
-]
+# CDE republishes this and has moved it before, so it is a candidate list and
+# the script reports which one answered.
 DIRECTORY_URLS = [
     "https://www.cde.ca.gov/schooldirectory/report?rid=dl1&tp=txt&ict=Y",
     "https://www.cde.ca.gov/schooldirectory/report?rid=dl1&tp=txt",
 ]
 
-# Local fallbacks, if the downloads are blocked and you fetch by hand.
-CAASPP_LOCAL = os.path.join(RAW_DIR, "caaspp-sb-research-file.txt")
+# Local fallback, if the download is blocked and you fetch it by hand.
 DIRECTORY_LOCAL = os.path.join(RAW_DIR, "pubschls.txt")
-
-# CAASPP research file columns. Named in recent years; older files ship the
-# same order without a header, which is why POSITIONS exists below.
-CAASPP_COLUMNS = {
-    "county": ["County Code", "CountyCode"],
-    "district": ["District Code", "DistrictCode"],
-    "school": ["School Code", "SchoolCode"],
-    "subgroup": ["Subgroup ID", "SubgroupID", "Demographic Id", "DemographicID"],
-    "grade": ["Grade"],
-    "test": ["Test Id", "TestID", "Test ID"],
-    "tested": ["Students with Scores", "StudentsWithScores", "Total Tested with Scores"],
-    "met": [
-        "Percentage Standard Met and Above",
-        "PercentageStandardMetAndAbove",
-        "Percent Standard Met and Above",
-    ],
-}
-
-# The 2015-2018 files have no header row. Field order has been stable.
-CAASPP_POSITIONS = {
-    "county": 0, "district": 1, "school": 2, "grade": 5,
-    "test": 8, "subgroup": 4, "tested": 10, "met": 15,
-}
 
 DIRECTORY_COLUMNS = {
     "cds": ["CDSCode"],
@@ -130,21 +95,22 @@ DIRECTORY_COLUMNS = {
     "county_name": ["County"],
 }
 
-ALL_STUDENTS_SUBGROUP = "1"
-ALL_GRADES = "13"
-TEST_ELA = "1"
-TEST_MATH = "2"
-
-# A rating resting on a handful of test-takers is noise. CDE itself suppresses
-# below 11; this is deliberately stricter, because a decile computed from 15
-# children moves wildly year to year.
-MIN_TESTED = 25
-
-# A decile needs a population to be a decile. With five schools at a level,
-# "rated 1 of 10" means "came last out of five", which reads as a damning
-# verdict and is nearly meaningless. Below this, that level gets no ratings at
-# all and the run says so.
-MIN_SCHOOLS_FOR_RANKING = 20
+# Your table's columns, by candidate name. Matched after lower-casing and
+# dropping a trailing "?", so "High?" and "high" are the same column.
+RATING_COLUMNS = {
+    "name": ["school name", "school", "name"],
+    "address": ["address", "street address", "street"],
+    "city": ["city"],
+    "zip": ["zip", "zip code", "zipcode", "postal code"],
+    "elementary": ["elementary", "elementary school", "elem"],
+    "middle": ["middle", "middle school"],
+    "high": ["high", "high school"],
+    "rating": ["greatschools rating", "rating", "greatschools", "gs rating"],
+    "cds": ["cds", "cds code", "cdscode"],
+    "nces": ["nces", "nces id", "ncessch"],
+}
+REQUIRED_RATING_COLUMNS = ("name", "rating")
+LEVELS = ("elementary", "middle", "high")
 
 
 class SchoolDataError(Exception):
@@ -364,6 +330,10 @@ def read_directory(data):
             "lat": lat,
             "lon": lon,
             "nces": nces,
+            # Kept apart for matching your table: see match_row().
+            "city": cell("city"),
+            "zip5": zip5(cell("zip")),
+            "address_key": address_key(cell("street")),
         }
 
     if not schools:
@@ -378,216 +348,315 @@ def read_directory(data):
     return schools
 
 
-# --- The test scores ---------------------------------------------------------
+# --- Your table --------------------------------------------------------------
 
 
-def read_caaspp(data):
-    """Percent met-or-exceeded in ELA and Math, per school, all students."""
-    if isinstance(data, bytes) and data[:2] == b"PK":
-        archive = zipfile.ZipFile(io.BytesIO(data))
-        names = [n for n in archive.namelist() if n.lower().endswith((".txt", ".csv"))]
-        if not names:
-            raise SchoolDataError("the CAASPP zip had no data file in it.")
-        # The all-entities file is the big one.
-        name = max(names, key=lambda n: archive.getinfo(n).file_size)
-        print(f"  CAASPP: reading {name} from the zip")
-        text = archive.read(name).decode("utf-8-sig", errors="replace")
-    else:
-        text = data.decode("utf-8-sig", errors="replace") if isinstance(data, bytes) else data
-
-    sample = text[:4000]
-    delimiter = "^" if sample.count("^") > sample.count(",") else ","
-    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
-    try:
-        first = next(reader)
-    except StopIteration:
-        raise SchoolDataError("the CAASPP file is empty.")
-
-    # A header row has non-numeric first cell; an old file starts with a code.
-    has_header = not re.fullmatch(r"\d+", (first[0] or "").strip())
-    if has_header:
-        columns = {
-            key: first.index(find_column(first, candidates, key))
-            for key, candidates in CAASPP_COLUMNS.items()
-        }
-        print(f"  CAASPP: header found, {delimiter!r}-delimited")
-    else:
-        columns = dict(CAASPP_POSITIONS)
-        print(f"  CAASPP: no header, using known field order, {delimiter!r}-delimited")
-        reader = io.StringIO(text)
-        reader = csv.reader(reader, delimiter=delimiter)
-
-    scores = {}
-    rows = 0
-    for row in reader:
-        rows += 1
-        if len(row) <= max(columns.values()):
-            continue
-        def cell(key):
-            return (row[columns[key]] or "").strip()
-
-        if cell("county") != LA_COUNTY_CODE:
-            continue
-        if cell("subgroup") != ALL_STUDENTS_SUBGROUP:
-            continue
-        if cell("grade") != ALL_GRADES:
-            continue
-        school_code = cell("school")
-        # School code 0000000 is a district or county total, not a school.
-        if not school_code or school_code == "0000000":
-            continue
-        test = cell("test")
-        if test not in (TEST_ELA, TEST_MATH):
-            continue
-        met = to_float(cell("met"))
-        tested = to_int(cell("tested"))
-        if met is None or not tested:
-            continue
-
-        cds = f"{cell('county')}{cell('district').zfill(5)}{school_code.zfill(7)}"
-        entry = scores.setdefault(cds, {})
-        entry["ela" if test == TEST_ELA else "math"] = met
-        entry["tested"] = max(entry.get("tested", 0), tested)
-
-    print(f"  CAASPP: {rows:,} rows read, {len(scores):,} LA County schools with scores")
-    if not scores:
-        raise SchoolDataError(
-            "no LA County school scores were found. The file may be a different "
-            "year's layout - check the first few lines and add the column names "
-            "to CAASPP_COLUMNS."
-        )
-    return scores
+def yes(value):
+    return str(value or "").strip().lower() in ("yes", "y", "true", "1", "x")
 
 
-# --- Ratings -----------------------------------------------------------------
+def column_map(fieldnames):
+    """Which of your columns is which, tolerant of case and a trailing '?'."""
+    flat = {}
+    for original in fieldnames or []:
+        key = re.sub(r"\s+", " ", (original or "").strip().lower().rstrip("?").strip())
+        flat.setdefault(key, original)
+    found = {}
+    for field, candidates in RATING_COLUMNS.items():
+        for candidate in candidates:
+            if candidate in flat:
+                found[field] = flat[candidate]
+                break
+    return found
 
 
-def decile_ratings(values):
-    """Rank values into 1-10, where 10 is best.
-
-    Ties share a rating. Written against the sorted position rather than the
-    value range on purpose: proficiency percentages bunch up, and cutting the
-    RANGE into ten would put most schools in three bands.
-    """
-    if not values:
-        return {}
-    ordered = sorted(values.items(), key=lambda pair: pair[1])
-    total = len(ordered)
-    ratings = {}
-    previous_value = None
-    previous_rating = None
-    for position, (key, value) in enumerate(ordered):
-        if previous_value is not None and abs(value - previous_value) < 1e-9:
-            ratings[key] = previous_rating
-            continue
-        rating = int(position * 10 / total) + 1
-        rating = min(10, max(1, rating))
-        ratings[key] = rating
-        previous_value = value
-        previous_rating = rating
-    return ratings
-
-
-def read_overrides():
-    """Your own ratings, which beat anything computed here."""
-    overrides = {}
-    if not os.path.isdir(OVERRIDE_DIR):
-        return overrides
-    for filename in sorted(os.listdir(OVERRIDE_DIR)):
+def read_ratings(folder=None):
+    """Every row of every CSV in raw-data/school-ratings/, with its line number
+    kept so the report can point you straight back at it."""
+    folder = folder or RATINGS_DIR
+    rows = []
+    if not os.path.isdir(folder):
+        return rows
+    for filename in sorted(os.listdir(folder)):
         if not filename.lower().endswith(".csv"):
             continue
-        path = os.path.join(OVERRIDE_DIR, filename)
-        with open(path, newline="", encoding="utf-8-sig") as handle:
-            reader = csv.DictReader(handle)
-            if not reader.fieldnames:
-                continue
-            lowered = {name.lower().strip(): name for name in reader.fieldnames}
-            name_key = lowered.get("school") or lowered.get("name")
-            rating_key = lowered.get("rating") or lowered.get("greatschools")
-            district_key = lowered.get("district")
-            if not name_key or not rating_key:
-                print(f"  Overrides: {filename} has no school/rating columns - skipped")
-                continue
-            count = 0
-            for row in reader:
-                rating = to_float(row.get(rating_key))
-                name = (row.get(name_key) or "").strip()
-                if rating is None or not name:
-                    continue
-                key = normalise_name(name)
-                district = normalise_name(row.get(district_key) or "") if district_key else ""
-                overrides[(key, district)] = round(rating, 1)
-                count += 1
-            print(f"  Overrides: {count} ratings from {filename}")
-    return overrides
+        path = os.path.join(folder, filename)
+        with open(path, "rb") as handle:
+            data = handle.read()
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            # Excel's plain "CSV (Comma delimited)" on Windows writes cp1252,
+            # not UTF-8, and the first accented school name would stop the run.
+            text = data.decode("cp1252", errors="replace")
+            print(f"  {filename}: not UTF-8, read as Windows-1252 (Excel's default)")
+        reader = csv.DictReader(io.StringIO(text, newline=""))
+        columns = column_map(reader.fieldnames)
+        missing = [c for c in REQUIRED_RATING_COLUMNS if c not in columns]
+        if missing:
+            print(
+                f"  {filename}: no {' or '.join(missing)} column - skipped. "
+                f"It has: {', '.join(reader.fieldnames or [])}"
+            )
+            continue
+        has_levels = any(level in columns for level in LEVELS)
+        count = 0
+        for line, raw in enumerate(reader, start=2):  # line 1 is the header
+            def cell(field):
+                column = columns.get(field)
+                return (raw.get(column) or "").strip() if column else ""
+
+            if not any((value or "").strip() for value in raw.values() if isinstance(value, str)):
+                continue  # a blank line at the end of a spreadsheet export
+            rows.append({
+                "file": filename,
+                "line": line,
+                "name": cell("name"),
+                "address": cell("address"),
+                "city": cell("city"),
+                "zip": zip5(cell("zip")),
+                "levels": [level for level in LEVELS if yes(cell(level))] if has_levels else None,
+                "rating_text": cell("rating"),
+                "rating": to_float(cell("rating")),
+                "cds": re.sub(r"\D", "", cell("cds")),
+                "nces": re.sub(r"\D", "", cell("nces")),
+            })
+            count += 1
+        print(f"  {filename}: {count} rows")
+    return rows
 
 
-def match_override(school, overrides):
-    if not overrides:
+# --- Matching a row to a state record -----------------------------------------
+
+DIRECTIONS = {"north": "n", "south": "s", "east": "e", "west": "w",
+              "northeast": "ne", "northwest": "nw", "southeast": "se", "southwest": "sw"}
+SUFFIXES = {
+    "street": "st", "avenue": "ave", "av": "ave", "road": "rd", "drive": "dr",
+    "boulevard": "blvd", "blv": "blvd", "lane": "ln", "place": "pl", "court": "ct",
+    "circle": "cir", "highway": "hwy", "parkway": "pkwy", "terrace": "ter",
+    "way": "way", "trail": "trl", "square": "sq",
+}
+SUFFIX_FORMS = set(SUFFIXES.values())
+UNIT_WORDS = {"suite", "ste", "unit", "apt", "room", "rm", "bldg", "building"}
+
+
+def zip5(value):
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits[:5] if len(digits) >= 5 else ""
+
+
+def address_key(street):
+    """(house number, set of street-name words) - the parts two spellings of
+    one address agree on. "3015 West Sacramento St." and "3015 W. Sacramento
+    Street" both become ("3015", {"sacramento"})."""
+    text = re.sub(r"[.,]", " ", (street or "").lower())
+    text = re.sub(r"#\s*\S+", " ", text)
+    tokens = text.split()
+    for position, token in enumerate(tokens):
+        if token in UNIT_WORDS:
+            tokens = tokens[:position]
+            break
+    if not tokens:
         return None
-    key = normalise_name(school["name"])
-    district = normalise_name(school["district"])
-    return overrides.get((key, district)) or overrides.get((key, ""))
+    number = re.match(r"\d+", tokens[0])
+    if not number:
+        return None
+    core = set()
+    for token in tokens[1:]:
+        token = DIRECTIONS.get(token, SUFFIXES.get(token, token))
+        if token in DIRECTIONS.values() or token in SUFFIX_FORMS:
+            continue
+        core.add(token)
+    return number.group(0), core
+
+
+def same_address(left, right):
+    if not left or not right or left[0] != right[0]:
+        return False
+    # The number matched. The street must share a word, unless one side is
+    # just a number, which cannot contradict anything.
+    return not left[1] or not right[1] or bool(left[1] & right[1])
+
+
+NAME_SYNONYMS = {"el": "elementary", "elem": "elementary", "es": "elementary",
+                 "ms": "middle", "hs": "high", "sr": "senior", "jr": "junior",
+                 "acad": "academy", "ctr": "center", "centre": "center", "&": "and"}
+NAME_STOP = {"school", "the", "of", "and", "a"}
+
+
+def name_tokens(name):
+    """Unlike normalise_name, this KEEPS the level words: they are exactly what
+    tells Eagle Rock Elementary from Eagle Rock High."""
+    text = re.sub(r"[^a-z0-9& ]+", " ", (name or "").lower())
+    tokens = {NAME_SYNONYMS.get(token, token) for token in text.split()}
+    return tokens - NAME_STOP
+
+
+def name_similarity(left, right):
+    a, b = name_tokens(left), name_tokens(right)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+class Directory:
+    """The state records, indexed the ways a row can be matched."""
+
+    def __init__(self, schools):
+        self.schools = schools
+        self.by_zip = {}
+        self.by_nces = {}
+        self.tokens = {cds: name_tokens(school["name"]) for cds, school in schools.items()}
+        for cds, school in schools.items():
+            self.by_zip.setdefault(school.get("zip5", ""), []).append(cds)
+            if school.get("nces"):
+                self.by_nces[school["nces"]] = cds
+
+    def best_by_name(self, row, candidates):
+        scored = sorted(
+            ((name_similarity(row["name"], self.schools[cds]["name"]), cds) for cds in candidates),
+            reverse=True,
+        )
+        if not scored:
+            return None, 0.0, 0.0
+        best_score, best = scored[0]
+        second = scored[1][0] if len(scored) > 1 else 0.0
+        return best, best_score, second
+
+
+# How much better the best name has to be than the runner-up before it is
+# believed. Below this, two candidates are too close to call and the row is
+# reported as ambiguous rather than guessed.
+NAME_MARGIN = 0.15
+NAME_ALONE = 0.6        # a name match with no address behind it must be strong
+NAME_TIEBREAK = 0.25    # breaking a tie between schools at one address is easier
+
+
+def match_row(row, directory):
+    """Returns (cds or None, how, note)."""
+    schools = directory.schools
+    if row["cds"]:
+        if row["cds"] in schools:
+            return row["cds"], "your CDS code", ""
+        return None, "", f"CDS code {row['cds']} is not an active LA County school"
+    if row["nces"]:
+        cds = directory.by_nces.get(row["nces"].zfill(12))
+        if cds:
+            return cds, "your NCES id", ""
+        return None, "", f"NCES id {row['nces']} is not an active LA County school"
+
+    in_zip = directory.by_zip.get(row["zip"], []) if row["zip"] else []
+    key = address_key(row["address"])
+    at_address = [cds for cds in in_zip if same_address(key, schools[cds].get("address_key"))]
+
+    if len(at_address) == 1:
+        return at_address[0], "address + zip", ""
+    if len(at_address) > 1:
+        best, score, second = directory.best_by_name(row, at_address)
+        if score >= NAME_TIEBREAK and score - second >= NAME_MARGIN:
+            return best, "address + zip, name broke the tie", ""
+        names = "; ".join(schools[cds]["name"] for cds in at_address)
+        return None, "", f"ambiguous: {len(at_address)} schools at this address ({names}) - add a CDS column"
+
+    if in_zip:
+        best, score, second = directory.best_by_name(row, in_zip)
+        if score >= NAME_ALONE and score - second >= NAME_MARGIN:
+            return best, "name + zip (address differs)", f"state address: {schools[best]['address']}"
+
+    # Last resort: an identical name in the same city, anywhere in the county.
+    city = (row["city"] or "").strip().lower()
+    wanted = name_tokens(row["name"])
+    same = [
+        cds for cds, school in schools.items()
+        if wanted and directory.tokens[cds] == wanted
+        and (not city or school.get("city", "").lower() == city)
+    ]
+    if len(same) == 1:
+        return same[0], "name + city", f"state address: {schools[same[0]]['address']}"
+    if len(same) > 1:
+        return None, "", f"ambiguous: {len(same)} schools called this in {row['city'] or 'the county'}"
+
+    if not row["zip"]:
+        return None, "", "no zip, and the name alone did not identify one school"
+    return None, "", "no active LA County school at this address or with this name in this zip"
 
 
 # --- Assembly ----------------------------------------------------------------
 
 
-def build(directory, scores, overrides):
-    # Join scores onto the directory, and work out the proficiency each
-    # school's rating will be ranked on.
-    proficiency = {}
-    for cds, school in directory.items():
-        entry = scores.get(cds)
-        if not entry:
-            continue
-        parts = [entry[key] for key in ("ela", "math") if key in entry]
-        if not parts or (entry.get("tested") or 0) < MIN_TESTED:
-            continue
-        school["ela"] = round(entry.get("ela"), 1) if "ela" in entry else None
-        school["math"] = round(entry.get("math"), 1) if "math" in entry else None
-        school["tested"] = entry.get("tested")
-        proficiency[cds] = sum(parts) / len(parts)
+def build(directory_schools, rows):
+    directory = Directory(directory_schools)
+    ratings = {}          # cds -> {level: rating}
+    claimed = {}          # cds -> the row that took it first
+    report = []
+    stats = {"rows": len(rows), "matched": 0, "unmatched": 0, "ambiguous": 0,
+             "duplicate": 0, "invalid": 0, "matchedBy": {}}
 
-    # Rank within level. A school spanning two levels is ranked in each, so a
-    # K-8 gets an elementary rating and a middle rating that are both fair
-    # against their own peers.
-    ratings_by_level = {}
-    unranked_levels = []
-    for level in ("elementary", "middle", "high"):
-        subset = {
-            cds: value
-            for cds, value in proficiency.items()
-            if level in directory[cds]["levels"]
+    for row in rows:
+        entry = {
+            "file": row["file"], "line": row["line"], "school": row["name"],
+            "address": row["address"], "zip": row["zip"], "rating": row["rating_text"],
+            "outcome": "", "matched_by": "", "cds": "", "nces": "",
+            "state_name": "", "state_address": "", "levels": "", "note": "",
         }
-        if len(subset) < MIN_SCHOOLS_FOR_RANKING:
-            ratings_by_level[level] = {}
-            if subset:
-                unranked_levels.append(f"{level} ({len(subset)} schools)")
+        report.append(entry)
+
+        rating = row["rating"]
+        if rating is None or not 1 <= rating <= 10:
+            entry["outcome"] = "invalid"
+            entry["note"] = f"rating {row['rating_text']!r} is not a number from 1 to 10"
+            stats["invalid"] += 1
             continue
-        ratings_by_level[level] = decile_ratings(subset)
+
+        cds, how, note = match_row(row, directory)
+        entry["note"] = note
+        if not cds:
+            outcome = "ambiguous" if note.startswith("ambiguous") else "unmatched"
+            entry["outcome"] = outcome
+            stats[outcome] += 1
+            continue
+
+        school = directory_schools[cds]
+        entry.update(cds=cds, nces=school.get("nces") or "", state_name=school["name"],
+                     state_address=school["address"])
+
+        if cds in claimed:
+            first = claimed[cds]
+            entry["outcome"] = "duplicate"
+            entry["note"] = (
+                f"same state school as {first['file']} line {first['line']} ({first['name']}); "
+                "the first row's rating is used"
+            )
+            stats["duplicate"] += 1
+            continue
+        claimed[cds] = row
+
+        # Your level columns decide which switches the rating counts under.
+        # With no level columns at all, the state's grade span decides.
+        levels = row["levels"] if row["levels"] is not None else school["levels"]
+        if not levels:
+            levels = school["levels"]
+            entry["note"] = "; ".join(filter(None, [entry["note"], "no level marked Yes - used the state's grade span"]))
+        stated = set(school["levels"])
+        extra = [level for level in levels if level not in stated]
+        if extra:
+            entry["note"] = "; ".join(filter(None, [
+                entry["note"],
+                f"you marked {', '.join(extra)}; the state lists grades {school['grades'] or 'unknown'} - yours is used",
+            ]))
+        ratings[cds] = {level: round(rating, 1) for level in levels}
+        entry["levels"] = " ".join(levels)
+        entry["outcome"] = "matched"
+        entry["matched_by"] = how
+        stats["matched"] += 1
+        stats["matchedBy"][how] = stats["matchedBy"].get(how, 0) + 1
 
     out = {}
     by_nces = {}
     by_name = {}
     counts = {"elementary": 0, "middle": 0, "high": 0}
-    rated = 0
-    overridden = 0
-
-    for cds, school in directory.items():
-        levels = school["levels"]
-        ratings = {}
-        for level in levels:
-            value = ratings_by_level.get(level, {}).get(cds)
-            if value is not None:
-                ratings[level] = value
-
-        override = match_override(school, overrides)
-        if override is not None:
-            for level in levels:
-                ratings[level] = override
-            overridden += 1
-
+    for cds, school in directory_schools.items():
+        levels = list(school["levels"])
         record = {
             "name": school["name"],
             "district": school["district"],
@@ -601,40 +670,64 @@ def build(directory, scores, overrides):
             record["charter"] = True
         if school.get("nces"):
             record["nces"] = school["nces"]
-        if ratings:
-            record["ratings"] = ratings
-            rated += 1
-        if override is not None:
-            record["ratingSource"] = "yours"
-        for key in ("ela", "math", "tested"):
-            if school.get(key) is not None:
-                record[key] = school[key]
-
+            by_nces[school["nces"]] = cds
+        if cds in ratings:
+            record["ratings"] = ratings[cds]
+            record["ratingSource"] = "greatschools"
+            for level in ratings[cds]:
+                if level not in levels:
+                    levels.append(level)
         out[cds] = record
         for level in levels:
             counts[level] = counts.get(level, 0) + 1
-        if school.get("nces"):
-            by_nces[school["nces"]] = cds
         key = normalise_name(school["name"])
         if key:
-            # A name collision keeps the first; the NCES index is the reliable
-            # join and this is only the fallback.
-            by_name.setdefault(key, cds)
+            # A LIST, because names collide: the page picks among them by level
+            # and by distance, and gives up rather than guess when it cannot.
+            by_name.setdefault(key, []).append(cds)
 
-    return out, by_nces, by_name, counts, rated, overridden, unranked_levels
+    return out, by_nces, by_name, counts, stats, report
+
+
+REPORT_COLUMNS = ["file", "line", "outcome", "school", "address", "zip", "rating", "levels",
+                  "matched_by", "state_name", "state_address", "cds", "nces", "note"]
+
+
+def write_report(report, path):
+    # Problems first: the rows you need to act on should not be at line 900.
+    order = {"unmatched": 0, "ambiguous": 1, "invalid": 2, "duplicate": 3, "matched": 4}
+    ordered = sorted(report, key=lambda e: (order.get(e["outcome"], 9), e["file"], e["line"]))
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=REPORT_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(ordered)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", default=DEFAULT_OUT, help="Output JSON path")
-    parser.add_argument("--caaspp", default=None, help="Local CAASPP research file")
     parser.add_argument("--directory", default=None, help="Local CDE pubschls.txt")
+    parser.add_argument("--ratings", default=None, help=f"Folder of rating CSVs (default {RATINGS_DIR})")
+    parser.add_argument("--report", default=REPORT_PATH, help="Where to write the match report")
     args = parser.parse_args(argv)
+    ratings_dir = args.ratings or RATINGS_DIR
 
-    print("Building LA County school ratings.\n")
+    print("Attaching your GreatSchools ratings to LA County schools.\n")
+
+    print(f"Your ratings ({ratings_dir}/):")
+    rows = read_ratings(ratings_dir)
+    if not rows:
+        print(
+            f"\nNo ratings found. Put your table in {ratings_dir}/ as a CSV with at least\n"
+            "'School Name' and 'GreatSchools Rating' columns (Address, Zip and the\n"
+            "Elementary / Middle? / High? columns make the match reliable), then run this again.",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
-        print("Directory (CA Dept of Education public schools):")
+        print("\nDirectory (CA Dept of Education public schools):")
         local_directory = args.directory or (
             DIRECTORY_LOCAL if os.path.exists(DIRECTORY_LOCAL) else None
         )
@@ -645,36 +738,19 @@ def main(argv=None):
         else:
             directory_data = download(DIRECTORY_URLS, "directory")
         directory = read_directory(directory_data)
-
-        print("\nTest scores (CAASPP Smarter Balanced):")
-        local_caaspp = args.caaspp or (CAASPP_LOCAL if os.path.exists(CAASPP_LOCAL) else None)
-        if local_caaspp:
-            print(f"  Using local file {local_caaspp}")
-            with open(local_caaspp, "rb") as handle:
-                caaspp_data = handle.read()
-        else:
-            caaspp_data = download(CAASPP_URLS, "CAASPP research file")
-        scores = read_caaspp(caaspp_data)
-
-        print("\nYour own ratings:")
-        overrides = read_overrides()
-        if not overrides:
-            print(f"  None found. Drop CSVs in {OVERRIDE_DIR}/ to override any of these.")
-
     except SchoolDataError as err:
         print(f"\nCould not build the school data: {err}", file=sys.stderr)
         print(
-            "\nTo fetch the files by hand:\n"
-            f"  1. Directory: https://www.cde.ca.gov/ds/si/ds/pubschls.asp\n"
-            f"     Save the tab-delimited file as {DIRECTORY_LOCAL}\n"
-            f"  2. Test scores: https://caaspp-elpac.ets.org/caaspp/ResearchFileListSB\n"
-            f"     Save the 'All Student Groups' research file as {CAASPP_LOCAL}\n"
-            "  Then run this script again.",
+            "\nTo fetch the directory by hand:\n"
+            f"  https://www.cde.ca.gov/ds/si/ds/pubschls.asp\n"
+            f"  Save the tab-delimited file as {DIRECTORY_LOCAL}, then run this script again.",
             file=sys.stderr,
         )
         return 1
 
-    schools, by_nces, by_name, counts, rated, overridden, unranked = build(directory, scores, overrides)
+    schools, by_nces, by_name, counts, stats, report = build(directory, rows)
+    rated = sum(1 for s in schools.values() if "ratings" in s)
+    files = sorted({row["file"] for row in rows})
 
     payload = {
         "meta": {
@@ -682,19 +758,16 @@ def main(argv=None):
             "schemaVersion": SCHEMA_VERSION,
             "county": "Los Angeles",
             "ratingBasis": (
-                "Decile of CAASPP percent met-or-exceeded (ELA and Math averaged), "
-                "ranked against other LA County schools at the same level. 10 is best. "
-                "This is not the GreatSchools rating."
+                "GreatSchools rating (1-10), from your own table in raw-data/school-ratings/ "
+                f"({', '.join(files)}). Nothing is computed; a school the table does not list is unrated."
             ),
-            "minTested": MIN_TESTED,
-            "minSchoolsForRanking": MIN_SCHOOLS_FOR_RANKING,
-            "unrankedLevels": unranked,
+            "ratingFiles": files,
             "counts": counts,
             "rated": rated,
-            "overridden": overridden,
+            "match": stats,
             "sources": [
-                "CA Dept of Education, Public Schools and Districts (pubschls)",
-                "CAASPP Smarter Balanced research file, all student groups",
+                "Your table: " + ", ".join(files),
+                "CA Dept of Education, Public Schools and Districts (pubschls) - to place each row",
             ],
         },
         "schools": schools,
@@ -705,20 +778,22 @@ def main(argv=None):
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, separators=(",", ":"))
+    write_report(report, args.report)
 
     size = os.path.getsize(args.out)
     print(f"\nWrote {args.out} ({size / 1024:.0f} KB)")
-    print(f"  {len(schools):,} schools: {counts['elementary']:,} elementary, "
-          f"{counts['middle']:,} middle, {counts['high']:,} high")
-    print(f"  {rated:,} carry a rating; {len(schools) - rated:,} have too few test-takers "
-          f"(under {MIN_TESTED}) or no scores")
-    if overridden:
-        print(f"  {overridden:,} use YOUR rating instead of the computed one")
-    if unranked:
-        print(
-            f"  No ratings for {', '.join(unranked)} - too few schools to rank into "
-            f"deciles (need {MIN_SCHOOLS_FOR_RANKING})"
-        )
+    print(f"  {len(schools):,} active schools: {counts['elementary']:,} elementary, "
+          f"{counts['middle']:,} middle, {counts['high']:,} high; {rated:,} carry your rating")
+    print(f"\nYour {stats['rows']:,} rows:")
+    print(f"  {stats['matched']:,} matched")
+    for how, count in sorted(stats["matchedBy"].items(), key=lambda pair: -pair[1]):
+        print(f"      {count:,} by {how}")
+    for outcome in ("unmatched", "ambiguous", "duplicate", "invalid"):
+        if stats[outcome]:
+            print(f"  {stats[outcome]:,} {outcome}")
+    print(f"\nEvery row, and why: {args.report}")
+    if stats["unmatched"] or stats["ambiguous"]:
+        print("  To fix a row, add a CDS column to your table and put the school's 14-digit code in it.")
     print("\nReload the page. The three school switches will use this file.")
     return 0
 

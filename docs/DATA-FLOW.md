@@ -65,8 +65,8 @@ Three ways data arrives, and the difference matters:
 | School zones | NCES SABS 2015-16 | Live | ArcGIS REST | NCES takes it offline |
 | School zones (fallback) | LA City GeoHub | Live | ArcGIS REST | — |
 | School dots | CA Dept of Education | Live | ArcGIS REST | — |
-| School ratings | CDE CAASPP | Built — `fetch-school-data.py` | Download + compute | CDE moves the file |
-| Your school ratings | You | Yours — `raw-data/school-ratings/*.csv` | Static CSV | — |
+| School ratings (GreatSchools) | You | Yours — `raw-data/school-ratings/*.csv`, attached by `fetch-school-data.py` | Static CSV | — |
+| School directory (to place your rows) | CA Dept of Education | Built — `fetch-school-data.py` | Download | CDE moves the file |
 | Fire hazard | CAL FIRE | Live | ArcGIS REST | — |
 | Flood | FEMA NFHL | Live | ArcGIS REST | — |
 | Seismic | CA Geological Survey | Live | ArcGIS REST | — |
@@ -107,7 +107,7 @@ Realistically, check these when something looks off — not on a schedule.
 
 **Yearly:**
 - Re-run `fetch-blockgroup-data.py` when new ACS data lands (usually December).
-- Re-run `fetch-school-data.py` when new CAASPP results land (usually autumn).
+- Re-run `fetch-school-data.py` whenever you update your GreatSchools table.
 - Re-download the Assessor roll and re-run `fetch-parcel-data.py`.
 
 **When you get new listings:**

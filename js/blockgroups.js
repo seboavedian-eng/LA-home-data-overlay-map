@@ -294,6 +294,10 @@ const BG_CONFIG = {
     // candidate list rather than by exact key.
     FIELDS: {
       name: ["SchoolName", "School", "NAME", "SCHOOL_NAME", "Name"],
+      // The state's 14-digit school code. It is how a dot finds its rating:
+      // names collide (Eagle Rock Elementary and Eagle Rock High are both
+      // LAUSD), codes do not.
+      cds: ["CDSCode", "CDS_CODE", "CDSCODE", "CDS", "cds_code"],
       district: ["District", "DistrictName", "DIST_NAME", "LEA_NAME"],
       grades: ["GSoffered", "GradeSpan", "GS_offered", "Grades", "GRADE_SPAN", "GRADES"],
       level: ["SOCType", "SchoolType", "Type", "LEVEL", "SCHOOL_LEVEL", "GradeLevel"],
@@ -383,9 +387,13 @@ const BG_CONFIG = {
     "0622710": { name: "Los Angeles Unified", url: "https://rsi.lausd.net/ResidentSchoolIdentifier/" },
   },
 
-  // Ratings, built on your machine by scripts/fetch-school-data.py.
+  // Your GreatSchools ratings, attached to state school records on your
+  // machine by scripts/fetch-school-data.py. Schema 2 is the first built
+  // from your table alone; a schema 1 file holds ratings computed from test
+  // scores and is ignored rather than shown as though it were yours.
   SCHOOL_RATINGS_URL: "js/data/schools-la-county.json",
-  SCHOOL_RATINGS_SCHEMA: 1,
+  SCHOOL_RATINGS_SCHEMA: 2,
+  SCHOOL_MATCH_REPORT: "raw-data/school-ratings-match-report.csv",
 
   // Clicking a school dot outlines the district that school sits in. The
   // polygon is fetched for that one point, so nothing is downloaded until
@@ -3532,68 +3540,38 @@ const BlockGroupApp = (() => {
     return SCHOOL_KEY_LEVELS[key] || null;
   }
 
-  // What the rating IS, said in full wherever it appears. The one thing this
-  // must never do is read as though it were the GreatSchools number.
+  // What the rating IS, said in full wherever it appears.
   function ratingTip(level) {
     const meta = (schoolRatings && schoolRatings.meta) || {};
+    const files = (meta.ratingFiles || []).join(", ") || "raw-data/school-ratings/";
     return (
-      `A 1-10 rank of this school against other LA County ${level} schools, built from CAASPP ` +
-      "results - the state's own tests - as the percentage of pupils meeting or exceeding the standard in " +
-      "English and Maths, averaged. 10 is the top tenth of the county. " +
-      "IT IS NOT THE GREATSCHOOLS RATING: GreatSchools has no free feed, so this is computed from the public " +
-      "test data their own test-score rating mostly rests on, and the two will not agree exactly. " +
-      "Test scores track household income more tightly than they track teaching, so read this as a summary of " +
-      "measured outcomes rather than of how good the school is." +
-      (meta.generated ? ` Built ${meta.generated}.` : "")
+      `The GreatSchools rating (1-10) from your own table, ${files}. It is the only source of school ratings ` +
+      `here: nothing is computed, and a school your table does not list has no rating. Your table's ` +
+      `Elementary / Middle / High columns decide which switch it counts under - this is its ${level} rating. ` +
+      "It was matched to this school by address and zip; every row's match is in " +
+      `${BG_CONFIG.SCHOOL_MATCH_REPORT}.` +
+      (meta.generated ? ` Attached ${meta.generated}.` : "")
     );
   }
 
   function ratingRows(props, fields, level) {
-    const record = schoolRecordFor(props, fields);
-    if (!record) return "";
-    const rating = record.ratings && record.ratings[level];
-    const yours = record.ratingSource === "yours";
-    const rows = [
-      cardRow(
-        "Rating",
-        typeof rating === "number" ? `${rating}/10` : null,
-        yours
-          ? "The rating you supplied in raw-data/school-ratings/, which overrides the computed one."
-          : ratingTip(level),
-        { key: true }
-      ),
-    ];
-    if (!yours && record.ela != null) {
-      rows.push(
-        cardRow(
-          "English",
-          `${record.ela}% met`,
-          "Percentage of pupils meeting or exceeding the state standard in English language arts, from CAASPP. " +
-            "This is one of the two numbers the rating above is computed from."
-        )
-      );
-    }
-    if (!yours && record.math != null) {
-      rows.push(
-        cardRow(
-          "Maths",
-          `${record.math}% met`,
-          "Percentage of pupils meeting or exceeding the state standard in mathematics, from CAASPP. " +
-            "The other half of the rating above."
-        )
-      );
-    }
-    if (!yours && record.tested != null) {
-      rows.push(
-        cardRow(
-          "Pupils tested",
-          Utils.fmtNumber(record.tested),
-          "How many pupils sat the tests behind those percentages. A rating resting on a small number moves " +
-            "a lot year to year; under 25 no rating is given at all."
-        )
-      );
-    }
-    return rows.join("");
+    // No ratings file at all: the log already says so, and a "not in your
+    // table" on every popup would blame a table that was never read.
+    if (!schoolRatings || schoolRatings.missing) return "";
+    const record = schoolRecordFor(props, fields, level);
+    const rating = record && record.ratings && record.ratings[level];
+    return cardRow(
+      "GreatSchools",
+      typeof rating === "number" ? `${rating}/10` : '<span class="dim">not in your table</span>',
+      typeof rating === "number"
+        ? ratingTip(level)
+        : `No ${level} rating: ${
+            record
+              ? "your table has no row matched to this school at this level."
+              : "this could not be tied to a current state school record - closed or renumbered since the boundary was drawn, or a name the page could not pin to one school."
+          } A rating filter hides it. The match report, ${BG_CONFIG.SCHOOL_MATCH_REPORT}, lists every row that did not match.`,
+      { key: true }
+    );
   }
 
   // The popup for an attendance ZONE, as opposed to a school dot. Its whole
@@ -3754,19 +3732,32 @@ const BlockGroupApp = (() => {
     schoolRatingsLoad = (async () => {
       try {
         const data = await Utils.fetchJSON(BG_CONFIG.SCHOOL_RATINGS_URL, { timeoutMs: 20000 });
-        schoolRatings = data;
         const meta = data.meta || {};
+        if ((Number(meta.schemaVersion) || 1) < BG_CONFIG.SCHOOL_RATINGS_SCHEMA) {
+          // An old file's ratings were computed from test scores. Showing them
+          // would put a number that is not GreatSchools' where yours belong.
+          throw new Error(
+            `the ratings file is from an older build (schema ${meta.schemaVersion || 1}, expected ` +
+              `${BG_CONFIG.SCHOOL_RATINGS_SCHEMA}) and holds computed ratings, not your GreatSchools table`
+          );
+        }
+        schoolRatings = data;
+        const match = meta.match || {};
         Utils.logStatus(
           "schools",
           "ok",
-          `School ratings: ${Object.keys(data.schools || {}).length} schools, ` +
-            `${meta.rated || 0} rated, built ${meta.generated || "unknown"}.`
+          `School ratings: ${meta.rated || 0} of ${Object.keys(data.schools || {}).length} schools carry your ` +
+            `GreatSchools rating, from ${(meta.ratingFiles || []).join(", ") || "your table"}, attached ${meta.generated || "on an unknown date"}.`
         );
-        if ((meta.unrankedLevels || []).length) {
+        const problems = ["unmatched", "ambiguous", "duplicate", "invalid"]
+          .filter((k) => match[k])
+          .map((k) => `${match[k]} ${k}`);
+        if (problems.length) {
           Utils.logStatus(
             "schools",
             "warn",
-            `No ratings for ${meta.unrankedLevels.join(", ")} - too few schools with scores to rank.`
+            `Of your ${match.rows} rows, ${match.matched || 0} matched a school; ${problems.join(", ")}. ` +
+              `Each is listed with its reason in ${BG_CONFIG.SCHOOL_MATCH_REPORT}.`
           );
         }
       } catch (err) {
@@ -3774,8 +3765,8 @@ const BlockGroupApp = (() => {
         Utils.logStatus(
           "schools",
           "info",
-          `No school ratings file (${err.message}). Dots and boundaries still work; ` +
-            `run ${ratingsCommand()} to add ratings and the rating filters.`
+          `No school ratings (${err.message}). Dots and boundaries still work; put your GreatSchools table in ` +
+            `raw-data/school-ratings/ and run ${ratingsCommand()} to add ratings and the rating filters.`
         );
       }
       return schoolRatings;
@@ -3804,27 +3795,47 @@ const BlockGroupApp = (() => {
       .trim();
   }
 
-  // Find the rating record for a boundary polygon or a school dot. The NCES
-  // id is the reliable join - SABS carries it and the build script indexes
-  // it - and the flattened name is the fallback for the point layers, which
-  // have no NCES id at all.
-  function schoolRecordFor(props, fields) {
+  // Find the record for a boundary polygon or a school dot, by the strongest
+  // key it carries: the NCES id (zones), then the state CDS code (dots), then
+  // the flattened name. Names collide, so the name is only believed when it
+  // leaves one school at this level - nearest to the dot if there are more -
+  // and otherwise the answer is "unknown", never a guess.
+  const NAME_MATCH_MAX_METRES = 800;
+
+  function schoolRecordFor(props, fields, level) {
     if (!schoolRatings || !schoolRatings.schools) return null;
+    const schools = schoolRatings.schools;
     const nces = Utils.pickField(props, fields.nces || []);
     if (nces) {
       const cds = schoolRatings.byNces[String(nces).trim()];
-      if (cds && schoolRatings.schools[cds]) return schoolRatings.schools[cds];
+      if (cds && schools[cds]) return schools[cds];
+    }
+    const code = Utils.pickField(props, fields.cds || []);
+    if (code) {
+      const cds = String(code).replace(/\D/g, "");
+      if (schools[cds]) return schools[cds];
     }
     const name = Utils.pickField(props, fields.name || []);
-    if (name) {
-      const cds = schoolRatings.byName[normaliseSchoolName(name)];
-      if (cds && schoolRatings.schools[cds]) return schoolRatings.schools[cds];
+    if (!name) return null;
+    const listed = schoolRatings.byName[normaliseSchoolName(name)];
+    let candidates = (Array.isArray(listed) ? listed : listed ? [listed] : []).filter((cds) => schools[cds]);
+    if (level) {
+      const atLevel = candidates.filter((cds) => (schools[cds].levels || []).includes(level));
+      if (atLevel.length) candidates = atLevel;
+    }
+    if (candidates.length === 1) return schools[candidates[0]];
+    if (candidates.length > 1 && Number.isFinite(props.__lat) && Number.isFinite(props.__lon)) {
+      const here = L.latLng(props.__lat, props.__lon);
+      const near = candidates
+        .map((cds) => ({ cds, m: Number.isFinite(schools[cds].lat) ? here.distanceTo([schools[cds].lat, schools[cds].lon]) : Infinity }))
+        .sort((a, b) => a.m - b.m);
+      if (near[0].m <= NAME_MATCH_MAX_METRES) return schools[near[0].cds];
     }
     return null;
   }
 
   function ratingOf(props, fields, level) {
-    const record = schoolRecordFor(props, fields);
+    const record = schoolRecordFor(props, fields, level);
     if (!record || !record.ratings) return null;
     const value = record.ratings[level];
     return typeof value === "number" ? value : null;
@@ -4003,11 +4014,38 @@ const BlockGroupApp = (() => {
 
     const dots = (points.features || [])
       .filter((f) => pointLevels(f.properties).includes(level))
-      .map((f) => ({ ...f, properties: { ...f.properties, __kind: "dot", __level: level } }));
+      .map((f) => {
+        const [lon, lat] = (f.geometry && f.geometry.coordinates) || [];
+        return { ...f, properties: { ...f.properties, __kind: "dot", __level: level, __lat: lat, __lon: lon } };
+      });
 
     const collection = { type: "FeatureCollection", features: [...zones, ...dots] };
     schoolGeojson[level] = collection;
+    reportOrphanZones(level, zones);
     return collection;
+  }
+
+  // A 2015-16 zone whose school has since closed or been renumbered has no
+  // current record, so it can never carry your rating and any filter hides
+  // it. Say how many, once per level, rather than let them vanish unexplained.
+  const orphanReported = {};
+  function reportOrphanZones(level, zones) {
+    if (!schoolRatings || !schoolRatings.meta || !zones.length) return;
+    const orphans = zones.filter((f) => !schoolRecordFor(f.properties, BG_CONFIG.SCHOOL_BOUNDARIES.FIELDS, level));
+    const key = `${level}:${orphans.length}:${zones.length}`;
+    if (!orphans.length || orphanReported[level] === key) return;
+    orphanReported[level] = key;
+    const names = orphans
+      .slice(0, 5)
+      .map((f) => Utils.pickField(f.properties, BG_CONFIG.SCHOOL_BOUNDARIES.FIELDS.name) || "unnamed")
+      .join(", ");
+    Utils.logStatus(
+      "schools",
+      "warn",
+      `${orphans.length} of ${zones.length} ${level} zones in view name no current school (closed or renumbered ` +
+        `since the boundary was drawn), so they can carry no rating and a filter hides them: ${names}` +
+        `${orphans.length > 5 ? ", ..." : ""}.`
+    );
   }
 
   // Drawn features, per level. A filter change re-reads this instead of the
@@ -4094,8 +4132,8 @@ const BlockGroupApp = (() => {
     if (noRatings) {
       box.className = "hint error";
       box.textContent =
-        `No school here carries a rating, so this filter hides everything. Run ${ratingsCommand()} ` +
-        "to build the ratings file.";
+        "No school here carries a rating, so this filter hides everything. Put your GreatSchools table in " +
+        `raw-data/school-ratings/ and run ${ratingsCommand()}.`;
       return;
     }
     box.className = "hint ok";
@@ -6594,8 +6632,8 @@ const BlockGroupApp = (() => {
     ["CA school sites", "CA Dept of Education", "Every public school, with level and grade span", () => "live", "The school dots on all three school switches, and the assigned schools on the card"],
     ["SABS 2015-16", "NCES (discontinued survey)", "Attendance boundary polygons for EVERY LA County district. Collected by NCES from districts; the survey was run twice and stopped, so this is ten years old", () => "2015-16 (fixed)", "The translucent zones on the three school switches"],
     ["LAUSD boundaries", "LA City GeoHub", "LAUSD attendance zones only, same 2015 vintage. Fallback when NCES does not answer, and the point lookup behind 'assigned schools'", () => "live", "Assigned schools on the card; the zone fill when SABS is unreachable"],
-    ["CAASPP", "CA Dept of Education", "Smarter Balanced results per school: percent meeting the standard in English and Maths. Ranked into county deciles by scripts/fetch-school-data.py to make the 1-10 rating", () => metaDate(schoolRatings && schoolRatings.meta), "The school rating on every school and zone popup, and the three rating filters"],
-    ["Your ratings", "raw-data/school-ratings/", "Any CSV of school,rating you drop in - GreatSchools numbers you looked up by hand, for instance. Overrides the computed rating", () => ((schoolRatings && schoolRatings.meta && schoolRatings.meta.overridden) ? `${schoolRatings.meta.overridden} schools` : "none supplied"), "Replaces the CAASPP rating wherever it matches a school"],
+    ["Your GreatSchools table", "raw-data/school-ratings/", "Your own table of GreatSchools ratings, with each school's address, zip and levels. The ONLY source of school ratings - nothing is computed", () => ((schoolRatings && schoolRatings.meta && schoolRatings.meta.rated) ? `${schoolRatings.meta.rated} schools rated, ${metaDate(schoolRatings.meta)}` : "none supplied"), "The GreatSchools row on every school and zone popup, and the three rating filters"],
+    ["CDE school directory", "CA Dept of Education", "Every public school's address, CDS code and NCES id. Used by scripts/fetch-school-data.py only to tie each row of your table to the right dot and zone", () => metaDate(schoolRatings && schoolRatings.meta), "Which dot and which zone each of your ratings lands on"],
     ["CalEnviroScreen 4.0", "OEHHA", "Pollution burden percentile by tract", () => "live", "Pollution toggle, and the Pollution burden card rows"],
     ["FHSZ", "CAL FIRE / OSFM", "Fire hazard severity zones", () => "live", "Fire toggle and its legend"],
     ["NFHL", "FEMA", "Flood zones, 1% and 0.2% annual chance", () => "live", "Flood toggle, and the Flood card rows"],

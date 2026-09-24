@@ -91,9 +91,9 @@ stale by comparing against it.
 
 ## Don't do these
 
-- Don't scrape GreatSchools — no free API, terms forbid it. Ratings are
-  computed from CAASPP and the app says so everywhere. User CSVs in
-  `raw-data/school-ratings/` override them.
+- Don't scrape GreatSchools — no free API, terms forbid it. The user's own
+  table in `raw-data/school-ratings/` is the ONLY ratings source; nothing is
+  computed. Match rows by address + zip, never by name alone (names collide).
 - Don't hand-digitise attendance boundaries from written descriptions. One slip
   puts a house in the wrong school zone.
 - Don't commit `.env` (the API key) or anything in `js/data/` or `raw-data/`.

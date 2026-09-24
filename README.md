@@ -512,65 +512,72 @@ that always works, and the error says so.
 Without any of this, everything else is unchanged: `python -m http.server`
 still works, the paste box simply does not appear, and the status log says why.
 
-### Optional: school ratings (one script, a few minutes)
+### Optional: school ratings (your GreatSchools table, one script)
 
 The three school switches work without this - zones and dots come from the
-network. The **ratings and the three rating filters** come from a file you
-build:
+network. The **ratings and the three rating filters** come from **your own
+GreatSchools table**, and from nothing else. Nothing is computed.
+
+1. Save the table as a CSV in `raw-data/school-ratings/` (any file name; every
+   CSV in there is read). The columns it reads, by name - case and a trailing
+   `?` do not matter:
+
+   ```
+   School Name,Address,City,Zip,Elementary,Middle?,High?,GreatSchools Rating
+   Meadowlark Elementary School,3015 West Sacramento St.,Acton,93510,Yes,No,No,7
+   ```
+
+2. Run:
+
+   ```
+   python scripts/fetch-school-data.py
+   ```
+
+3. Read the summary it prints, then open
+   `raw-data/school-ratings-match-report.csv` - one line per row of your
+   table, problems first.
+
+**Why a script at all.** Your table says which school and what rating. The map
+needs to know which *dot* and which *zone* that is, and those carry the state's
+identifiers, not names. So the script downloads the CA Department of Education
+school directory and ties each of your rows to a state record:
 
 ```
-python scripts/fetch-school-data.py
+your row --(address + zip)--> CDE directory --CDS code--> the school dot
+                                            --NCES id---> the attendance zone
 ```
 
-It downloads two public files from the CA Department of Education (the school
-directory and the CAASPP test results), keeps LA County, and writes
-`js/data/schools-la-county.json`. If CDE has moved a URL the script says
-exactly which file to fetch by hand and where to put it.
+Address + zip is what makes that reliable. Names alone are not: "Eagle Rock
+Elementary" and "Eagle Rock High" are both LAUSD, and the old name matcher gave
+them one rating between them. Where two schools share a building (iLEAD Hybrid
+and iLEAD Online do), the name breaks the tie.
 
-**The rating is not the GreatSchools rating, and the app says so everywhere it
-appears.** GreatSchools has no free API; the paid tiers return bands ("above
-average") rather than a number, and their terms prohibit scraping. So this
-computes its own from the public test data their own test-score rating mostly
-rests on:
+**How a row is matched,** strongest first:
 
-> rating = decile of (ELA + Maths "percent met or exceeded standard"),
-> ranked against other **LA County** schools **at the same level**
+| Order | Match | When |
+|---|---|---|
+| 1 | Your `CDS` or `NCES` column | If you add one - it beats everything |
+| 2 | Address + zip | Nearly every row |
+| 3 | Address + zip, name breaks the tie | Two schools at one address |
+| 4 | Name + zip | The school moved; the name must be a strong match |
+| 5 | Identical name + city | No address or zip on the row |
 
-Three decisions inside that are worth knowing:
+Anything else is **not guessed**. It lands in the report as `unmatched` or
+`ambiguous` with the reason and, for ambiguous rows, the candidates. To fix one,
+add a `CDS` column and put that school's 14-digit code in it. A second row for
+a school already matched is reported as `duplicate` and the first rating kept;
+a rating that is not a number from 1 to 10 is `invalid`.
 
-- **It is a rank, not a score.** A 7 means "better than roughly 60-70% of LA
-  County elementary schools", not "70% of pupils can read".
-- **Ranked within the county, not the state.** You are choosing between LA
-  County houses; a statewide percentile compresses everything you can actually
-  buy into a narrow band.
-- **Each level is ranked separately,** and a K-8 is ranked in both - so it
-  gets an elementary rating and a middle rating, each fair against its peers.
+**Your Yes/No columns decide the levels.** High Desert School marked
+Elementary and Middle counts under both switches; a level you did not mark gets
+no rating. Where your marks and the state's grade span disagree, yours is used
+and the report notes it.
 
-Two guards stop a confident-looking wrong number: a school with fewer than 25
-test-takers gets **no** rating rather than a noisy one, and a level with fewer
-than 20 rated schools gets no ratings at all (a decile drawn from five schools
-is not a decile). The run prints both.
-
-**What this measures.** Test scores track household income more tightly than
-they track teaching. Read it as a fair summary of measured outcomes and a poor
-summary of how good the school is. Every popup says this too.
-
-#### Your own ratings win
-
-Drop a CSV in `raw-data/school-ratings/` with `school` and `rating` columns
-(add `district` to break ties between schools sharing a name):
-
-```
-school,district,rating
-Eagle Rock Elementary,Los Angeles Unified,8
-Glenoaks Elementary,Glendale Unified,9
-```
-
-Anything matching overrides the computed rating, the popup says the number is
-yours, and the test-score rows disappear because they are no longer what the
-rating rests on. This is the intended route if you want real GreatSchools
-numbers for a shortlist: look them up yourself and paste them in. Every school
-and zone popup carries a GreatSchools lookup link for that.
+**A school your table does not list has no rating,** and a rating filter hides
+it - an unrated school cannot be said to have passed. The same goes for a
+2015-16 zone whose school has since closed or been renumbered: it has no
+current state record, so it can never carry your rating. The status log counts
+and names those zones.
 
 ### Better zones for one district
 
@@ -980,15 +987,14 @@ stubbed: the probe that decides whether to offer the box at all, a bare URL
 being sent as a URL rather than as pasted text, a null field being left off the
 card instead of drawn as `$0`, and a page that is not a listing being refused.
 
-**The school ratings are tested on synthetic files.** The two CDE downloads
-cannot be reached from a test, so `tests/test_school_data.py` builds both by
-hand - which is the right shape anyway, because every interesting failure here
-is a shape failure. It asserts that a district TOTAL row is never counted as a
-school (it would shift every decile), that a K-8 lands under both levels, that
-a school with five test-takers gets no rating rather than a loud wrong one,
-and that a level with too few schools to rank yields no rating rather than a
-bottom one. That last rule exists because the test caught it: a lone middle
-school was being rated 1 of 10 purely for being alone in its pool.
+**The school ratings are tested on synthetic files.** The CDE directory
+cannot be reached from a test, and your table lives on your machine, so
+`tests/test_school_data.py` builds both - the table with your file's exact
+header and the rows from its first screen. It asserts that Eagle Rock
+Elementary and Eagle Rock High keep their own ratings, that two schools at one
+address are told apart by name, that your Yes/No columns decide the levels,
+that a school your table does not list gets no rating, and that every row -
+matched or not - reaches the report with its reason.
 
 ## Project layout
 
@@ -999,9 +1005,9 @@ css/blockgroups.css    ...its styles
 scripts/fetch-blockgroup-data.py   One-time block-group ACS fetch
 scripts/fetch-wind-data.py         One-time Global Wind Atlas GeoTIFF -> JSON grid
 scripts/fetch-parcel-data.py       One-time Assessor roll -> per-year prices and sales
-scripts/fetch-school-data.py       School directory + CAASPP -> the 1-10 ratings
+scripts/fetch-school-data.py       Your GreatSchools table + CDE directory -> ratings on dots and zones
 scripts/convert-arcgis-webmap.py   A district's own ArcGIS webmap -> local zone polygons
-raw-data/school-ratings/           Drop CSVs of school,rating here to override the computed ones
+raw-data/school-ratings/           Your GreatSchools table(s), as CSV - the only source of ratings
 scripts/listing-server.py          Serves the page AND reads listing pages for you (optional)
 .env                               Your API key for the above. Gitignored, never in js/
 raw-data/redfin-listings/          Drop Redfin CSV exports here - the page reads them directly

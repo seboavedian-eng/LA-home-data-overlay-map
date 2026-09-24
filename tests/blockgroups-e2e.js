@@ -106,7 +106,8 @@ function esriPoint(attributes, x, y) {
   return { attributes, geometry: { x, y } };
 }
 const SCHOOL_ELEM = esriPoint(
-  { SchoolName: "Spring Street Elementary", District: "Los Angeles Unified", GSoffered: "K-5", StatusType: "Active", City: "Los Angeles" },
+  // Named so it matches nothing by name: the CDS code alone must find it.
+  { SchoolName: "Spring St. Elem (Main Campus)", CDSCode: "19000000000001", District: "Los Angeles Unified", GSoffered: "K-5", StatusType: "Active", City: "Los Angeles" },
   -118.255,
   34.05
 );
@@ -162,39 +163,46 @@ const SABS_K8 = esriPolygon(
   [[-118.30, 34.00], [-118.30, 34.10], [-118.20, 34.10], [-118.20, 34.00]]
 );
 
-// The ratings file, as scripts/fetch-school-data.py writes it.
+// The ratings file, as scripts/fetch-school-data.py writes it from your
+// GreatSchools table. Schema 2: nothing computed, byName maps to a list.
 const SCHOOL_RATINGS = {
   meta: {
-    generated: "2026-09-01",
-    schemaVersion: 1,
-    ratingBasis: "Decile of CAASPP percent met-or-exceeded. This is not the GreatSchools rating.",
-    counts: { elementary: 2, middle: 2, high: 1 },
+    generated: "2026-09-24",
+    schemaVersion: 2,
+    ratingBasis: "GreatSchools rating (1-10), from your own table in raw-data/school-ratings/ (LA_County_Scored_Public_Schools.csv).",
+    ratingFiles: ["LA_County_Scored_Public_Schools.csv"],
+    counts: { elementary: 3, middle: 2, high: 1 },
     rated: 4,
-    overridden: 1,
-    unrankedLevels: [],
+    match: { rows: 6, matched: 4, unmatched: 1, ambiguous: 1, duplicate: 0, invalid: 0, matchedBy: { "address + zip": 4 } },
   },
   schools: {
     "19000000000001": {
       name: "Spring Street Elementary", district: "Los Angeles Unified",
       levels: ["elementary"], grades: "K-5", ratings: { elementary: 9 },
-      ela: 71.2, math: 63.5, tested: 340, nces: "062271000001",
+      ratingSource: "greatschools", nces: "062271000001", lat: 34.05, lon: -118.255,
     },
     "19000000000002": {
       name: "Civic Center Middle", district: "Los Angeles Unified",
       levels: ["middle"], grades: "6-8", ratings: { middle: 4 },
-      ela: 44.1, math: 33.0, tested: 410, nces: "062271000002",
+      ratingSource: "greatschools", nces: "062271000002", lat: 34.05, lon: -118.245,
     },
     "19000000000003": {
       name: "Downtown Senior High", district: "Los Angeles Unified",
       levels: ["high"], grades: "9-12", ratings: { high: 8 },
-      // Supplied by hand, so it must say so and must show no test rows.
-      ratingSource: "yours", nces: "062271000003",
+      ratingSource: "greatschools", nces: "062271000003", lat: 34.05, lon: -118.235,
     },
     "19000000000004": {
       name: "Riverside K-8", district: "Los Angeles Unified",
       levels: ["elementary", "middle"], grades: "K-8",
       ratings: { elementary: 3, middle: 7 },
-      ela: 38.0, math: 29.9, tested: 280, nces: "062271000004",
+      ratingSource: "greatschools", nces: "062271000004",
+    },
+    // Shares the flattened name "downtown" with the high school. A name-only
+    // join used to hand one of them the other's rating.
+    "19000000000005": {
+      name: "Downtown Elementary", district: "Los Angeles Unified",
+      levels: ["elementary"], grades: "K-5", ratings: { elementary: 2 },
+      ratingSource: "greatschools", nces: "062271000005", lat: 34.2, lon: -118.5,
     },
   },
   byNces: {
@@ -202,12 +210,13 @@ const SCHOOL_RATINGS = {
     "062271000002": "19000000000002",
     "062271000003": "19000000000003",
     "062271000004": "19000000000004",
+    "062271000005": "19000000000005",
   },
   byName: {
-    "spring street": "19000000000001",
-    "civic center": "19000000000002",
-    "downtown": "19000000000003",
-    "riverside k 8": "19000000000004",
+    "spring street": ["19000000000001"],
+    "civic center": ["19000000000002"],
+    "downtown": ["19000000000003", "19000000000005"],
+    "riverside k 8": ["19000000000004"],
   },
 };
 
@@ -3774,21 +3783,39 @@ async function main() {
       (zonePopup || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 140)
     );
     step(
-      "...and the test scores the rating was computed from",
-      /71\.2/.test(zonePopup || "") && /63\.5/.test(zonePopup || ""),
-      "the card shows its working rather than a bare number"
+      "...labelled as GreatSchools', from your table, by file name",
+      /GreatSchools/.test(zonePopup || "") && /LA_County_Scored_Public_Schools\.csv/.test(zonePopup || ""),
+      "the tip names the file the number came from"
     );
     step(
-      "the popup says plainly that this is NOT the GreatSchools rating",
-      /not the greatschools rating/i.test(zonePopup || ""),
-      "a number labelled 'rating' next to a house would otherwise be read as GreatSchools'"
+      "no computed test-score rows remain - your table is the only source",
+      !/CAASPP|% met|decile/i.test(zonePopup || ""),
+      (zonePopup || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 140)
     );
     step(
-      "...and still offers a GreatSchools lookup, which is the legitimate way to their number",
-      /greatschools/i.test(zonePopup || "") && /<a [^>]*href=/.test(zonePopup || ""),
+      "...and still offers a GreatSchools lookup",
+      /<a [^>]*href=[^>]*>[^<]*GreatSchools/i.test(zonePopup || ""),
       (zonePopup || "").match(/<a [^>]*>[^<]*<\/a>/) || "no link"
     );
-    const yoursPopup = await page.evaluate(() => {
+    const dotPopup = (key, pattern) =>
+      page.evaluate(
+        ([k, source]) => {
+          let html = null;
+          BlockGroupApp.state.layers[k].eachLayer((l) => {
+            const p = l.feature.properties;
+            if (p.__kind === "dot" && new RegExp(source).test(p.SchoolName || "")) html = l.getPopup().getContent();
+          });
+          return html;
+        },
+        [key, pattern]
+      );
+    const cdsDot = await dotPopup("schoolElementary", "Main Campus");
+    step(
+      "a dot finds its rating by the state CDS code, even when its name matches nothing",
+      /9\/10/.test(cdsDot || ""),
+      (cdsDot || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 140)
+    );
+    const zoneHigh = await page.evaluate(() => {
       let html = null;
       BlockGroupApp.state.layers.schoolHigh.eachLayer((l) => {
         if (l.feature.properties.__kind === "zone") html = l.getPopup().getContent();
@@ -3796,9 +3823,21 @@ async function main() {
       return html;
     });
     step(
-      "a rating YOU supplied is labelled as yours, not as computed",
-      /8\/10/.test(yoursPopup || "") && /you supplied/i.test(yoursPopup || "") && !/71\.2/.test(yoursPopup || ""),
-      (yoursPopup || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 140)
+      "a high zone finds its own rating by NCES id",
+      /8\/10/.test(zoneHigh || ""),
+      (zoneHigh || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 140)
+    );
+    const sharedName = await dotPopup("schoolHigh", "Downtown Senior High");
+    step(
+      "THE BUG: a name shared by two schools resolves by level - the high dot gets the high school's 8, not the elementary's 2",
+      /8\/10/.test(sharedName || "") && !/2\/10/.test(sharedName || ""),
+      (sharedName || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 140)
+    );
+    const ratingsLog = await page.locator("#status-log").innerText();
+    step(
+      "the log says how many of your rows did not match, and where the report is",
+      /1 unmatched/.test(ratingsLog) && /school-ratings-match-report\.csv/.test(ratingsLog),
+      (ratingsLog.split("\n").find((l) => /unmatched/.test(l)) || "").slice(0, 140)
     );
 
     // --- The rating filters ---
@@ -3872,7 +3911,7 @@ async function main() {
     );
     await page.evaluate(() => {
       BlockGroupApp.state.layers.schoolElementary.eachLayer((l) => {
-        if (l.feature.properties.SchoolName === "Spring Street Elementary") l.fire("click", { latlng: l.getLatLng() });
+        if (l.feature.properties.SchoolName === "Spring St. Elem (Main Campus)") l.fire("click", { latlng: l.getLatLng() });
       });
     });
     await page.waitForTimeout(900);
@@ -4511,6 +4550,96 @@ async function main() {
       noRatingsStatus
     );
     await pageNoRatings.close();
+
+    // --- An old ratings file, and zones whose school is gone ------------------
+    // A schema-1 file holds ratings computed from test scores. Your table is
+    // now the only source, so such a file must be refused, not shown as yours.
+    // And a 2015-16 zone for a school that has since closed can never carry a
+    // rating - the log has to say so, or a filter makes it vanish unexplained.
+    const ORPHAN_ZONE = esriPolygon(
+      { schnam: "Closed Since 2016 Elementary", ncessch: "062271099999", leaid: "0622710", gslo: "KG", gshi: "05", level: "1" },
+      [[-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04]]
+    );
+    const schoolPage = async (ratings) => {
+      const p = await browser.newPage();
+      await p.route("**://tile.openstreetmap.org/**", (route) =>
+        route.fulfill({ contentType: "image/png", body: BLANK_PNG })
+      );
+      await p.route("**/js/data/schools-la-county.json", (route) => route.fulfill(json(ratings)));
+      await p.route("**://nces.ed.gov/**", (route) => {
+        const url = route.request().url();
+        if (url.includes("/query")) return route.fulfill(json(esriFC([SABS_ELEM, ORPHAN_ZONE])));
+        return route.fulfill(json({ layers: [{ id: 0, name: "SABS_1516", geometryType: "esriGeometryPolygon" }] }));
+      });
+      await p.route("**://services3.arcgis.com/**", (route) => route.fulfill(json(esriFC([SCHOOL_ELEM]))));
+      await p.route("**://tigerweb.geo.census.gov/**", (route) => {
+        const url = route.request().url();
+        if (url.includes("/10/query")) return route.fulfill(json(esriFC([BG_A])));
+        return route.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }] }));
+      });
+      await p.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+      await p.waitForFunction(() => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.map);
+      await p.evaluate(() => BlockGroupApp.state.map.setView([34.05, -118.25], 13));
+      await p.check("#toggle-schoolElementary");
+      await p.waitForTimeout(1600);
+      return p;
+    };
+
+    const oldRatings = JSON.parse(JSON.stringify(SCHOOL_RATINGS));
+    oldRatings.meta.schemaVersion = 1;
+    const pageOld = await schoolPage(oldRatings);
+    const oldLog = await pageOld.locator("#status-log").innerText();
+    step(
+      "an old ratings file (computed ratings) is refused, and the log says why",
+      /older build/.test(oldLog) && /not your GreatSchools table/.test(oldLog),
+      (oldLog.split("\n").find((l) => /older build/.test(l)) || "").slice(0, 150)
+    );
+    const oldPopup = await pageOld.evaluate(() => {
+      let html = "";
+      BlockGroupApp.state.layers.schoolElementary.eachLayer((l) => {
+        if (l.feature.properties.__kind === "zone") html += l.getPopup().getContent();
+      });
+      return html;
+    });
+    step(
+      "...so none of its numbers reach a popup",
+      !/\d+\/10/.test(oldPopup),
+      oldPopup.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 120)
+    );
+    await pageOld.close();
+
+    const pageOrphan = await schoolPage(SCHOOL_RATINGS);
+    const orphanLog = await pageOrphan.locator("#status-log").innerText();
+    step(
+      "zones naming a school that no longer exists are counted and named in the log",
+      /1 of 2 elementary zones/.test(orphanLog) && /Closed Since 2016 Elementary/.test(orphanLog),
+      (orphanLog.split("\n").find((l) => /name no current school/.test(l)) || "").slice(0, 150)
+    );
+    const orphanPopup = await pageOrphan.evaluate(() => {
+      let html = null;
+      BlockGroupApp.state.layers.schoolElementary.eachLayer((l) => {
+        if (/Closed Since/.test(l.feature.properties.schnam || "")) html = l.getPopup().getContent();
+      });
+      return html;
+    });
+    step(
+      "...and its popup says why it has no rating, rather than a bare blank",
+      /not in your table/.test(orphanPopup || "") && /closed or renumbered/.test(orphanPopup || ""),
+      (orphanPopup || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 150)
+    );
+    await pageOrphan.fill("#school-filter-elementary-value", "1");
+    await pageOrphan.waitForTimeout(700);
+    step(
+      "...and even 'at or above 1' hides it: an unrated zone never passes a rating test",
+      await pageOrphan.evaluate(() => {
+        let found = false;
+        BlockGroupApp.state.layers.schoolElementary.eachLayer((l) => {
+          if (/Closed Since/.test(l.feature.properties.schnam || "")) found = true;
+        });
+        return !found;
+      })
+    );
+    await pageOrphan.close();
 
     // --- file:// origin (double-clicking the .html instead of serving it) ---
     // The single most likely setup mistake: the map looks fine because

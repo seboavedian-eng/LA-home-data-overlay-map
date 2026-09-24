@@ -1,14 +1,14 @@
 """Tests for scripts/fetch-school-data.py.
 
-The two input files cannot be downloaded from here, so every test builds them
-synthetically. That is not a weakness of the test: the interesting failures in
-this script are all shape failures - a level assigned from the wrong field, a
-district total counted as a school, a decile computed over five schools - and
-a synthetic file exercises those precisely.
+The directory cannot be downloaded from here and your ratings table lives on
+your machine, so every test builds both synthetically. The table fixture uses
+the exact header and the first rows of LA_County_Scored_Public_Schools.csv, so
+a column-name mismatch fails here rather than on your first real run.
 
 Run:  python tests/test_school_data.py
 """
 
+import csv
 import importlib.util
 import io
 import json
@@ -74,65 +74,9 @@ def test_levels():
     )
 
 
-# --- Name matching -----------------------------------------------------------
 
 
-def test_name_matching():
-    same = [
-        ("Roosevelt Elementary", "Theodore Roosevelt Elementary School"),
-        ("Eagle Rock El", "Eagle Rock Elementary"),
-        ("Hoover High School", "Hoover High"),
-    ]
-    for left, right in same:
-        check(
-            f"the same school written two ways matches: {left!r} = {right!r}",
-            sd.normalise_name(left) in sd.normalise_name(right)
-            or sd.normalise_name(right) in sd.normalise_name(left),
-            f"{sd.normalise_name(left)!r} vs {sd.normalise_name(right)!r}",
-        )
-    check(
-        "two genuinely different schools do not collapse together",
-        sd.normalise_name("Lincoln Elementary") != sd.normalise_name("Jefferson Elementary"),
-    )
-
-
-# --- Deciles -----------------------------------------------------------------
-
-
-def test_deciles():
-    values = {f"s{i}": float(i) for i in range(100)}
-    ratings = sd.decile_ratings(values)
-    check("a decile rating never falls outside 1-10", set(ratings.values()) <= set(range(1, 11)),
-          str(sorted(set(ratings.values()))))
-    check("the worst school rates 1", ratings["s0"] == 1, str(ratings["s0"]))
-    check("the best school rates 10", ratings["s99"] == 10, str(ratings["s99"]))
-    check(
-        "the ranking is even - ten schools per band over a hundred",
-        all(list(ratings.values()).count(band) == 10 for band in range(1, 11)),
-        str({band: list(ratings.values()).count(band) for band in range(1, 11)}),
-    )
-
-    # The reason this ranks positions rather than cutting the value range:
-    # proficiency percentages bunch up, and cutting the range would put almost
-    # everything in one band.
-    bunched = {f"s{i}": 40.0 + i * 0.1 for i in range(50)}
-    bunched["outlier"] = 95.0
-    ratings = sd.decile_ratings(bunched)
-    spread = len(set(ratings.values()))
-    check(
-        "bunched scores still spread across the bands, rather than collapsing",
-        spread >= 8,
-        f"{spread} distinct ratings among 51 bunched schools",
-    )
-
-    tied = {"a": 50.0, "b": 50.0, "c": 90.0}
-    ratings = sd.decile_ratings(tied)
-    check("schools with identical scores get identical ratings",
-          ratings["a"] == ratings["b"], f"{ratings}")
-    check("an empty set of scores is not a crash", sd.decile_ratings({}) == {})
-
-
-# --- The two input files, end to end ----------------------------------------
+# --- The directory -----------------------------------------------------------
 
 
 DIRECTORY_HEADER = [
@@ -144,9 +88,10 @@ DIRECTORY_HEADER = [
 
 def directory_row(cds, name, soc, grades, status="Active", district="Test Unified",
                   county="Los Angeles", lat="34.05", lon="-118.25",
-                  nces_dist="0622710", nces_school="12345", charter="N"):
-    return [cds, status, county, district, name, "1 Main St", "Los Angeles",
-            "90012", charter, soc, grades, lat, lon, nces_dist, nces_school]
+                  nces_dist="0622710", nces_school="12345", charter="N",
+                  street="1 Main St", city="Los Angeles", zip_code="90012"):
+    return [cds, status, county, district, name, street, city,
+            zip_code, charter, soc, grades, lat, lon, nces_dist, nces_school]
 
 
 def make_directory(rows):
@@ -157,29 +102,6 @@ def make_directory(rows):
     return out.getvalue().encode("utf-8")
 
 
-CAASPP_HEADER = [
-    "County Code", "District Code", "School Code", "Filler", "Subgroup ID",
-    "Grade", "Test Type", "Filler2", "Test Id", "Filler3",
-    "Students with Scores", "F1", "F2", "F3", "F4",
-    "Percentage Standard Met and Above",
-]
-
-
-def caaspp_row(county, district, school, test, met, tested=200, subgroup="1", grade="13"):
-    row = [""] * len(CAASPP_HEADER)
-    row[0], row[1], row[2] = county, district, school
-    row[4], row[5], row[8] = subgroup, grade, test
-    row[10] = str(tested)
-    row[15] = str(met)
-    return row
-
-
-def make_caaspp(rows):
-    out = io.StringIO()
-    out.write("^".join(CAASPP_HEADER) + "\n")
-    for row in rows:
-        out.write("^".join(row) + "\n")
-    return out.getvalue().encode("utf-8")
 
 
 def test_directory_reading():
@@ -190,7 +112,7 @@ def test_directory_reading():
         directory_row("30000000000003", "Anaheim Elementary", "60", "K-5",
                       county="Orange"),
         directory_row("19000000000004", "Wilson Middle", "62", "6-8"),
-        directory_row("19000000000005", "Hoover High", "64", "9-12"),
+        directory_row("19000000000005", "Hoover High", "64", "9-12", zip_code="90012-3456"),
     ])
     schools = sd.read_directory(data)
     check("only LA County schools are kept", len(schools) == 3, f"{len(schools)} kept")
@@ -207,183 +129,249 @@ def test_directory_reading():
         "90012" in schools["19000000000001"]["address"],
         schools["19000000000001"]["address"],
     )
-
-
-def test_caaspp_reading():
-    data = make_caaspp([
-        caaspp_row("19", "64733", "0000001", "1", "62.5"),
-        caaspp_row("19", "64733", "0000001", "2", "48.0"),
-        # A district total. Counting this as a school would put a fake school
-        # in the ranking and shift every decile.
-        caaspp_row("19", "64733", "0000000", "1", "55.0"),
-        # Another county.
-        caaspp_row("30", "11111", "0000009", "1", "70.0"),
-        # A subgroup other than "all students".
-        caaspp_row("19", "64733", "0000002", "1", "30.0", subgroup="128"),
-        # A single grade rather than the all-grades summary.
-        caaspp_row("19", "64733", "0000003", "1", "80.0", grade="3"),
-    ])
-    scores = sd.read_caaspp(data)
-    check("only real LA County schools survive the filters", len(scores) == 1, str(list(scores)))
-    key = "19647330000001"
-    check("the CDS code is assembled from county+district+school",
-          key in scores, str(list(scores)))
-    check("ELA and Math land on the same school", scores[key]["ela"] == 62.5 and scores[key]["math"] == 48.0,
-          str(scores.get(key)))
-    check("a district TOTAL row is not counted as a school",
-          "19647330000000" not in scores)
-    check("a subgroup row is not counted as the school's score",
-          "19647330000002" not in scores)
-    check("a single-grade row is not counted as the all-grades score",
-          "19647330000003" not in scores)
-
-
-def test_end_to_end():
-    """main() run against both synthetic files, in a temp directory."""
-    directory_rows = []
-    caaspp_rows = []
-    # Twenty elementary schools with a spread of scores, so deciles mean
-    # something, plus one middle and one high.
-    for i in range(1, 21):
-        cds = f"1900000{i:07d}"
-        directory_rows.append(
-            directory_row(cds, f"Elementary {i}", "60", "K-5", nces_school=f"{i:05d}")
-        )
-        caaspp_rows.append(caaspp_row("19", "00000", f"{i:07d}", "1", f"{30 + i * 2}"))
-        caaspp_rows.append(caaspp_row("19", "00000", f"{i:07d}", "2", f"{25 + i * 2}"))
-    # A school with almost no test-takers: a decile from 5 children is noise.
-    directory_rows.append(directory_row("19000009999901", "Tiny Elementary", "60", "K-5"))
-    caaspp_rows.append(caaspp_row("19", "00000", "9999901", "1", "99", tested=5))
-    # A K-8, which must be rated under both elementary and middle.
-    directory_rows.append(directory_row("19000009999902", "Spans Both", "60", "K-8"))
-    caaspp_rows.append(caaspp_row("19", "00000", "9999902", "1", "70"))
-    caaspp_rows.append(caaspp_row("19", "00000", "9999902", "2", "60"))
-
-    with tempfile.TemporaryDirectory() as tmp:
-        dir_path = os.path.join(tmp, "pubschls.txt")
-        caaspp_path = os.path.join(tmp, "caaspp.txt")
-        out_path = os.path.join(tmp, "schools.json")
-        with open(dir_path, "wb") as handle:
-            handle.write(make_directory(directory_rows))
-        with open(caaspp_path, "wb") as handle:
-            handle.write(make_caaspp(caaspp_rows))
-
-        code = sd.main(["--out", out_path, "--directory", dir_path, "--caaspp", caaspp_path])
-        check("the script runs end to end and exits clean", code == 0, f"exit {code}")
-
-        with open(out_path, encoding="utf-8") as handle:
-            payload = json.load(handle)
-
-    schools = payload["schools"]
-    check("every school reaches the file", len(schools) == 22, f"{len(schools)}")
-    check("the meta names the rating basis, so the card can too",
-          "CAASPP" in payload["meta"]["ratingBasis"]
-          and "not the GreatSchools rating" in payload["meta"]["ratingBasis"],
-          payload["meta"]["ratingBasis"][:60])
-
-    rated = [s for s in schools.values() if "ratings" in s]
-    check("schools with scores carry a rating", len(rated) == 21, f"{len(rated)} rated")
     check(
-        "a school code of all zeroes is a district total and never a school",
-        "19000000000000" not in schools,
-        "the fixture deliberately avoids it; the guard is what makes that necessary",
-    )
-    check(
-        "a school with five test-takers gets NO rating rather than a loud wrong one",
-        "ratings" not in schools["19000009999901"],
-        str(schools["19000009999901"].get("ratings")),
-    )
-    both = schools["19000009999902"]
-    check(
-        "a K-8 counts under both levels it serves",
-        set(both["levels"]) == {"elementary", "middle"},
-        str(both.get("levels")),
-    )
-    # It is the only middle school here, so it must NOT get a middle rating:
-    # "1 of 10" from a pool of one is a damning verdict drawn from nothing.
-    check(
-        "a level with too few schools to rank yields no rating, not a bottom rating",
-        set(both["ratings"]) == {"elementary"},
-        str(both.get("ratings")),
-    )
-    check(
-        "...and the run records which level it could not rank",
-        any("middle" in entry for entry in payload["meta"]["unrankedLevels"]),
-        str(payload["meta"]["unrankedLevels"]),
-    )
-    best = schools["1900000" + f"{20:07d}"]["ratings"]["elementary"]
-    worst = schools["1900000" + f"{1:07d}"]["ratings"]["elementary"]
-    check("the highest-scoring school rates above the lowest", best > worst, f"{best} vs {worst}")
-    check(
-        "the NCES index is built, which is how a SABS polygon finds its school",
-        payload["byNces"].get("062271000020") == "1900000" + f"{20:07d}",
-        str(list(payload["byNces"].items())[:2]),
-    )
-    check(
-        "a name index exists as the fallback join",
-        len(payload["byName"]) >= 20,
-        f"{len(payload['byName'])} names",
+        "a ZIP+4 is cut to five digits, which is what your table carries",
+        schools["19000000000005"]["zip5"] == "90012",
+        schools["19000000000005"]["zip5"],
     )
 
 
-def test_your_ratings_win():
-    """The override folder is the answer to 'GreatSchools has no free API'."""
-    directory_rows = [
-        directory_row(f"1900000{i:07d}", f"Elementary {i}", "60", "K-5") for i in range(1, 21)
+# --- Your table --------------------------------------------------------------
+
+# The header of LA_County_Scored_Public_Schools.csv, exactly as saved.
+TABLE_HEADER = "School Name,Address,City,Zip,Elementary,Middle?,High?,GreatSchools Rating"
+
+# The rows visible in your screenshot, verbatim, plus the cases that matter.
+TABLE_ROWS = [
+    "Meadowlark Elementary School,3015 West Sacramento St.,Acton,93510,Yes,No,No,7",
+    "iLEAD Hybrid,3720 Sierra Highway,Acton,93510,Yes,Yes,Yes,5",
+    "Ilead Online,3720 Sierra Highway,Acton,93510,Yes,Yes,Yes,5",
+    "Vasquez High School,33630 Red Rover Mine Road,Acton,93510,No,No,Yes,5",
+    "High Desert School,3620 Antelope Woods Rd,Acton,93510,Yes,Yes,No,4",
+    "Agoura High School,28545 West Driver Ave.,Agoura Hills,91301,No,No,Yes,9",
+    "Willow Elementary School,29026 Laro Dr.,Agoura Hills,91301,Yes,No,No,9",
+    "Sumac Elementary School,6050 North Calmfield Ave.,Agoura Hills,91301,Yes,No,No,8",
+    "Yerba Buena Elementary School,6098 Reyes Adobe Road,Agoura Hills,91301,Yes,No,No,8",
+    "Lindero Canyon Middle School,5844 Larboard Ln.,Agoura Hills,91301,No,Yes,No,7",
+    # Same core name, same district, different schools: the old matcher's bug.
+    "Eagle Rock Elementary School,2057 Fair Park Avenue,Los Angeles,90041,Yes,No,No,8",
+    "Eagle Rock High School,1750 Yosemite Drive,Los Angeles,90041,No,Yes,Yes,6",
+    # No such school.
+    "Nowhere Elementary,1 Fake Street,Beverly Hills,90210,Yes,No,No,10",
+    # A rating that is not a number.
+    "Sumac Elementary School,6050 North Calmfield Ave.,Agoura Hills,91301,Yes,No,No,N/A",
+    # The same school twice with a different rating.
+    "Willow Elementary,29026 Laro Drive,Agoura Hills,91301,Yes,No,No,3",
+    # Two schools share this address and the name fits both equally.
+    "Hope Academy,500 Hope St,Los Angeles,90012,Yes,No,No,6",
+    "",
+]
+
+STATE = [
+    # cds, name, soc, grades, street (as CDE writes it), city, zip, nces school
+    ("19000000000101", "Meadowlark Elementary", "60", "K-5", "3015 W. Sacramento St.", "Acton", "93510-1600", "00101"),
+    ("19000000000102", "iLEAD Hybrid", "60", "K-12", "3720 Sierra Hwy.", "Acton", "93510-1234", "00102"),
+    ("19000000000103", "iLEAD Online Charter", "60", "K-12", "3720 Sierra Hwy.", "Acton", "93510-1234", "00103"),
+    ("19000000000104", "Vasquez High", "64", "9-12", "33630 Red Rover Mine Rd.", "Acton", "93510", "00104"),
+    ("19000000000105", "High Desert", "60", "K-8", "3620 Antelope Woods Rd.", "Acton", "93510", "00105"),
+    ("19000000000106", "Agoura High", "64", "9-12", "28545 W. Driver Ave.", "Agoura Hills", "91301-2800", "00106"),
+    ("19000000000107", "Willow Elementary", "60", "K-5", "29026 Laro Dr.", "Agoura Hills", "91301", "00107"),
+    ("19000000000108", "Sumac Elementary", "60", "K-5", "6050 N. Calmfield Ave.", "Agoura Hills", "91301", "00108"),
+    ("19000000000109", "Yerba Buena Elementary", "60", "K-5", "6098 Reyes Adobe Rd.", "Agoura Hills", "91301", "00109"),
+    ("19000000000110", "Lindero Canyon Middle", "62", "6-8", "5844 Larboard Ln.", "Agoura Hills", "91301", "00110"),
+    ("19000000000111", "Eagle Rock Elementary", "60", "K-6", "2057 Fair Park Ave.", "Los Angeles", "90041", "00111"),
+    ("19000000000112", "Eagle Rock High", "64", "9-12", "1750 Yosemite Dr.", "Los Angeles", "90041", "00112"),
+    ("19000000000113", "Hope Academy East", "60", "K-5", "500 Hope St.", "Los Angeles", "90012", "00113"),
+    ("19000000000114", "Hope Academy West", "60", "K-5", "500 Hope St.", "Los Angeles", "90012", "00114"),
+    # Not in your table at all.
+    ("19000000000115", "Unlisted Elementary", "60", "K-5", "9 Quiet Ln.", "Acton", "93510", "00115"),
+]
+
+
+def state_directory():
+    rows = [
+        directory_row(cds, name, soc, grades, street=street, city=city, zip_code=zip_code,
+                      nces_school=nces, district="Test Unified")
+        for cds, name, soc, grades, street, city, zip_code, nces in STATE
     ]
-    caaspp_rows = []
-    for i in range(1, 21):
-        caaspp_rows.append(caaspp_row("19", "00000", f"{i:07d}", "1", f"{30 + i * 2}"))
+    return make_directory(rows)
 
+
+def run_build(table_rows=None, header=TABLE_HEADER):
+    """main() end to end, in a temp directory. Returns (exit code, payload, report rows)."""
     with tempfile.TemporaryDirectory() as tmp:
-        override_dir = os.path.join(tmp, "school-ratings")
-        os.makedirs(override_dir)
-        with open(os.path.join(override_dir, "mine.csv"), "w", encoding="utf-8") as handle:
-            handle.write("school,district,rating\n")
-            handle.write("Elementary 1,Test Unified,9\n")
-
-        original = sd.OVERRIDE_DIR
-        sd.OVERRIDE_DIR = override_dir
-        try:
-            dir_path = os.path.join(tmp, "pubschls.txt")
-            caaspp_path = os.path.join(tmp, "caaspp.txt")
-            out_path = os.path.join(tmp, "schools.json")
-            with open(dir_path, "wb") as handle:
-                handle.write(make_directory(directory_rows))
-            with open(caaspp_path, "wb") as handle:
-                handle.write(make_caaspp(caaspp_rows))
-            sd.main(["--out", out_path, "--directory", dir_path, "--caaspp", caaspp_path])
+        ratings_dir = os.path.join(tmp, "school-ratings")
+        os.makedirs(ratings_dir)
+        with open(os.path.join(ratings_dir, "LA_County_Scored_Public_Schools.csv"), "w",
+                  encoding="utf-8-sig", newline="") as handle:
+            handle.write("\n".join([header] + (TABLE_ROWS if table_rows is None else table_rows)))
+        dir_path = os.path.join(tmp, "pubschls.txt")
+        with open(dir_path, "wb") as handle:
+            handle.write(state_directory())
+        out_path = os.path.join(tmp, "schools.json")
+        report_path = os.path.join(tmp, "report.csv")
+        code = sd.main(["--out", out_path, "--directory", dir_path,
+                        "--ratings", ratings_dir, "--report", report_path])
+        payload = None
+        report = []
+        if os.path.exists(out_path):
             with open(out_path, encoding="utf-8") as handle:
                 payload = json.load(handle)
-        finally:
-            sd.OVERRIDE_DIR = original
+        if os.path.exists(report_path):
+            with open(report_path, newline="", encoding="utf-8") as handle:
+                report = list(csv.DictReader(handle))
+    return code, payload, report
 
-    worst = payload["schools"]["1900000" + f"{1:07d}"]
-    check(
-        "a rating you supplied beats the computed one",
-        worst["ratings"]["elementary"] == 9,
-        str(worst.get("ratings")),
-    )
-    check(
-        "...and the file records that it was yours, so the card can say so",
-        worst.get("ratingSource") == "yours",
-        str(worst.get("ratingSource")),
-    )
-    check(
-        "the run reports how many you overrode",
-        payload["meta"]["overridden"] == 1,
-        str(payload["meta"]["overridden"]),
-    )
+
+def test_address_matching():
+    same = [
+        ("3015 West Sacramento St.", "3015 W. Sacramento St."),
+        ("3720 Sierra Highway", "3720 Sierra Hwy."),
+        ("33630 Red Rover Mine Road", "33630 Red Rover Mine Rd."),
+        ("6050 North Calmfield Ave.", "6050 N. Calmfield Ave."),
+        ("100 Main Street, Suite 4", "100 Main St."),
+    ]
+    for left, right in same:
+        check(f"one address written two ways matches: {left!r} = {right!r}",
+              sd.same_address(sd.address_key(left), sd.address_key(right)),
+              f"{sd.address_key(left)} vs {sd.address_key(right)}")
+    check("a different house number is a different address",
+          not sd.same_address(sd.address_key("3015 W Sacramento St"), sd.address_key("3017 W Sacramento St")))
+    check("the same number on a different street is a different address",
+          not sd.same_address(sd.address_key("100 Oak Ave"), sd.address_key("100 Pine Ave")))
+    check("level words are kept, so Eagle Rock Elementary and Eagle Rock High differ",
+          sd.name_tokens("Eagle Rock Elementary School") != sd.name_tokens("Eagle Rock High School"))
+
+
+def test_your_table():
+    code, payload, report = run_build()
+    check("the script runs end to end on your table's exact header", code == 0, f"exit {code}")
+    if not payload:
+        check("...and writes the file", False)
+        return
+    schools = payload["schools"]
+
+    def rating(cds, level):
+        return (schools[cds].get("ratings") or {}).get(level)
+
+    check("a row matches by address + zip despite 'West' vs 'W.' and 'St.'",
+          rating("19000000000101", "elementary") == 7, str(schools["19000000000101"].get("ratings")))
+    check("THE BUG: Eagle Rock Elementary keeps its own 8",
+          rating("19000000000111", "elementary") == 8, str(schools["19000000000111"].get("ratings")))
+    check("...and Eagle Rock High keeps its own 6, rather than both sharing whichever came last",
+          rating("19000000000112", "high") == 6, str(schools["19000000000112"].get("ratings")))
+    check("iLEAD Hybrid and iLEAD Online share an address; the name tells them apart",
+          schools["19000000000102"].get("ratings") and schools["19000000000103"].get("ratings"),
+          f"{schools['19000000000102'].get('ratings')} / {schools['19000000000103'].get('ratings')}")
+    check("your Yes/No columns decide the levels: High Desert counts under elementary and middle",
+          set(schools["19000000000105"]["ratings"]) == {"elementary", "middle"},
+          str(schools["19000000000105"].get("ratings")))
+    check("...and a level you did not mark gets no rating: Meadowlark is elementary only",
+          set(schools["19000000000101"]["ratings"]) == {"elementary"},
+          str(schools["19000000000101"].get("ratings")))
+    check("a level you marked that the state span disagrees with still counts - your table is the truth",
+          set(schools["19000000000112"]["ratings"]) == {"middle", "high"},
+          str(schools["19000000000112"].get("ratings")))
+    check("a school your table does not list has NO rating - nothing is computed",
+          "ratings" not in schools["19000000000115"], str(schools["19000000000115"].get("ratings")))
+    check("the duplicate row does not overwrite the first: Willow stays 9",
+          rating("19000000000107", "elementary") == 9, str(schools["19000000000107"].get("ratings")))
+    check("a rating of N/A does not wipe the good Sumac row",
+          rating("19000000000108", "elementary") == 8, str(schools["19000000000108"].get("ratings")))
+    check("a rated school says the number is GreatSchools', from your table",
+          schools["19000000000101"].get("ratingSource") == "greatschools")
+    check("two schools at one address that the name cannot separate are left unrated, not guessed",
+          "ratings" not in schools["19000000000113"] and "ratings" not in schools["19000000000114"])
+
+    meta = payload["meta"]
+    check("the meta names the rating basis as GreatSchools, from your file",
+          "GreatSchools" in meta["ratingBasis"] and "LA_County_Scored_Public_Schools.csv" in meta["ratingBasis"],
+          meta["ratingBasis"][:90])
+    check("nothing in the output mentions a computed rating", "CAASPP" not in json.dumps(meta))
+    check("the schema is 2, so the page can tell a pre-GreatSchools file apart",
+          meta["schemaVersion"] == 2, str(meta["schemaVersion"]))
+    check("byName maps to a LIST, so a name shared by two schools is not silently one of them",
+          all(isinstance(v, list) for v in payload["byName"].values()))
+    check("the NCES index is built, which is how a zone finds its school",
+          payload["byNces"].get("062271000111") == "19000000000111")
+
+    # --- The report ---
+    outcomes = {}
+    for entry in report:
+        outcomes.setdefault(entry["outcome"], []).append(entry)
+    check("the report has one line per row of your table (blank lines aside)",
+          len(report) == len([r for r in TABLE_ROWS if r]), f"{len(report)} lines")
+    check("the report puts the rows you must act on first",
+          report and report[0]["outcome"] in ("unmatched", "ambiguous"), report[0]["outcome"] if report else "")
+    check("a row with no such school is reported as unmatched, with a reason",
+          any(e["school"] == "Nowhere Elementary" and e["note"] for e in outcomes.get("unmatched", [])),
+          str([(e["school"], e["note"]) for e in outcomes.get("unmatched", [])]))
+    check("the Hope Academy row is reported as ambiguous and names both candidates",
+          any("Hope Academy East" in e["note"] and "Hope Academy West" in e["note"]
+              for e in outcomes.get("ambiguous", [])),
+          str([e["note"] for e in outcomes.get("ambiguous", [])]))
+    check("the N/A rating is reported as invalid", len(outcomes.get("invalid", [])) == 1)
+    check("the second Willow row is reported as a duplicate of the first",
+          len(outcomes.get("duplicate", [])) == 1 and "line" in outcomes["duplicate"][0]["note"])
+    check("a matched row names the state school it landed on, so you can eyeball it",
+          any(e["state_name"] == "Eagle Rock High" for e in outcomes.get("matched", [])))
+    check("...and the state span disagreeing with your Yes/No is noted, not hidden",
+          any("yours is used" in e["note"] for e in outcomes.get("matched", [])))
+
+
+def test_match_fallbacks():
+    directory = sd.Directory(sd.read_directory(state_directory()))
+    base = {"file": "t.csv", "line": 2, "city": "Agoura Hills", "levels": None,
+            "rating_text": "8", "rating": 8.0, "cds": "", "nces": ""}
+    cds, how, _ = sd.match_row({**base, "name": "Yerba Buena Elementary School",
+                                "address": "999 Somewhere Else Rd", "zip": "91301"}, directory)
+    check("a school that moved buildings still matches on a strong name in the same zip",
+          cds == "19000000000109" and "name" in how, f"{cds} {how}")
+    cds, how, _ = sd.match_row({**base, "name": "Sumac Elementary", "address": "", "zip": ""}, directory)
+    check("a row with no address or zip falls back to name + city", cds == "19000000000108", f"{cds} {how}")
+    cds, how, _ = sd.match_row({**base, "name": "Anything", "address": "", "zip": "",
+                                "cds": "19000000000104"}, directory)
+    check("a CDS column beats every other way of matching", cds == "19000000000104" and "CDS" in how)
+    cds, _, note = sd.match_row({**base, "name": "Anything", "address": "", "zip": "",
+                                 "cds": "19999999999999"}, directory)
+    check("a CDS code that is not a school says so", cds is None and "not an active" in note, note)
+
+
+def test_no_table():
+    code, payload, _ = run_build(table_rows=[], header="")
+    check("with no ratings table the script stops and says what to do, rather than writing an empty file",
+          code == 1 and payload is None, f"exit {code}")
+    code, payload, _ = run_build(header="Name Of School,Score")
+    check("a table without a school or rating column is skipped, not misread", code == 1, f"exit {code}")
+
+
+def test_excel_encoding():
+    """Excel's plain "CSV (Comma delimited)" writes Windows-1252, not UTF-8."""
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "excel.csv"), "wb") as handle:
+            handle.write((TABLE_HEADER + "\nLos Niños Elementary,1 Main St,Los Angeles,90012,Yes,No,No,6\n")
+                         .encode("cp1252"))
+        rows = sd.read_ratings(tmp)
+    check("a table saved by Excel as Windows-1252 is read, accents and all",
+          len(rows) == 1 and rows[0]["name"] == "Los Niños Elementary",
+          str([r["name"] for r in rows]))
+
+
+def test_nothing_is_computed():
+    source = open(os.path.join(REPO, "scripts", "fetch-school-data.py"), encoding="utf-8").read()
+    check("the script no longer downloads or computes test-score ratings",
+          "caaspp" not in source.lower() and "decile" not in source.lower())
 
 
 def main():
     test_levels()
-    test_name_matching()
-    test_deciles()
     test_directory_reading()
-    test_caaspp_reading()
-    test_end_to_end()
-    test_your_ratings_win()
+    test_address_matching()
+    test_your_table()
+    test_match_fallbacks()
+    test_no_table()
+    test_excel_encoding()
+    test_nothing_is_computed()
     print(f"\n{'FAILED: ' + ', '.join(failures) if failures else 'All school-data checks passed.'}")
     return 1 if failures else 0
 
