@@ -32,6 +32,64 @@
 // layers: they query fine and draw as noise.
 const FIRE_LAYER_EXCLUDE = /awaiting|pending|unzoned|label|annotation|\bline\b|responsibility area(s)?$|boundar/i;
 
+// Zoning and historic-district services, shared by the map layers (OVERLAYS)
+// and the exact-point lookups on the house and pin cards (PARCEL_CONTEXT), so
+// the two can never disagree about where they ask.
+//
+// Glendale first: its "Zoning and Parcel Map" (experience.arcgis.com item
+// 53d72a6781c94a97bf8f91f1f86f7feb) is built on these two services. Their
+// layer and field names have not been read from here - every GIS host is
+// egress-blocked in the build sandbox - so layers are found by name and fields
+// by candidate list, and the status log reports what actually answered.
+const GLENDALE_ZONING_SERVERS = [
+  {
+    url: "https://gisapps.glendaleca.gov/arcgis/rest/services/Common/Zoning/FeatureServer",
+    discover: { match: /zoning/i, exclude: /label|annotation|boundary/i, polygonsOnly: true, fallbackId: 2 },
+  },
+  {
+    url: "https://gismap.glendaleca.gov/arcgis/rest/services/Common/Zoning/MapServer",
+    discover: { match: /zoning/i, exclude: /label|annotation|boundary/i, polygonsOnly: true, fallbackId: 1 },
+  },
+];
+const OTHER_ZONING_SERVERS = [
+  {
+    url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Zoning/MapServer",
+    discover: { match: /zoning/i, exclude: /label|annotation/i, polygonsOnly: true, fallbackId: 0 },
+  },
+  {
+    url: "https://maps.lacity.org/lahub/rest/services/Boundaries/MapServer",
+    discover: { match: /zoning/i, exclude: /label|annotation/i, polygonsOnly: true, fallbackId: 0 },
+  },
+];
+const ZONING_FIELDS = [
+  "ZONE_CMPLT", "ZONE_CLASS", "ZONING", "ZONE", "ZONE_CODE", "ZONE_NM",
+  "ZONECODE", "ZONING_CODE", "ZoneCode", "Zone_", "ZONE_TYPE", "ZONING_DESC",
+];
+const HISTORIC_SERVERS = [
+  // Glendale: historic districts and Register-listed parcels.
+  {
+    url: "https://gismap.glendaleca.gov/arcgis/rest/services/Common/HistoricParcels/FeatureServer",
+    discover: { match: /histor|district|regist/i, exclude: /label|annotation/i, polygonsOnly: true, fallbackId: 0 },
+  },
+  {
+    url: "https://gisapps.glendaleca.gov/arcgis/rest/services/Common/HistoricParcels/FeatureServer",
+    discover: { match: /histor|district|regist/i, exclude: /label|annotation/i, polygonsOnly: true, fallbackId: 0 },
+  },
+  // LA City's Historic Preservation Overlay Zones.
+  {
+    url: "https://maps.lacity.org/lahub/rest/services/Boundaries/MapServer",
+    discover: { match: /hpoz|historic preservation|historic district/i, polygonsOnly: true },
+  },
+  {
+    url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Planning/MapServer",
+    discover: { match: /hpoz|historic/i, polygonsOnly: true },
+  },
+];
+const HISTORIC_FIELDS = [
+  "HPOZ_NAME", "DISTRICT", "HIST_DIST", "HISTORIC_DISTRICT", "HistDist", "HD_NAME", "DIST_NAME",
+  "NAME", "Name", "LABEL", "DESIGNATION", "STATUS",
+];
+
 const BG_CONFIG = {
   MAP_CENTER: [34.05, -118.25],
   MAP_ZOOM: 12,
@@ -276,6 +334,34 @@ const BG_CONFIG = {
       ],
       outFields: "*",
     },
+
+    // Zoning and historic districts as map layers. The cards ask the same
+    // services about one exact point; these draw the areas, so you can see
+    // where the rules change before you click. mergeAll, because no one
+    // service covers the county: Glendale, LA City and unincorporated county
+    // each publish their own, and a view on a border needs both sides.
+    zoning: {
+      label: "Zoning",
+      minZoom: 14,
+      simplifyDegrees: 0.00001,
+      mergeAll: true,
+      servers: [
+        { urls: GLENDALE_ZONING_SERVERS.map((s) => s.url), discoverEach: GLENDALE_ZONING_SERVERS.map((s) => s.discover) },
+        ...OTHER_ZONING_SERVERS.map((s) => ({ url: s.url, discover: s.discover })),
+      ],
+      outFields: "*",
+    },
+    historic: {
+      label: "Historic districts",
+      minZoom: 13,
+      simplifyDegrees: 0.00001,
+      mergeAll: true,
+      servers: [
+        { urls: HISTORIC_SERVERS.slice(0, 2).map((s) => s.url), discoverEach: HISTORIC_SERVERS.slice(0, 2).map((s) => s.discover) },
+        ...HISTORIC_SERVERS.slice(2).map((s) => ({ url: s.url, discover: s.discover })),
+      ],
+      outFields: "*",
+    },
   },
 
   // School points. A FeatureServer of points rather than polygons, so it gets
@@ -417,6 +503,23 @@ const BG_CONFIG = {
     high: "#c2410c",
     other: "#6b7280",
   },
+
+  // Zone codes, grouped into what a buyer actually asks: can I build one
+  // house, several, or something else here? Tested in order against the code
+  // with any [Q]/(T) conditions stripped. Codes differ city by city - Glendale
+  // writes R-1650 for a multi-family density, LA City writes RE11 for a big
+  // single-family lot - so the multi-family density test runs BEFORE the
+  // single-family one, or R-1650 would read as R-1.
+  ZONING_CLASSES: [
+    { key: "mixed", label: "Mixed use", color: "#c55a9e", match: /MU\b|MIXED|^MX/ },
+    { key: "multi", label: "Multi-family residential", color: "#ed7d31", match: /^R-?\d{3,4}\b|^R-?[2-5]|^RD|^RMP|^RW|^RU|^RZ|^R-?MF/ },
+    { key: "single", label: "Single-family residential", color: "#f2c53d", match: /^R-?1|^RS\b|^RE\d*|^RA\b|^R-?A\b|^RR|^ROS|^A-?[12]\b|^R-?E\b/ },
+    { key: "commercial", label: "Commercial", color: "#e04545", match: /^C|^CR\b|^CPD/ },
+    { key: "industrial", label: "Industrial", color: "#8e6bbf", match: /^M-?\d|^MR\b|^IND|^I-?\d|^IMU/ },
+    { key: "open", label: "Open space / public", color: "#5aa05a", match: /^OS|^O-S|^PF|^PS\b|^SR\b|^OR\b|^P-?R/ },
+    { key: "plan", label: "Specific plan / planned development", color: "#4a90c2", match: /^SP|^DSP|^PD|^PUD/ },
+  ],
+  ZONING_OTHER: { key: "other", label: "Other / unreadable code", color: "#9aa3ad" },
 
   // FEMA flood zones. A/AE/V/VE are the 1%-annual-chance ("100-year")
   // floodplain, where federally-backed mortgages require flood insurance.
@@ -605,17 +708,13 @@ const BG_CONFIG = {
       // LA City and unincorporated county publish separate zoning layers, and
       // a parcel is in one or the other. Both are asked; whichever answers is
       // the one that governs.
-      servers: [
-        {
-          url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Zoning/MapServer",
-          discover: { match: /zoning/i, exclude: /label|annotation/i, polygonsOnly: true, fallbackId: 0 },
-        },
-        {
-          url: "https://maps.lacity.org/lahub/rest/services/Boundaries/MapServer",
-          discover: { match: /zoning/i, exclude: /label|annotation/i, polygonsOnly: true, fallbackId: 0 },
-        },
-      ],
-      fields: ["ZONE_CMPLT", "ZONE_CLASS", "ZONING", "ZONE", "ZONE_CODE", "ZONE_NM"],
+      servers: GLENDALE_ZONING_SERVERS.concat(OTHER_ZONING_SERVERS),
+      fields: ZONING_FIELDS,
+      // Glendale's field names have never been seen from here (every GIS host
+      // is egress-blocked in the build sandbox), so if none of the names above
+      // is present, the first field whose NAME looks like a zone is used - and
+      // the status log says which one, so a wrong guess is visible.
+      fieldPattern: /zon/i,
       tip:
         "The zone code the parcel sits in. It is the code ONLY - what that code lets you build (lot coverage, " +
         "height, setbacks, whether an ADU is by right) lives in the municipal code, not in any map service. " +
@@ -626,22 +725,18 @@ const BG_CONFIG = {
       // LA City's HPOZs. Being inside one means design review on anything
       // visible from the street, which is the difference between a remodel
       // and a two-year conversation.
-      servers: [
-        {
-          url: "https://maps.lacity.org/lahub/rest/services/Boundaries/MapServer",
-          discover: { match: /hpoz|historic preservation|historic district/i, polygonsOnly: true },
-        },
-        {
-          url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Planning/MapServer",
-          discover: { match: /hpoz|historic/i, polygonsOnly: true },
-        },
-      ],
-      fields: ["NAME", "HPOZ_NAME", "DISTRICT", "LABEL"],
+      servers: HISTORIC_SERVERS,
+      fields: HISTORIC_FIELDS,
+      fieldPattern: /hist|district|regist|design|hpoz|name/i,
+      // A hit with no readable name still means "inside a historic area",
+      // which is the answer that matters - so say that, naming the layer.
+      hitLabel: (layerName) => `Yes - in ${layerName}`,
       absent: "Not in a mapped historic district",
       tip:
-        "Historic Preservation Overlay Zones, which LA City maps. Inside one, anything visible from the street goes " +
-        "through design review - the difference between a remodel and a long conversation. Only mapped districts are " +
-        "checked: an individually listed landmark, or a district in another city, will not show here.",
+        "Glendale's historic districts and Register-listed parcels, and LA City's Historic Preservation Overlay " +
+        "Zones. Inside one, anything visible from the street goes through design review - the difference between a " +
+        "remodel and a long conversation. Only these mapped layers are checked: a landmark or district in another " +
+        "city will not show here.",
     },
   },
 
@@ -651,6 +746,14 @@ const BG_CONFIG = {
   PARCELS: {
     label: "Parcel outlines",
     minZoom: 16,   // any wider and it is tens of thousands of polygons
+    // Read by candidate list; the county and Glendale name nothing alike.
+    FIELDS: {
+      apn: ["AIN", "APN", "APN_NUM", "PARCEL_NO", "PARCELNO", "PARCEL_ID", "ParcelID", "PIN"],
+      address: ["SitusAddress", "SITUS_ADDR", "SitusFullAddress", "ADDRESS", "SITE_ADDR", "FullAddress", "ADDR"],
+    },
+    // The first source that returns outlines for the view wins; the rest are
+    // there because the county's parcel service has moved before, and
+    // Glendale publishes its own.
     servers: [
       {
         url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Parcel/MapServer",
@@ -659,6 +762,16 @@ const BG_CONFIG = {
       {
         url: "https://arcgis.gis.lacounty.gov/arcgis/rest/services/LACounty_Dynamic/Parcel/MapServer",
         discover: { match: /parcel/i, exclude: /label|annotation|point/i, polygonsOnly: true, fallbackId: 0 },
+      },
+      // Glendale's zoning service carries its parcels too (the same service
+      // behind the city's "Zoning and Parcel Map"). Two hosts, both tried.
+      {
+        url: "https://gisapps.glendaleca.gov/arcgis/rest/services/Common/Zoning/FeatureServer",
+        discover: { match: /parcel/i, exclude: /label|annotation|point/i, polygonsOnly: true, fallbackId: 1 },
+      },
+      {
+        url: "https://gismap.glendaleca.gov/arcgis/rest/services/Common/Zoning/MapServer",
+        discover: { match: /parcel/i, exclude: /label|annotation|point/i, polygonsOnly: true, fallbackId: 2 },
       },
     ],
   },
@@ -687,6 +800,9 @@ const BG_CONFIG = {
     blockGroupSelected: { color: "#b3401f", weight: 3, fillColor: "#b3401f", fillOpacity: 0.18 },
     blockGroupMatch: { color: "#14663a", weight: 1.2, fillColor: "#21a35d", fillOpacity: 0.45 },
     blockGroupNoMatch: { color: "#9aa3ad", weight: 0.4, fillColor: "#c8ced4", fillOpacity: 0.05 },
+    parcels: { color: "#f5d90a", weight: 1, fill: false, opacity: 0.95 },
+    parcelSelected: { color: "#e11d8f", weight: 3.5, fillColor: "#e11d8f", fillOpacity: 0.18, opacity: 1 },
+    historic: { color: "#7c2d12", weight: 2, fillColor: "#b45309", fillOpacity: 0.28, dashArray: "5 3" },
   },
 };
 
@@ -698,6 +814,7 @@ const BlockGroupApp = (() => {
     zip: false, tract: false, blockGroup: false,
     fire: false, pollution: false, wind: false,
     flood: false, seismic: false, noise: false, noiseSurface: false,
+    zoning: false, historic: false,
     schoolElementary: false,
     schoolMiddle: false,
     schoolHigh: false,
@@ -929,10 +1046,13 @@ const BlockGroupApp = (() => {
         // and every entry still contributes its own features.
         const urls = candidate.urls || [candidate.url];
         let chosen = null;
-        for (const url of urls) {
+        for (const [i, url] of urls.entries()) {
+          // Mirrors can number their layers differently, so each may carry
+          // its own discovery rule.
+          const discover = candidate.discoverEach ? candidate.discoverEach[i] : candidate.discover;
           try {
-            const sublayers = candidate.discover
-              ? await resolveOverlaySublayers(url, candidate.discover)
+            const sublayers = discover
+              ? await resolveOverlaySublayers(url, discover)
               : [{ id: candidate.layerId, name: candidate.hazard || `layer ${candidate.layerId}` }];
             await validateLayer(url, sublayers[0].id);
             chosen = { url, sublayers, hazard: candidate.hazard };
@@ -1015,8 +1135,16 @@ const BlockGroupApp = (() => {
   //  2. maxAllowableOffset. Older ArcGIS Server builds reject it outright,
   //     which fails the whole layer for the sake of an optimisation, so a
   //     rejected query is retried once without it.
+  // Parcels are fetched the same way as the overlays - same record-cap
+  // splitting, same retry - without being one (they have no legend or card).
+  const PARCEL_QUERY = { outFields: "*", simplifyDegrees: 0.000002 };
+
+  function querySpec(key) {
+    return BG_CONFIG.OVERLAYS[key] || (key === "parcels" ? PARCEL_QUERY : {});
+  }
+
   async function fetchOverlayFeatures(key, source, sub, bbox, depth = 0, seen = new Set(), stats = null) {
-    const spec = BG_CONFIG.OVERLAYS[key];
+    const spec = querySpec(key);
     const collected = [];
 
     const build = (simplify) =>
@@ -1095,6 +1223,45 @@ const BlockGroupApp = (() => {
     if (failures.length && !features.length) throw new Error(failures.join(" | "));
     if (failures.length) Utils.logStatus(key, "warn", `${spec.label}: ${failures.join(" | ")}`);
     return { type: "FeatureCollection", features };
+  }
+
+  // --- Zoning -------------------------------------------------------------
+
+  function zoningCode(props) {
+    const spec = BG_CONFIG.PARCEL_CONTEXT.zoning;
+    const listed = Utils.pickField(props, spec.fields);
+    if (listed !== undefined && listed !== null && String(listed).trim() !== "") return String(listed).trim();
+    const guess = Object.keys(props).find((k) => spec.fieldPattern.test(k) && props[k] !== null && String(props[k]).trim() !== "");
+    return guess ? String(props[guess]).trim() : null;
+  }
+
+  function zoningClass(code) {
+    const clean = String(code || "")
+      .toUpperCase()
+      .replace(/^(\[[^\]]*\]|\([^)]*\))+/g, "")
+      .trim();
+    if (!clean) return BG_CONFIG.ZONING_OTHER;
+    return BG_CONFIG.ZONING_CLASSES.find((c) => c.match.test(clean)) || BG_CONFIG.ZONING_OTHER;
+  }
+
+  // The same guard as the fire layer: if the codes stop being readable, the
+  // layer turns grey with no clue why. This names what was seen.
+  function logZoningClasses(geojson) {
+    if (!geojson.features.length) return;
+    const counts = {};
+    const unread = new Set();
+    geojson.features.forEach((f) => {
+      const code = zoningCode(f.properties);
+      const cls = zoningClass(code);
+      counts[cls.label] = (counts[cls.label] || 0) + 1;
+      if (cls === BG_CONFIG.ZONING_OTHER && code) unread.add(code);
+    });
+    Utils.logStatus(
+      "zoning",
+      "info",
+      `Zoning: ${Object.entries(counts).map(([k, n]) => `${k}: ${n}`).join(", ")}.` +
+        (unread.size ? ` Codes not grouped: ${[...unread].slice(0, 12).join(", ")}.` : "")
+    );
   }
 
   // --- Fire hazard --------------------------------------------------------
@@ -2061,6 +2228,7 @@ const BlockGroupApp = (() => {
     if (card) card.classList.add("hidden");
     selectedListingId = null;
     currentListing = null;
+    highlightParcel(null); // the magenta lot belongs to the card that just closed
     if (selectedFeature || enabled.listings) showListingsFor(); // redraw pins unselected
   }
 
@@ -2075,6 +2243,7 @@ const BlockGroupApp = (() => {
       if (currentListing && currentListing.id === listing.id) {
         listingContext = context;
         renderHouseCard();
+        highlightParcel(context);
       }
     });
     // Redraw so the chosen dot is the highlighted one. The block group card is
@@ -2188,81 +2357,234 @@ const BlockGroupApp = (() => {
   // so a block group average would be a fiction. Cached by rounded coordinate
   // so re-opening the same house costs nothing.
   const contextCache = new Map();
-  const contextSources = {};
 
   function contextKey(lat, lon) {
     return `${lat.toFixed(5)},${lon.toFixed(5)}`;
   }
 
-  async function resolveContextSource(key) {
-    if (contextSources[key]) return contextSources[key];
-    const spec = BG_CONFIG.PARCEL_CONTEXT[key];
-    const problems = [];
-    for (const server of spec.servers) {
-      try {
-        const sublayers = await resolveOverlaySublayers(server.url, server.discover);
-        if (sublayers.length) {
-          contextSources[key] = { url: server.url, sublayers };
-          Utils.logStatus(
-            "development",
-            "ok",
-            `${spec.label}: using ${sublayers.map((l) => l.name).join(", ")} from ${server.url.split("/services/")[1] || server.url}.`
-          );
-          return contextSources[key];
-        }
-        problems.push(`${server.url}: no matching layer`);
-      } catch (err) {
-        problems.push(`${server.url}: ${err.message}`);
-      }
+  // Each server resolves once. A server that fails is remembered as failed
+  // for the session, so a dead host costs one round trip rather than one per
+  // house.
+  const contextServerCache = new Map(); // url -> Promise<sublayers | Error>
+
+  function contextSublayers(label, server) {
+    if (!contextServerCache.has(server.url)) {
+      contextServerCache.set(
+        server.url,
+        resolveOverlaySublayers(server.url, server.discover).then(
+          (sublayers) => {
+            Utils.logStatus(
+              "development",
+              "ok",
+              `${label}: ${sublayers.map((l) => l.name).join(", ")} on ${server.url.split("/services/")[1] || server.url}.`
+            );
+            return sublayers;
+          },
+          (err) => err
+        )
+      );
     }
-    throw new Error(problems.join(" | ") || "no service answered");
+    return contextServerCache.get(server.url);
   }
 
+  // Which field carries the answer: the candidate list first (exact name,
+  // then any field CONTAINING a candidate), failing that the first field
+  // whose name fits the pattern. Whichever it was is logged once per service,
+  // so the first time a service nobody has seen the schema of answers, the
+  // log says exactly what was read - and a wrong guess is visible.
+  const loggedFieldChoice = new Set();
+  function fieldKeyFor(attrs, candidates) {
+    const keys = Object.keys(attrs);
+    const usable = (k) => k && attrs[k] !== null && attrs[k] !== undefined && String(attrs[k]).trim() !== "";
+    for (const c of candidates) {
+      const k = keys.find((key) => key.toLowerCase() === c.toLowerCase());
+      if (usable(k)) return k;
+    }
+    for (const c of candidates) {
+      const k = keys.find((key) => key.toLowerCase().includes(c.toLowerCase()));
+      if (usable(k)) return k;
+    }
+    return null;
+  }
+
+  function contextValue(spec, attrs, where) {
+    let key = fieldKeyFor(attrs, spec.fields);
+    const guessed = !key && spec.fieldPattern;
+    if (guessed) {
+      key = Object.keys(attrs).find(
+        (k) => spec.fieldPattern.test(k) && !/^(objectid|fid|oid|globalid|shape)/i.test(k) &&
+          attrs[k] !== null && attrs[k] !== undefined && String(attrs[k]).trim() !== ""
+      ) || null;
+    }
+    const tag = `${spec.label}|${where}`;
+    if (!loggedFieldChoice.has(tag)) {
+      loggedFieldChoice.add(tag);
+      const fields = Object.keys(attrs).join(", ");
+      Utils.logStatus(
+        "development",
+        !key ? "error" : guessed ? "warn" : "info",
+        !key
+          ? `${spec.label} on ${where}: no field to read. Fields there: ${fields} - add the right one to BG_CONFIG.`
+          : `${spec.label} on ${where}: reading "${key}"${guessed ? " (none of the expected names - found by pattern)" : ""}. Fields there: ${fields}.`
+      );
+    }
+    return key ? String(attrs[key]).trim() : null;
+  }
+
+  function pointQueryUrl(url, id, lat, lon, returnGeometry) {
+    return Utils.arcgisQueryUrl(url, id, {
+      outFields: "*",
+      extraParams: {
+        geometry: `${lon},${lat}`,
+        geometryType: "esriGeometryPoint",
+        inSR: "4326",
+        spatialRel: "esriSpatialRelIntersects",
+        returnGeometry: returnGeometry ? "true" : "false",
+      },
+    });
+  }
+
+  // Every server is asked, in order, until one covers the point. Services
+  // here each cover one jurisdiction, so "the first that answers" (what this
+  // used to do) meant a Glendale house was asked of the county's zoning and
+  // came back "not mapped".
   async function queryContextAt(key, lat, lon) {
     const spec = BG_CONFIG.PARCEL_CONTEXT[key];
-    const source = await resolveContextSource(key);
-    for (const sub of source.sublayers) {
-      const url = Utils.arcgisQueryUrl(source.url, sub.id, {
-        outFields: "*",
-        extraParams: {
-          geometry: `${lon},${lat}`,
-          geometryType: "esriGeometryPoint",
-          inSR: "4326",
-          spatialRel: "esriSpatialRelIntersects",
-          returnGeometry: "false",
-        },
-      });
-      const data = await Utils.fetchJSON(url, { timeoutMs: 20000 });
-      const hit = (data.features || [])[0];
-      if (hit) {
-        const value = Utils.pickField(hit.attributes || {}, spec.fields);
-        if (value) return String(value).trim();
+    const problems = [];
+    let answered = false;
+    for (const server of spec.servers) {
+      const sublayers = await contextSublayers(spec.label, server);
+      if (sublayers instanceof Error) {
+        problems.push(`${server.url}: ${sublayers.message}`);
+        continue;
+      }
+      for (const sub of sublayers) {
+        try {
+          const data = await Utils.fetchJSON(pointQueryUrl(server.url, sub.id, lat, lon, false), { timeoutMs: 20000 });
+          if (data && data.error) throw new Error(`ArcGIS error ${data.error.code || "?"}: ${data.error.message || "unknown"}`);
+          answered = true;
+          const hit = (data.features || [])[0];
+          if (!hit) continue;
+          const where = `${server.url.split("/services/")[1] || server.url} (${sub.name})`;
+          const value = contextValue(spec, hit.attributes || {}, where);
+          if (value) return value;
+          if (spec.hitLabel) return spec.hitLabel(sub.name);
+        } catch (err) {
+          problems.push(`${server.url} ${sub.name}: ${err.message}`);
+        }
       }
     }
+    // Nobody could be asked at all: that is a failure, not an answer.
+    if (!answered) throw new Error(problems.join(" | ") || "no service answered");
+    if (problems.length) Utils.logStatus("development", "warn", `${spec.label}: ${problems.join(" | ")}`);
     // Nothing covered the point. For jurisdiction that IS the answer.
     return spec.absent || null;
   }
 
-  // All three at once, and one failing does not lose the others.
+  // --- The parcel under a point --------------------------------------------
+  // The lot itself, with its outline, so a selected house or address can be
+  // shown AS a lot rather than as a dot on one.
+  const SQFT_PER_SQM = 10.7639;
+
+  // Planar area with a latitude correction - exact enough for something the
+  // size of a lot, and no library needed.
+  function polygonSqft(geometry) {
+    if (!geometry) return null;
+    const polys = geometry.type === "Polygon" ? [geometry.coordinates] : geometry.type === "MultiPolygon" ? geometry.coordinates : [];
+    let sqm = 0;
+    polys.forEach((rings) =>
+      rings.forEach((ring, i) => {
+        if (ring.length < 3) return;
+        const lat0 = (ring[0][1] * Math.PI) / 180;
+        const mx = 111320 * Math.cos(lat0);
+        const my = 110540;
+        let a = 0;
+        for (let j = 0; j < ring.length - 1; j++) {
+          a += ring[j][0] * mx * ring[j + 1][1] * my - ring[j + 1][0] * mx * ring[j][1] * my;
+        }
+        sqm += (i === 0 ? 1 : -1) * Math.abs(a / 2);
+      })
+    );
+    return sqm > 0 ? Math.round(sqm * SQFT_PER_SQM) : null;
+  }
+
+  async function lookupParcel(lat, lon) {
+    const spec = BG_CONFIG.PARCELS;
+    const problems = [];
+    for (const server of spec.servers) {
+      const sublayers = await contextSublayers(spec.label, server);
+      if (sublayers instanceof Error) {
+        problems.push(`${server.url}: ${sublayers.message}`);
+        continue;
+      }
+      try {
+        const gj = await Utils.fetchEsriAsGeoJSON(pointQueryUrl(server.url, sublayers[0].id, lat, lon, true), { timeoutMs: 20000 });
+        const feature = (gj.features || [])[0];
+        if (!feature) continue;
+        const props = feature.properties || {};
+        return {
+          feature,
+          apn: Utils.pickField(props, spec.FIELDS.apn) || null,
+          address: Utils.pickField(props, spec.FIELDS.address) || null,
+          sqft: polygonSqft(feature.geometry),
+          source: server.url.split("/services/")[1] || server.url,
+        };
+      } catch (err) {
+        problems.push(`${server.url}: ${err.message}`);
+      }
+    }
+    if (problems.length) throw new Error(problems.join(" | "));
+    return null;
+  }
+
+  // All of them at once, and one failing does not lose the others.
   async function lookupDevelopment(lat, lon) {
     const key = contextKey(lat, lon);
     if (contextCache.has(key)) return contextCache.get(key);
     const pending = (async () => {
       const keys = Object.keys(BG_CONFIG.PARCEL_CONTEXT);
-      const results = await Promise.all(
-        keys.map(async (k) => {
-          try {
-            return [k, { value: await queryContextAt(k, lat, lon) }];
-          } catch (err) {
-            Utils.logStatus("development", "warn", `${BG_CONFIG.PARCEL_CONTEXT[k].label} lookup failed: ${err.message}`);
-            return [k, { error: err.message }];
+      const [results, parcel] = await Promise.all([
+        Promise.all(
+          keys.map(async (k) => {
+            try {
+              return [k, { value: await queryContextAt(k, lat, lon) }];
+            } catch (err) {
+              Utils.logStatus("development", "warn", `${BG_CONFIG.PARCEL_CONTEXT[k].label} lookup failed: ${err.message}`);
+              return [k, { error: err.message }];
+            }
+          })
+        ),
+        lookupParcel(lat, lon).then(
+          (value) => ({ value }),
+          (err) => {
+            Utils.logStatus("development", "warn", `Parcel lookup failed: ${err.message}`);
+            return { error: err.message };
           }
-        })
-      );
-      return Object.fromEntries(results);
+        ),
+      ]);
+      return { ...Object.fromEntries(results), parcel };
     })();
     contextCache.set(key, pending);
     return pending;
+  }
+
+  // The selected lot, outlined on the map. Above the block groups, and not
+  // clickable: it is a marker of what is selected, and must never swallow
+  // the click meant for the block group or pin beneath it.
+  let parcelHighlight = null;
+
+  function highlightParcel(context) {
+    if (parcelHighlight) {
+      map.removeLayer(parcelHighlight);
+      parcelHighlight = null;
+    }
+    const parcel = context && context.parcel && context.parcel.value;
+    if (!parcel || !parcel.feature) return;
+    parcelHighlight = L.geoJSON(parcel.feature, {
+      style: BG_CONFIG.STYLES.parcelSelected,
+      interactive: false,
+    }).addTo(map);
+    restack();
   }
 
   function developmentRows(context) {
@@ -2279,13 +2601,33 @@ const BlockGroupApp = (() => {
       })
       .filter(Boolean)
       .join("");
-    if (!rows) return "";
+    const parcelRows = parcelContextRows(context.parcel);
+    if (!rows && !parcelRows) return "";
     return `${sectionLabel(
       "Development",
       "What the public maps say about building on this exact spot - not the block group, because zoning changes " +
         "across a street. It is a screening answer: it tells you which questions to ask and whom to ask them of, " +
         "and none of it is a substitute for the city's own counter."
-    )}${cardTable(rows)}`;
+    )}${cardTable(rows + parcelRows)}`;
+  }
+
+  function parcelContextRows(got) {
+    if (!got) return "";
+    const tip =
+      "The lot this point falls on, from the parcel map - outlined in magenta on the map. The outline is the " +
+      "assessor's mapped lot line, which is close but is not a survey: a fence or a hedge can sit feet either side.";
+    if (got.error) return cardRow("Parcel", '<span class="dim">lookup failed</span>', `${tip} (The service did not answer: ${got.error})`);
+    const parcel = got.value;
+    if (!parcel) return cardRow("Parcel", '<span class="dim">no mapped lot here</span>', tip);
+    return [
+      cardRow("Parcel", Utils.escapeHTML(String(parcel.apn || "outlined on the map")), `${tip} Source: ${parcel.source}.`),
+      cardRow(
+        "Lot (mapped)",
+        parcel.sqft ? `${Utils.fmtNumber(parcel.sqft)} ft\u00b2` : null,
+        "Area of the mapped lot outline, computed here from its shape. A listing's lot size comes from the seller " +
+          "and can differ - when they disagree by a lot, the outline is usually the better guide."
+      ),
+    ].join("");
   }
 
   // --- Every listing in one table -----------------------------------------
@@ -3200,6 +3542,9 @@ const BlockGroupApp = (() => {
         dpi: "96",
         f: "image",
       });
+      // Which sublayers to draw. Without it a service paints everything it
+      // has - labels, boundaries, the lot the user did not ask for.
+      if (this.options.exportLayers) params.set("layers", this.options.exportLayers);
       return `${this._url}/export?${params.toString()}`;
     },
   });
@@ -4090,7 +4435,7 @@ const BlockGroupApp = (() => {
     if (!enabled[key] || !collection) return;
     if (layers[key]) map.removeLayer(layers[key]);
     layers[key] = buildLayer(key, collection).addTo(map);
-    if (layers[key].bringToFront) layers[key].bringToFront();
+    restack();
   }
 
   // What the filters are currently doing, in words. Silence here was the
@@ -4328,7 +4673,9 @@ const BlockGroupApp = (() => {
           /* the district name is a nicety, not worth failing the card for */
         }
       }
-      renderAddressCard({ address, lat, lon, schools, district, context: await contextPromise });
+      const context = await contextPromise;
+      renderAddressCard({ address, lat, lon, schools, district, context });
+      highlightParcel(context);
     } catch (err) {
       renderAddressCard({ address, lat, lon, schools: [], district: null, context: await contextPromise });
       Utils.logStatus("schoolZones", "warn", `Could not look up schools for this address: ${err.message}`);
@@ -5848,6 +6195,7 @@ const BlockGroupApp = (() => {
     selectedFeature = layer.feature;
     selectedGeoid = geoidOf(props);
     layer.setStyle(BG_CONFIG.STYLES.blockGroupSelected);
+    restack();
 
     const html = `<div class="bg-popup">${detailHTML(props, record, { compact: true, feature: layer.feature })}</div>`;
     if (openPopup) {
@@ -5882,6 +6230,45 @@ const BlockGroupApp = (() => {
 
     selectedLayer = found;
     if (found) found.setStyle(BG_CONFIG.STYLES.blockGroupSelected);
+  }
+
+  // --- Draw order ---------------------------------------------------------
+  // Bottom to top:
+  //   area fills (hazards, pollution, zoning, historic) -> school zones ->
+  //   zip / tract lines -> BLOCK GROUPS -> the selected block group ->
+  //   school dots -> parcel outlines -> the selected parcel -> house pins.
+  //
+  // Everything up to the selected parcel shares ONE canvas, and order within
+  // a canvas is simply paint order, so this re-sorts it after every redraw.
+  // It is deliberately not done with separate panes: under preferCanvas, a
+  // vector layer in its own pane gets its own full-map canvas, which
+  // hit-tests only its own layers and swallows every other click - the bug
+  // that once left the map unusable while 218 tests passed. The house pins
+  // are the exception, and live in their own SVG pane above all of this.
+  //
+  // School dots ride above the block groups so they stay clickable; parcels
+  // and the selected parcel are drawn with interactive:false, so being on
+  // top never steals a click from the block group underneath.
+  const AREA_FILLS_BOTTOM_UP = ["pollution", "fire", "flood", "seismic", "zoning", "historic"];
+
+  function restack() {
+    if (!map) return;
+    const front = (l) => l && l.bringToFront && l.bringToFront();
+    // bringToBack stacks each at the very bottom, so walk top-down.
+    AREA_FILLS_BOTTOM_UP.slice()
+      .reverse()
+      .forEach((k) => layers[k] && layers[k].bringToBack && layers[k].bringToBack());
+    Object.values(SCHOOL_LEVEL_KEYS).forEach((k) => front(layers[k]));
+    front(layers.zip);
+    front(layers.tract);
+    front(layers.blockGroup);
+    front(selectedLayer);
+    Object.values(SCHOOL_LEVEL_KEYS).forEach((k) => {
+      if (!layers[k]) return;
+      layers[k].eachLayer((l) => l.feature && l.feature.properties.__kind === "dot" && front(l));
+    });
+    front(layers.parcels);
+    front(parcelHighlight);
   }
 
   function buildLayer(key, geojson) {
@@ -5937,6 +6324,39 @@ const BlockGroupApp = (() => {
           layer.bindTooltip(
             `${kind.replace(/^./, (c) => c.toUpperCase())} zone<br>` +
               `<span style="opacity:.7">CGS seismic hazard zone - site investigation required before building</span>`,
+            { sticky: true }
+          );
+        },
+      });
+    }
+
+    if (key === "zoning") {
+      logZoningClasses(geojson);
+      return L.geoJSON(geojson, {
+        style: (feature) => {
+          const cls = zoningClass(zoningCode(feature.properties));
+          return { color: cls.color, weight: 1, opacity: 0.9, fillColor: cls.color, fillOpacity: 0.3 };
+        },
+        onEachFeature: (feature, layer) => {
+          const code = zoningCode(feature.properties);
+          layer.bindTooltip(
+            `Zone ${Utils.escapeHTML(code || "?")}<br><span style="opacity:.7">${zoningClass(code).label} &middot; ` +
+              `${Utils.escapeHTML(feature.properties.SOURCE_LAYER || "")}</span>`,
+            { sticky: true }
+          );
+        },
+      });
+    }
+
+    if (key === "historic") {
+      return L.geoJSON(geojson, {
+        style: () => BG_CONFIG.STYLES.historic,
+        onEachFeature: (feature, layer) => {
+          const spec = BG_CONFIG.PARCEL_CONTEXT.historic;
+          const name = Utils.pickField(feature.properties, spec.fields);
+          layer.bindTooltip(
+            `${Utils.escapeHTML(String(name || "Historic district"))}<br><span style="opacity:.7">` +
+              `${Utils.escapeHTML(feature.properties.SOURCE_LAYER || "")} - design review applies to anything visible from the street</span>`,
             { sticky: true }
           );
         },
@@ -6079,14 +6499,11 @@ const BlockGroupApp = (() => {
 
       if (layers[key]) map.removeLayer(layers[key]);
       layers[key] = buildLayer(key, geojson).addTo(map);
-      // Hazard and pollution are area fills: they belong under the boundary
-      // lines and the block group polygons, not on top of them.
-      if (BG_CONFIG.OVERLAYS[key] && layers[key].bringToBack) layers[key].bringToBack();
-      if (schoolKeyLevel(key) && layers[key].bringToFront) {
-        layers[key].bringToFront();
-        // Only now can the filter line count what is on the map.
-        updateSchoolFilterStatus();
-      }
+      // Whatever was just drawn goes to its place in the stack: area fills
+      // under the block groups, the block groups under the houses and lots.
+      restack();
+      // Only now can the filter line count what is on the map.
+      if (schoolKeyLevel(key)) updateSchoolFilterStatus();
       loadedBBox[key] = bbox;
       if (key === "pollution") renderSelection(); // the open card gains its CES rows
 
@@ -6095,6 +6512,7 @@ const BlockGroupApp = (() => {
       if (key === "blockGroup") {
         restoreSelection();
         applyFilters();
+        restack();
       }
 
       if (geojson.features.length === 0) {
@@ -6259,6 +6677,20 @@ const BlockGroupApp = (() => {
           )} zone</div>`
       );
       rows.push('<div class="legend-note">CGS zones where a site investigation is required before building - not a prediction that ground will fail.</div>');
+    } else if (key === "zoning") {
+      rows = BG_CONFIG.ZONING_CLASSES.concat([BG_CONFIG.ZONING_OTHER]).map(
+        (c) => `<div class="legend-row"><span class="swatch" style="background:${c.color};opacity:.6"></span>${c.label}</div>`
+      );
+      rows.push(
+        '<div class="legend-note">Grouped from each city\'s own codes, which differ - hover a zone for its real code. ' +
+          "The code is the question to ask the city, not the answer: what it permits lives in the municipal code.</div>"
+      );
+    } else if (key === "historic") {
+      rows = [
+        `<div class="legend-row"><span class="swatch" style="background:${BG_CONFIG.STYLES.historic.fillColor};opacity:.5;border:1px dashed ${BG_CONFIG.STYLES.historic.color}"></span>Historic district or listed parcel</div>`,
+        '<div class="legend-note">Glendale historic districts and Register parcels; LA City HPOZs. Inside one, anything visible ' +
+          "from the street goes through design review. Other cities' districts are not checked.</div>",
+      ];
     } else if (key === "noise" || key === "noiseSurface") {
       // The service hands over its own legend, so the sidebar cannot disagree
       // with what is actually painted on the map.
@@ -6641,9 +7073,9 @@ const BlockGroupApp = (() => {
     ["National Transportation Noise Map", "BTS / DOT", "Modelled aviation, road and rail noise", () => "live", "The two noise toggles, and the Aviation noise card rows"],
     ["Global Wind Atlas 3", "DTU / World Bank", "Mean wind speed at 100 m", () => metaDate(windGrid && windGrid.meta), "Wind toggle, and the Wind card rows"],
     ["City boundaries", "LA County GIS", "Which of the 88 cities, or unincorporated county", () => "live", "House and pin cards: Development - Jurisdiction"],
-    ["Zoning", "LA County / LA City GIS", "The zone code a parcel sits in", () => "live", "House and pin cards: Development - Zoning"],
-    ["HPOZ", "LA City GIS", "Historic Preservation Overlay Zone boundaries", () => "live", "House and pin cards: Development - Historic district"],
-    ["Parcels", "LA County GIS", "Lot boundaries, 2.4 million of them", () => "live", "Parcel outlines toggle (zoom 16+)"],
+    ["Zoning", "Glendale / LA City / LA County GIS", "The zone code a parcel sits in. Glendale's is the service behind its Zoning and Parcel Map", () => "live", "Zoning toggle (zoom 14+), and house and pin cards: Development - Zoning"],
+    ["Historic districts", "Glendale / LA City GIS", "Glendale historic districts and Register parcels; LA City HPOZs", () => "live", "Historic districts toggle (zoom 13+), and house and pin cards: Development - Historic district"],
+    ["Parcels", "LA County / Glendale GIS", "Lot boundaries, 2.4 million of them", () => "live", "Parcel outlines toggle (zoom 16+), and the magenta selected lot with its Parcel and Lot rows on the cards"],
     ["World Imagery", "Esri", "Aerial photography", () => "live", "Satellite imagery toggle"],
     ["Houses you added", "Your browser", "Addresses you typed or pasted in, geocoded through Nominatim and kept in local storage beside your notes", () => `${manualListings().length} added`, "Pins on the map and rows in the listings table, alongside the Redfin ones"],
     ["Listing extractor", "Anthropic API (optional)", "Fields read out of a listing page you paste: price, size, lot, beds, baths, year built, HOA. Needs scripts/listing-server.py and your own key", () => (document.getElementById("extract-listing") && !document.getElementById("extract-listing").hidden ? "on" : "off - plain file server"), "Fills the house card when you paste a listing"],
@@ -6744,50 +7176,106 @@ const BlockGroupApp = (() => {
 
   // Parcel outlines. Drawn like the other viewport layers, but only when
   // zoomed right in: the county has 2.4 million of them.
-  let parcelSource = null;
+  //
+  // Three things made this fail silently before, all handled now:
+  //  - it asked for outFields=AIN,APN, and a service without exactly those
+  //    fields answers with an ArcGIS error (HTTP 200), which failed the layer;
+  //  - it used the first service that DESCRIBED itself, not the first that
+  //    returned outlines, so a live-but-empty service ended the search;
+  //  - a query over the record cap came back partial, as a map with holes.
+  // And if no service can be queried from the browser at all (a CORS refusal
+  // looks exactly like "Failed to fetch"), the lines are drawn as images from
+  // the service's /export instead - an <img> needs no CORS.
+  let parcelSource = null;     // { url, sub } that last returned outlines
+  let parcelRaster = null;     // the image fallback, when vector is impossible
+
+  function clearParcels() {
+    if (layers.parcels) {
+      map.removeLayer(layers.parcels);
+      delete layers.parcels;
+    }
+    if (parcelRaster) {
+      map.removeLayer(parcelRaster);
+      parcelRaster = null;
+    }
+  }
 
   async function refreshParcels() {
     if (!enabled.parcels) return;
     if (map.getZoom() < BG_CONFIG.PARCELS.minZoom) {
-      if (layers.parcels) {
-        map.removeLayer(layers.parcels);
-        delete layers.parcels;
-      }
+      clearParcels();
       return;
     }
-    try {
-      if (!parcelSource) {
-        const problems = [];
-        for (const server of BG_CONFIG.PARCELS.servers) {
-          try {
-            const sublayers = await resolveOverlaySublayers(server.url, server.discover);
-            if (sublayers.length) {
-              parcelSource = { url: server.url, id: sublayers[0].id };
-              break;
-            }
-            problems.push(`${server.url}: no parcel layer`);
-          } catch (err) {
-            problems.push(`${server.url}: ${err.message}`);
-          }
-        }
-        if (!parcelSource) throw new Error(problems.join(" | "));
+    const b = map.getBounds();
+    const bbox = { xmin: b.getWest(), ymin: b.getSouth(), xmax: b.getEast(), ymax: b.getNorth() };
+    const problems = [];
+    const servers = parcelSource
+      ? [parcelSource.server, ...BG_CONFIG.PARCELS.servers.filter((s) => s !== parcelSource.server)]
+      : BG_CONFIG.PARCELS.servers;
+
+    for (const server of servers) {
+      const sublayers = await contextSublayers(BG_CONFIG.PARCELS.label, server);
+      if (sublayers instanceof Error) {
+        problems.push(`${server.url}: ${sublayers.message}`);
+        continue;
       }
-      const b = map.getBounds();
-      const url = Utils.arcgisQueryUrl(parcelSource.url, parcelSource.id, {
-        outFields: "AIN,APN",
-        extraParams: { maxAllowableOffset: "0.000002" },
-        bbox: { xmin: b.getWest(), ymin: b.getSouth(), xmax: b.getEast(), ymax: b.getNorth() },
-      });
-      const geojson = await Utils.fetchEsriAsGeoJSON(url, { timeoutMs: 25000 });
-      if (layers.parcels) map.removeLayer(layers.parcels);
-      layers.parcels = L.geoJSON(geojson, {
-        style: { color: "#f5d90a", weight: 1, fill: false, opacity: 0.95 },
-        pane: "overlayPane",
-      }).addTo(map);
-      Utils.logStatus("parcels", "ok", `${(geojson.features || []).length} parcel outlines drawn.`);
-    } catch (err) {
-      Utils.logStatus("parcels", "error", `Parcel outlines failed: ${err.message}`);
+      const sub = sublayers[0];
+      const stats = { requests: 0, split: false, stillTruncated: false };
+      try {
+        const features = await fetchOverlayFeatures("parcels", { url: server.url }, sub, bbox, 0, new Set(), stats);
+        if (!enabled.parcels) return;
+        if (!features.length) {
+          problems.push(`${server.url}: no parcels in this view`);
+          continue;
+        }
+        clearParcels();
+        layers.parcels = L.geoJSON(
+          { type: "FeatureCollection", features },
+          { style: BG_CONFIG.STYLES.parcels, interactive: false }
+        ).addTo(map);
+        restack();
+        const changed = !parcelSource || parcelSource.server !== server;
+        parcelSource = { server, sub };
+        Utils.logStatus(
+          "parcels",
+          "ok",
+          `${features.length} parcel outlines drawn from ${server.url.split("/services/")[1] || server.url}` +
+            (stats.split ? ", split to get past the record cap" : "") +
+            (stats.stillTruncated ? " - STILL TRUNCATED, zoom in for every lot" : "") +
+            "."
+        );
+        if (changed && problems.length) Utils.logStatus("parcels", "warn", `Parcels: skipped ${problems.join(" | ")}`);
+        return;
+      } catch (err) {
+        problems.push(`${server.url}: ${err.message}`);
+      }
     }
+
+    // No vector source worked. Draw the lines as images if any MapServer is
+    // there to render them.
+    const raster = BG_CONFIG.PARCELS.servers.find((s) => /MapServer$/.test(s.url));
+    const failedHard = problems.some((p) => !/no parcels in this view/.test(p));
+    if (raster && failedHard) {
+      if (!parcelRaster) {
+        const sublayers = await contextSublayers(BG_CONFIG.PARCELS.label, raster);
+        const id = sublayers instanceof Error ? raster.discover.fallbackId : sublayers[0].id;
+        clearParcels();
+        parcelRaster = esriExportTileLayer(raster.url, {
+          pane: "parcelRaster",
+          maxZoom: BG_CONFIG.MAX_ZOOM,
+          exportLayers: `show:${id}`,
+          opacity: 0.95,
+        }).addTo(map);
+      }
+      Utils.logStatus(
+        "parcels",
+        "warn",
+        `Parcel outlines drawn as images from ${raster.url} - no service answered a query from the browser: ` +
+          `${problems.join(" | ")}. The lines show; the selected-lot highlight needs a query and may not.`
+      );
+      return;
+    }
+    Utils.logStatus("parcels", "error", `Parcel outlines failed: ${problems.join(" | ") || "no service configured"}`);
   }
 
   function addBasemap() {
@@ -6868,6 +7356,13 @@ const BlockGroupApp = (() => {
     map.createPane("listings");
     map.getPane("listings").style.zIndex = 620;
 
+    // Parcel lines as images, only when no parcel service can be queried.
+    // Above the block group canvas (400) so the lines are never buried, and
+    // pointer-events off, so a click falls straight through to the canvas.
+    map.createPane("parcelRaster");
+    map.getPane("parcelRaster").style.zIndex = 450;
+    map.getPane("parcelRaster").style.pointerEvents = "none";
+
     addBasemap();
 
     initStatusPanel();
@@ -6886,9 +7381,8 @@ const BlockGroupApp = (() => {
 
     document.getElementById("toggle-parcels").addEventListener("change", (e) => {
       enabled.parcels = e.target.checked;
-      if (!enabled.parcels && layers.parcels) {
-        map.removeLayer(layers.parcels);
-        delete layers.parcels;
+      if (!enabled.parcels) {
+        clearParcels();
         Utils.logStatus("parcels", "info", "Parcel outlines off.");
       } else if (enabled.parcels) {
         if (map.getZoom() < BG_CONFIG.PARCELS.minZoom) {
@@ -6956,6 +7450,8 @@ const BlockGroupApp = (() => {
     });
     document.getElementById("toggle-flood").addEventListener("change", (e) => onToggle("flood", e.target.checked));
     document.getElementById("toggle-seismic").addEventListener("change", (e) => onToggle("seismic", e.target.checked));
+    document.getElementById("toggle-zoning").addEventListener("change", (e) => onToggle("zoning", e.target.checked));
+    document.getElementById("toggle-historic").addEventListener("change", (e) => onToggle("historic", e.target.checked));
     document.getElementById("toggle-noise").addEventListener("change", (e) => onToggle("noise", e.target.checked));
     document
       .getElementById("toggle-noise-surface")
@@ -6986,6 +7482,8 @@ const BlockGroupApp = (() => {
         refreshLayer("pollution");
         refreshLayer("flood");
         refreshLayer("seismic");
+        refreshLayer("zoning");
+        refreshLayer("historic");
         refreshLayer("schoolElementary");
         refreshLayer("schoolMiddle");
         refreshLayer("schoolHigh");
@@ -7010,6 +7508,11 @@ const BlockGroupApp = (() => {
     // Lets a test prove the row helper refuses to stay silent about a missing
     // source - the guarantee that stops explanations being left off again.
     cardRowForTest: (label, value, tip) => cardRow(label, value, tip),
+    // The exact-point lookups behind the house and pin cards, for a point no
+    // card has asked about yet.
+    lookupDevelopmentForTest: (lat, lon) => lookupDevelopment(lat, lon),
+    developmentRowsForTest: (context) => developmentRows(context),
+    zoningClassForTest: (code) => zoningClass(code).key,
     // Re-reads the CSV folder from scratch, so a test can prove that a home
     // you removed comes back when a newer download still carries it.
     reloadListingsForTest: async () => {
@@ -7023,7 +7526,7 @@ const BlockGroupApp = (() => {
       return {
         map, enabled, layers, censusData, selectedProps, windGrid, windOverlay,
         pinArmed, cesByTract, basemapKind, filters, parcelData, districtLayer,
-        listingsData, listingsMeta, listingStore,
+        listingsData, listingsMeta, listingStore, parcelHighlight, parcelRaster, selectedLayer,
       };
     },
   };

@@ -36,6 +36,8 @@ Zip codes are useless for this. A zip can span a canyon and a flood plain.
 | Schools: zones + dots + your GreatSchools ratings | Usually the single biggest driver of price |
 | Jurisdiction, zoning, historic | Which rulebook applies to building here |
 | Satellite + parcel outlines | Where the trees, slope and lot lines actually are |
+| Zoning + historic district layers | See where the rules change before clicking a house |
+| Selected lot outlined, with parcel number and mapped lot size | The lot, not a dot on it |
 | Add a house by address | Not everything comes from Redfin |
 | Paste a listing, it fills the card | Typing beds/baths/sqft by hand is the tedious part |
 

@@ -38,7 +38,8 @@ Top to bottom:
   price, and about 30 more. They stack.
 - **Boundaries** — zip, tract, block group.
 - **Environment & hazards** — fire, pollution, flood, seismic, noise, wind.
-- **Aerial** — satellite imagery, parcel outlines (zoom 16+).
+- **Lots, zoning & aerial** — satellite imagery, parcel outlines (zoom 16+),
+  zoning (zoom 14+), historic districts (zoom 13+).
 - **Listings** — show every house across the county, add one by address.
 - **Schools** — three switches and three rating filters.
 - **Density** — shade by people per square mile.
@@ -54,10 +55,26 @@ misread.
 
 **House card** — opens when you click a red pin. The listing, plus how its
 price per square foot compares to its block group. Heart, notes, and
-not-interested live here.
+not-interested live here. Its **Development** section says which city's rules
+apply, the zone code, whether the lot is in a historic district, and the
+parcel number and mapped lot size - and the lot itself is outlined in
+**magenta** on the map.
 
-**Pin card** — drop a pin anywhere to get the exact-address answer: schools,
-jurisdiction, zoning, commute.
+**Pin card** — drop a pin anywhere, or search an address, to get the
+exact-address answer: schools, jurisdiction, zoning, historic, parcel,
+commute. The lot is outlined in magenta here too.
+
+## What sits on top of what
+
+From the top: house pins, the magenta selected lot, parcel lines, school dots,
+the selected block group, block groups, zip and tract lines, school zones, and
+at the bottom the area layers (zoning, historic, fire, flood, seismic,
+pollution).
+
+Block groups sit over the zoning and hazard areas, so a click there always
+selects the block group. To read one of those areas, hover it with block
+groups turned off, or look at the house or pin card, which asks about the
+exact point. Parcel lines and the magenta lot never take a click.
 
 ## Schools
 

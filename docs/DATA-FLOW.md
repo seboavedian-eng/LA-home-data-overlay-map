@@ -74,6 +74,7 @@ Three ways data arrives, and the difference matters:
 | Noise | BTS / DOT | Live | Cached map tiles | — |
 | Wind | Global Wind Atlas | Built — `fetch-wind-data.py` | You download a GeoTIFF | — |
 | Jurisdiction, zoning, HPOZ, parcels | LA County + LA City GIS | Live | ArcGIS REST | Host swaps (it has before) |
+| Glendale zoning, parcels, historic parcels | City of Glendale GIS (`gisapps` / `gismap.glendaleca.gov`) | Live | ArcGIS REST | Field names unverified — the log says which field it read |
 | Satellite | Esri World Imagery | Live | Map tiles | — |
 | Address search | Nominatim | Live | JSON API | Rate limit if hammered |
 | Listing extraction | Anthropic API | Optional | Needs `listing-server.py` + key | No key, no package |

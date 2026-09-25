@@ -138,7 +138,7 @@
       </section>
 
       <section id="aerial-section">
-        <h2>Aerial view</h2>
+        <h2>Lots, zoning &amp; aerial</h2>
         <ul class="toggle-list">
           <li>
             <input type="checkbox" id="toggle-satellite" />
@@ -151,10 +151,26 @@
             <input type="checkbox" id="toggle-parcels" />
             <label for="toggle-parcels">
               <span>Parcel outlines</span>
-              <span class="layer-desc">The county's lot boundaries, drawn over whatever basemap is showing. Zoom <span class="zoom-req">16+</span>.</span>
+              <span class="layer-desc">Lot boundaries from the county, or Glendale's own parcel map, drawn above the block groups. Click a house or search an address and its lot is outlined in magenta. Zoom <span class="zoom-req">16+</span>.</span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-zoning" />
+            <label for="toggle-zoning">
+              <span>Zoning</span>
+              <span class="layer-desc">Glendale, LA City and unincorporated county zoning, coloured by what each code broadly allows. Hover for the real code. Zoom <span class="zoom-req">14+</span>.</span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-historic" />
+            <label for="toggle-historic">
+              <span>Historic districts</span>
+              <span class="layer-desc">Glendale historic districts and Register parcels, and LA City HPOZs. Design review applies inside. Zoom <span class="zoom-req">13+</span>.</span>
             </label>
           </li>
         </ul>
+        <div id="zoning-legend" class="legend-box hidden"></div>
+        <div id="historic-legend" class="legend-box hidden"></div>
       </section>
 
       <section id="listings-section">

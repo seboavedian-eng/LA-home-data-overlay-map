@@ -68,6 +68,12 @@ stale by comparing against it.
 
 ## Gotchas that cost real time
 
+- **Draw order is paint order on ONE canvas.** `restack()` re-sorts it after
+  every redraw: area fills < school zones < boundaries < block groups <
+  school dots < parcels < selected lot. Never give a vector layer its own
+  pane to get it on top (see the next point); give it `interactive: false`
+  if it must sit above the block groups without stealing their clicks.
+
 - **`preferCanvas` + a vector layer with its own pane** creates a *second*
   canvas covering the whole map that hit-tests only its own layers and swallows
   every other click. Listing pins are DOM markers (`L.marker` + `divIcon`) for
@@ -102,8 +108,10 @@ stale by comparing against it.
 
 ## Open items waiting on the user
 
-1. Status-log lines after clicking a house (jurisdiction / zoning / historic) —
-   those three endpoints have never been verified against a real browser.
+1. Status-log lines after clicking a house (jurisdiction / zoning / historic /
+   parcel) and after ticking Zoning, Historic districts and Parcel outlines —
+   none of these endpoints, Glendale's included, has been verified against a
+   real browser. The log names the field each service was read from.
 2. Glendale zoning Table 30.11-B — every route to ecode360 is egress-blocked.
 3. Checking `gusd.net/8439_3` against the Glendale zones to date them.
 

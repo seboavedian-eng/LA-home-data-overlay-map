@@ -58,6 +58,16 @@ const PARCEL_POLY = esriPolygon({ AIN: "5555001001" }, [
   [-118.2505, 34.0495], [-118.2505, 34.0505], [-118.2495, 34.0505], [-118.2495, 34.0495],
 ]);
 
+// Glendale's services. Their real field names have never been read from the
+// build sandbox, so these use names the candidate lists do NOT carry - the
+// app has to find them by pattern, and say it did.
+const GLENDALE_ZONE = esriPolygon({ OBJECTID: 11, ZON_CD: "R-1650" }, [
+  [-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04],
+]);
+const GLENDALE_HISTORIC = esriPolygon({ OBJECTID: 12, HIST_DIST_NM: "Rossmoyne Historic District" }, [
+  [-118.255, 34.045], [-118.255, 34.055], [-118.245, 34.055], [-118.245, 34.045],
+]);
+
 const FIRE_VERY_HIGH = esriPolygon({ HAZ_CLASS: "Very High", OBJECTID: 1 }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04],
 ]);
@@ -759,6 +769,7 @@ async function main() {
   let countyFireQueries = [];
   let devQueries = [];
   let parcelQueries = [];
+  let parcelQueriesFail = false;
   await page.route("**://public.gis.lacounty.gov/**", (route) => {
     const url = route.request().url();
 
@@ -785,6 +796,7 @@ async function main() {
     if (/\/Parcel\//.test(url)) {
       if (url.includes("/query")) {
         parcelQueries.push(url);
+        if (parcelQueriesFail) return route.fulfill(json({ error: { code: 400, message: "Invalid or missing input parameters." } }));
         return route.fulfill(json(esriFC([PARCEL_POLY])));
       }
       return route.fulfill(json({ layers: [{ id: 0, name: "Parcels", geometryType: "esriGeometryPolygon" }] }));
@@ -876,6 +888,35 @@ async function main() {
     cesQueries.push(route.request().url());
     return route.fulfill(json(esriFC([CES_TRACT])));
   });
+
+  // Glendale's two hosts. Empty by default, so every existing check sees the
+  // county and LA City answers it always did; glendaleHits switches them on.
+  let glendaleQueries = [];
+  let glendaleHits = false;
+  const glendaleRoute = (route) => {
+    const url = route.request().url();
+    if (url.includes("/query")) {
+      glendaleQueries.push(url);
+      if (!glendaleHits) return route.fulfill(json(esriFC([])));
+      if (/HistoricParcels/.test(url)) return route.fulfill(json(esriFC([GLENDALE_HISTORIC])));
+      if (/Zoning\/FeatureServer\/2\//.test(url)) return route.fulfill(json(esriFC([GLENDALE_ZONE])));
+      return route.fulfill(json(esriFC([])));
+    }
+    if (/HistoricParcels/.test(url)) {
+      return route.fulfill(json({ layers: [{ id: 0, name: "Historic Parcels", geometryType: "esriGeometryPolygon" }] }));
+    }
+    return route.fulfill(
+      json({
+        layers: [
+          { id: 0, name: "Glendale_Boundary", geometryType: "esriGeometryPolygon" },
+          { id: 1, name: "Parcels", geometryType: "esriGeometryPolygon" },
+          { id: 2, name: "Zoning", geometryType: "esriGeometryPolygon" },
+        ],
+      })
+    );
+  };
+  await page.route("**://gisapps.glendaleca.gov/**", glendaleRoute);
+  await page.route("**://gismap.glendaleca.gov/**", glendaleRoute);
 
   // LA City GeoHub: LAUSD attendance boundaries, one sublayer per level,
   // plus a "Key Codes" lookup table that must never be drawn.
@@ -2949,9 +2990,190 @@ async function main() {
     );
     step(
       "parcel geometry is generalised server-side, like every other layer",
-      parcelQueries.every((u) => /maxAllowableOffset=/.test(u)),
-      parcelQueries[0] && parcelQueries[0].slice(0, 120)
+      parcelQueries.filter((u) => /esriGeometryEnvelope/.test(u)).every((u) => /maxAllowableOffset=/.test(u)) &&
+        parcelQueries.some((u) => /esriGeometryEnvelope/.test(u)),
+      parcelQueries.find((u) => /esriGeometryEnvelope/.test(u)) || "no view queries"
     );
+    step(
+      "parcels ask for every field, not a named pair a service may not have",
+      parcelQueries.filter((u) => /esriGeometryEnvelope/.test(u)).every((u) => /outFields=\*/.test(u)),
+      "outFields=AIN,APN failed with an ArcGIS error on any service lacking exactly those"
+    );
+
+    // --- Draw order: block groups over the area layers, lots over them ------
+    // These move the map and change the selection; both are put back after,
+    // because the checks that follow read the card of the block group that
+    // was open.
+    const savedState = await page.evaluate(() => {
+      const s = BlockGroupApp.state;
+      const c = s.map.getCenter();
+      return { lat: c.lat, lng: c.lng, zoom: s.map.getZoom(), geoid: s.selectedProps && s.selectedProps.GEOID };
+    });
+    await page.check("#toggle-zoning");
+    await page.waitForTimeout(1500);
+    const drawOrder = await page.evaluate(() => {
+      const s = BlockGroupApp.state;
+      const anyLayer = s.layers.blockGroup && s.layers.blockGroup.getLayers()[0];
+      const renderer = anyLayer && anyLayer._renderer;
+      if (!renderer) return null;
+      const order = [];
+      for (let o = renderer._drawFirst; o; o = o.next) order.push(o.layer);
+      const idx = (group) => (group ? group.getLayers().map((l) => order.indexOf(l)).filter((i) => i >= 0) : []);
+      return {
+        zoning: idx(s.layers.zoning),
+        blockGroup: idx(s.layers.blockGroup),
+        parcels: idx(s.layers.parcels),
+        highlight: idx(s.parcelHighlight),
+      };
+    });
+    step(
+      "zoning draws UNDER the block groups",
+      drawOrder && drawOrder.zoning.length && Math.max(...drawOrder.zoning) < Math.min(...drawOrder.blockGroup),
+      JSON.stringify(drawOrder)
+    );
+    step(
+      "parcel outlines draw OVER the block groups",
+      drawOrder && drawOrder.parcels.length && Math.min(...drawOrder.parcels) > Math.max(...drawOrder.blockGroup),
+      JSON.stringify(drawOrder && { parcels: drawOrder.parcels, blockGroup: drawOrder.blockGroup })
+    );
+    step(
+      "the selected lot draws over everything on the canvas",
+      drawOrder && drawOrder.highlight.length &&
+        Math.min(...drawOrder.highlight) > Math.max(...drawOrder.parcels, ...drawOrder.blockGroup, ...drawOrder.zoning),
+      JSON.stringify(drawOrder && drawOrder.highlight)
+    );
+    step(
+      "the lot outlines and the highlight are not clickable, so they can never steal a block group's click",
+      await page.evaluate(() => {
+        const s = BlockGroupApp.state;
+        const all = [...s.layers.parcels.getLayers(), ...(s.parcelHighlight ? s.parcelHighlight.getLayers() : [])];
+        return all.length > 0 && all.every((l) => l.options.interactive === false);
+      })
+    );
+    await page.evaluate(() => {
+      BlockGroupApp.state.map.setView([34.05, -118.21], 17);
+    });
+    await page.waitForTimeout(1500);
+    const clickAt = async (lat, lon) => {
+      const pt = await page.evaluate(
+        ([la, lo]) => {
+          const p = BlockGroupApp.state.map.latLngToContainerPoint([la, lo]);
+          const r = document.getElementById("map").getBoundingClientRect();
+          return { x: r.left + p.x, y: r.top + p.y };
+        },
+        [lat, lon]
+      );
+      await page.mouse.click(pt.x, pt.y);
+    };
+    await page.evaluate(() => BlockGroupApp.state.map.closePopup());
+    await page.waitForTimeout(300);
+    await clickAt(34.05, -118.21);
+    await page.waitForTimeout(600);
+    step(
+      "with zoning under and parcels over, a REAL click still selects the block group",
+      (await page.evaluate(() => BlockGroupApp.state.selectedProps && BlockGroupApp.state.selectedProps.GEOID)) === "060372011003",
+      String(await page.evaluate(() => BlockGroupApp.state.selectedProps && BlockGroupApp.state.selectedProps.GEOID))
+    );
+    const zoningLegend = await page.locator("#zoning-legend").innerText();
+    step(
+      "the zoning legend groups codes by what they allow, and says the code is not the answer",
+      /Single-family/.test(zoningLegend) && /Multi-family/.test(zoningLegend) && /municipal code/.test(zoningLegend),
+      zoningLegend.replace(/\s+/g, " ").slice(0, 120)
+    );
+    const zoningLog = await page.locator("#status-log").innerText();
+    step(
+      "the log counts zoning polygons by group, so unreadable codes are visible",
+      /Zoning: Single-family residential: \d+/.test(zoningLog),
+      (zoningLog.split("\n").find((l) => /Zoning: /.test(l)) || "").slice(0, 120)
+    );
+    step(
+      "zone codes group correctly across cities' conventions",
+      await page.evaluate(() => {
+        const c = BlockGroupApp.zoningClassForTest;
+        return c("R1-1-HCR") === "single" && c("R-1650") === "multi" && c("RE11-1") === "single" &&
+          c("[Q]R3-1") === "multi" && c("C2-1VL") === "commercial" && c("M1-1") === "industrial" &&
+          c("SFMU") === "mixed" && c("OS-1XL") === "open" && c("") === "other";
+      })
+    );
+    await page.uncheck("#toggle-zoning");
+    await page.uncheck("#toggle-parcels");
+
+    // Every parcel query refused: the lines still show, as images.
+    parcelQueriesFail = true;
+    await page.check("#toggle-parcels");
+    await page.waitForTimeout(1500);
+    const rasterSrc = await page.evaluate(() => {
+      const img = document.querySelector(".leaflet-parcelRaster-pane img");
+      return img ? img.getAttribute("src") : null;
+    });
+    step(
+      "when no parcel service will answer a query, the lines are drawn as images from /export",
+      !!rasterSrc && /\/Parcel\/MapServer\/export\?/.test(rasterSrc) && /layers=show%3A0/.test(rasterSrc),
+      (rasterSrc || "no image tiles").slice(0, 140)
+    );
+    step(
+      "...and the log says why, naming what failed",
+      /drawn as images/.test(await page.locator("#status-log").textContent()) &&
+        /Invalid or missing input parameters/.test(await page.locator("#status-log").textContent())
+    );
+    await page.uncheck("#toggle-parcels");
+    step(
+      "turning parcels off removes the image fallback too",
+      (await page.locator(".leaflet-parcelRaster-pane img").count()) === 0
+    );
+    parcelQueriesFail = false;
+
+    // --- Glendale: the services behind its Zoning and Parcel Map -----------
+    glendaleHits = true;
+    await page.check("#toggle-historic");
+    await page.waitForTimeout(1500);
+    step(
+      "the historic layer draws Glendale's historic parcels",
+      await page.evaluate(() => {
+        const l = BlockGroupApp.state.layers.historic;
+        let found = false;
+        if (l) l.eachLayer((x) => { if (x.feature.properties.HIST_DIST_NM) found = true; });
+        return found;
+      }),
+      `${glendaleQueries.filter((u) => /HistoricParcels/.test(u)).length} Glendale historic queries`
+    );
+    await page.uncheck("#toggle-historic");
+    const glendaleContext = await page.evaluate(async () => {
+      const ctx = await BlockGroupApp.lookupDevelopmentForTest(34.0501, -118.2501);
+      return { ctx: JSON.parse(JSON.stringify({ ...ctx, parcel: { value: ctx.parcel.value && { ...ctx.parcel.value, feature: null } } })), rows: BlockGroupApp.developmentRowsForTest(ctx) };
+    });
+    step(
+      "a Glendale point gets Glendale's zone code - asked of Glendale first, not the county",
+      glendaleContext.ctx.zoning.value === "R-1650",
+      JSON.stringify(glendaleContext.ctx.zoning)
+    );
+    step(
+      "...read from a field no candidate list names, found by pattern",
+      /reading "ZON_CD" \(none of the expected names - found by pattern\)/.test(await page.locator("#status-log").textContent()),
+      ((await page.locator("#status-log").textContent()).match(/[^\n]{0,40}ZON_CD[^\n]{0,80}/) || [""])[0]
+    );
+    step(
+      "...and whether it is historic, from Glendale's historic parcels",
+      /Rossmoyne/.test(glendaleContext.ctx.historic.value || ""),
+      JSON.stringify(glendaleContext.ctx.historic)
+    );
+    step(
+      "the card's development section carries the parcel and its mapped lot size",
+      /Parcel/.test(glendaleContext.rows) && /5555001001/.test(glendaleContext.rows) && /Lot \(mapped\)/.test(glendaleContext.rows) && /ft/.test(glendaleContext.rows),
+      glendaleContext.rows.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").match(/Parcel.{0,80}/)
+    );
+    glendaleHits = false;
+    await page.evaluate((v) => BlockGroupApp.state.map.setView([v.lat, v.lng], v.zoom), savedState);
+    await page.waitForTimeout(1500);
+    if (savedState.geoid) {
+      await page.evaluate((geoid) => {
+        BlockGroupApp.state.layers.blockGroup.eachLayer((l) => {
+          if (l.feature.properties.GEOID === geoid) l.fire("click");
+        });
+      }, savedState.geoid);
+      await page.waitForTimeout(800);
+    }
+
     await page.uncheck("#toggle-parcels");
     await page.evaluate(() => BlockGroupApp.state.map.setZoom(13));
     await page.waitForTimeout(600);
@@ -3954,8 +4176,11 @@ async function main() {
     );
     step(
       "the zone service is asked by point, never for whole polygons",
-      zoneQueries.length > 0 && zoneQueries.every((u) => u.includes("esriGeometryPoint")),
-      `${zoneQueries.length} point queries`
+      // Only the three LAUSD zone sublayers: the same host also answers the
+      // historic-district layer, which is an area layer by design.
+      zoneQueries.filter((u) => /\/[456]\/query/.test(u)).length > 0 &&
+        zoneQueries.filter((u) => /\/[456]\/query/.test(u)).every((u) => u.includes("esriGeometryPoint")),
+      `${zoneQueries.filter((u) => /\/[456]\/query/.test(u)).length} point queries`
     );
     step(
       "the 'Key Codes' lookup layer is never queried",
