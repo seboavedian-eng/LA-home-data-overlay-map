@@ -472,6 +472,11 @@ const BG_CONFIG = {
   // likely vintage, but no network dependency and guaranteed coverage.
   SCHOOL_ZONES_LOCAL_URL: "js/data/school-zones-local.json",
 
+  // What each zone lets you build, one file per jurisdiction. Code, not data
+  // you build - so it lives outside js/data and is committed. See
+  // js/zone-rules/glendale.json for the shape, and its "verified" flags.
+  ZONE_RULES_FILES: ["js/zone-rules/glendale.json"],
+
   // Districts publish an official address lookup that is current and
   // authoritative. The zone popup links to it, because a polygon is for
   // browsing and this is for deciding.
@@ -1222,6 +1227,8 @@ const BlockGroupApp = (() => {
           got.forEach((f) => {
             decodeDomains(f.properties, fields);
             applySymbology(f.properties, sym);
+            // Which service a zone came from decides whose rules apply to it.
+            f.properties.__sourceUrl = source.url;
           });
         }
         // Where several services make up one layer, remember which one each
@@ -2785,13 +2792,43 @@ const BlockGroupApp = (() => {
       .filter(Boolean)
       .join("");
     const parcelRows = parcelContextRows(context.parcel);
+    const ruleRows = zoneRuleRows(context);
     if (!rows && !parcelRows) return "";
     return `${sectionLabel(
       "Development",
       "What the public maps say about building on this exact spot - not the block group, because zoning changes " +
         "across a street. It is a screening answer: it tells you which questions to ask and whom to ask them of, " +
         "and none of it is a substitute for the city's own counter."
-    )}${cardTable(rows + parcelRows)}`;
+    )}${cardTable(rows + parcelRows)}${ruleRows}`;
+  }
+
+  // What the zone lets you build, from the jurisdiction's rules file. Read at
+  // the exact point: the zone value and the city the card already found.
+  function zoneRuleRows(context) {
+    const zoning = context && context.zoning && context.zoning.value;
+    const jurisdiction = context && context.jurisdiction && context.jurisdiction.value;
+    if (!zoning || !zoneRules) return "";
+    const rule = zoneRules.forZone(zoning, { jurisdiction });
+    if (!rule) return "";
+    const tip = (r) =>
+      `${r.section || r.source || rule.set.code}, as of ${rule.set.asOf}. ` +
+      (r.verified ? rule.set.howCollected : `Not verified: ${r.source || "from a search summary"}.`) +
+      (/floor area/i.test(r.topic) && rule.set.farDistrictNote ? ` ${rule.set.farDistrictNote}` : "") +
+      (r.conflict ? ` Conflict: ${r.conflict}.` : "");
+    const rows = rule.zone.rules
+      .concat(rule.state)
+      .map((r) =>
+        cardRow(
+          Utils.escapeHTML(r.topic),
+          `${Utils.escapeHTML(r.value)}${r.verified ? "" : ' <span class="unverified">unverified</span>'}`,
+          tip(r)
+        )
+      )
+      .join("");
+    return `${subLabel(
+      `What ${Utils.escapeHTML(rule.zone.zone)} lets you build`,
+      `${rule.set.jurisdiction}'s ${rule.zone.zone} (${rule.zone.name}), from ${rule.set.code}. A screening answer - the city's counter has the final word.`
+    )}${cardTable(rows)}`;
   }
 
   function parcelContextRows(got) {
@@ -6415,6 +6452,161 @@ const BlockGroupApp = (() => {
     if (found) found.setStyle(BG_CONFIG.STYLES.blockGroupSelected);
   }
 
+  // --- Layers as objects ---------------------------------------------------
+  // js/core/layers.js. Zoning and historic are full classes; the others are
+  // wrapped so the identify card can ask every layer the same question.
+  let layerRegistry = null;
+  let zoneRules = null;
+
+  function initLayerObjects() {
+    const helpers = {
+      escapeHTML: Utils.escapeHTML,
+      pickField: Utils.pickField,
+      zoningCode,
+      zoningClass,
+      infoIcon,
+    };
+    zoneRules = new MapLayers.ZoneRules();
+    layerRegistry = new MapLayers.Registry();
+    layerRegistry.register(new MapLayers.ZoningLayer(zoneRules).bind(helpers));
+    layerRegistry.register(new MapLayers.HistoricLayer(BG_CONFIG).bind(helpers));
+
+    const esc = Utils.escapeHTML;
+    const adapter = (key, label, describe, featureFilter) =>
+      layerRegistry.register(new MapLayers.AdapterLayer(key, { label, describe, featureFilter }).bind(helpers));
+
+    Object.entries(SCHOOL_LEVEL_KEYS).forEach(([level, key]) =>
+      adapter(
+        key,
+        `${BG_CONFIG.SCHOOL_LEVELS[level].short} zone`,
+        (props) => ({
+          title: String(Utils.pickField(props, BG_CONFIG.SCHOOL_BOUNDARIES.FIELDS.name) || "Attendance zone"),
+          html: schoolZonePopup(props, level),
+        }),
+        (f) => f.properties && f.properties.__kind === "zone"
+      )
+    );
+    adapter("fire", "Fire", (props) => {
+      const cls = fireClass(props);
+      return {
+        title: `Fire hazard: ${cls ? cls.replace(/^./, (c) => c.toUpperCase()) : "unclassified"}`,
+        html:
+          `<p class="here-sub">${esc(props.SOURCE_LAYER || "CAL FIRE hazard zone")}</p>` +
+          '<ul class="zone-rules"><li>Ignition-resistant construction (Chapter 7A) applies to new building in High and Very High zones</li>' +
+          "<li>Defensible space clearance is required, and insurers price for it</li></ul>",
+      };
+    });
+    adapter("flood", "Flood", (props) => {
+      const cls = floodClass(props);
+      return {
+        title: `Flood zone ${floodZoneOf(props) || "?"}`,
+        html:
+          `<p class="here-sub">${esc(cls ? cls.label : "unclassified")}</p>` +
+          '<ul class="zone-rules"><li>A / AE / V / VE: a federally backed mortgage requires flood insurance</li>' +
+          "<li>Building below the base flood elevation is restricted</li></ul>",
+      };
+    });
+    adapter("seismic", "Seismic", (props) => ({
+      title: `${String(props.HAZARD_KIND || "Seismic").replace(/^./, (c) => c.toUpperCase())} zone`,
+      html: '<ul class="zone-rules"><li>A geotechnical site investigation is required before building</li><li>CGS seismic hazard zone - a requirement to investigate, not a prediction</li></ul>',
+    }));
+    adapter("pollution", "Pollution", (props) => ({
+      title: "Pollution burden",
+      html: pollutionTooltip(props),
+    }));
+
+    // Rules files load in the background: everything works without them, and
+    // the tooltips read them lazily so they appear the moment they arrive.
+    (BG_CONFIG.ZONE_RULES_FILES || []).forEach(async (url) => {
+      try {
+        const set = await Utils.fetchJSON(url, { timeoutMs: 20000 });
+        zoneRules.add(set);
+        Utils.logStatus(
+          "zoning",
+          "info",
+          `Zone rules: ${set.jurisdiction}, ${set.zones.length} zones from ${url}` +
+            (set.verified ? "." : " - read from search summaries, every value marked unverified.")
+        );
+        if (enabled.zoning) renderOverlayLegend("zoning");
+      } catch (err) {
+        Utils.logStatus("zoning", "warn", `Zone rules ${url} did not load (${err.message}); zones show without their limits.`);
+      }
+    });
+  }
+
+  // --- Identify: one click, every layer ------------------------------------
+  // GIS practice (ArcGIS, QGIS): a click asks every visible layer what is at
+  // that point, rather than making you reorder layers to reach the one you
+  // want. The shapes are already drawn, so this is a local point-in-polygon
+  // test - no network. The tab you last chose stays chosen.
+  const IDENTIFY_ORDER = ["zoning", "historic", "schoolElementary", "schoolMiddle", "schoolHigh", "fire", "flood", "seismic", "pollution"];
+  let identifyTab = null;
+  let identifyResult = null;
+
+  function identifyAt(latlng) {
+    const tabs = [];
+    IDENTIFY_ORDER.forEach((key) => {
+      if (!enabled[key] || !layers[key]) return;
+      const obj = layerRegistry && layerRegistry.get(key);
+      if (!obj) return;
+      const hits = obj.hitsAt(layers[key], latlng);
+      if (!hits.length) return;
+      const parts = hits.map((f) => obj.describe(f.properties, {})).filter(Boolean);
+      if (parts.length) tabs.push({ key, label: obj.label, parts });
+    });
+    identifyResult = { latlng, tabs };
+    renderIdentify();
+    return tabs;
+  }
+
+  function renderIdentify() {
+    const card = document.getElementById("here-card");
+    if (!card) return;
+    const tabs = (identifyResult && identifyResult.tabs) || [];
+    if (!tabs.length) {
+      card.classList.add("hidden");
+      card.innerHTML = "";
+      return;
+    }
+    const active = tabs.find((t) => t.key === identifyTab) || tabs[0];
+    const esc = Utils.escapeHTML;
+    card.innerHTML =
+      `<div class="here-head"><strong>Here</strong><span class="here-hint">${tabs.length} layer${tabs.length > 1 ? "s" : ""} at this point</span>` +
+      '<button type="button" class="here-close" aria-label="Close">&times;</button></div>' +
+      `<div class="here-tabs" role="tablist">${tabs
+        .map(
+          (t) =>
+            `<button type="button" role="tab" class="here-tab${t === active ? " on" : ""}" data-key="${t.key}" aria-selected="${t === active}">${esc(t.label)}</button>`
+        )
+        .join("")}</div>` +
+      `<div class="here-body">${active.parts.map((p) => `<h4>${esc(p.title)}</h4>${p.html}`).join("")}</div>`;
+    card.classList.remove("hidden");
+  }
+
+  function initIdentify() {
+    const card = document.getElementById("here-card");
+    if (!card) return;
+    // Clicks inside the card must not reach the map underneath it.
+    L.DomEvent.disableClickPropagation(card);
+    L.DomEvent.disableScrollPropagation(card);
+    card.addEventListener("click", (e) => {
+      const tab = e.target.closest(".here-tab");
+      if (tab) {
+        identifyTab = tab.dataset.key;
+        renderIdentify();
+        return;
+      }
+      if (e.target.closest(".here-close")) {
+        identifyResult = null;
+        renderIdentify();
+      }
+    });
+    map.on("click", (e) => {
+      if (pinArmed || !e.latlng) return; // the armed pin-drop owns this click
+      identifyAt(e.latlng);
+    });
+  }
+
   // --- Draw order ---------------------------------------------------------
   // Bottom to top:
   //   area fills (hazards, pollution, zoning, historic) -> school zones ->
@@ -6513,41 +6705,17 @@ const BlockGroupApp = (() => {
       });
     }
 
-    if (key === "zoning") {
-      logZoningClasses(geojson);
+    // Zoning and historic are layer objects (js/core/layers.js): the object
+    // styles, labels and explains; this only hands it to Leaflet.
+    if (key === "zoning" || key === "historic") {
+      const obj = layerRegistry.get(key);
+      if (key === "zoning") logZoningClasses(geojson);
       return L.geoJSON(geojson, {
-        style: (feature) => {
-          if (feature.properties.__symStyle) return feature.properties.__symStyle;
-          const cls = zoningClass(zoningCode(feature.properties));
-          return { color: cls.color, weight: 1, opacity: 0.9, fillColor: cls.color, fillOpacity: 0.3 };
-        },
+        style: (feature) => obj.style(feature),
         onEachFeature: (feature, layer) => {
-          const p = feature.properties;
-          const code = zoningCode(p);
-          const label = p.__symLabel || zoningClass(code).label;
-          layer.bindTooltip(
-            `${Utils.escapeHTML(p.__symLabel || `Zone ${code || "?"}`)}<br><span style="opacity:.7">` +
-              `${p.__symLabel ? `code ${Utils.escapeHTML(String(code || "?"))} &middot; publisher's legend` : Utils.escapeHTML(label)} &middot; ` +
-              `${Utils.escapeHTML(p.SOURCE_LAYER || "")}</span>`,
-            { sticky: true }
-          );
-        },
-      });
-    }
-
-    if (key === "historic") {
-      return L.geoJSON(geojson, {
-        style: (feature) => feature.properties.__symStyle || BG_CONFIG.STYLES.historic,
-        onEachFeature: (feature, layer) => {
-          const spec = BG_CONFIG.PARCEL_CONTEXT.historic;
-          const name = Utils.pickField(feature.properties, spec.fields);
-          const category = feature.properties.__symLabel;
-          layer.bindTooltip(
-            `${Utils.escapeHTML(String(name || category || "Historic district"))}<br><span style="opacity:.7">` +
-              `${category && category !== name ? `${Utils.escapeHTML(category)} &middot; ` : ""}` +
-              `${Utils.escapeHTML(feature.properties.SOURCE_LAYER || "")} - design review applies to anything visible from the street</span>`,
-            { sticky: true }
-          );
+          // A function, so zone rules that finish loading after the layer
+          // was drawn still reach the tooltip.
+          layer.bindTooltip(() => obj.tooltip(feature), { sticky: true });
         },
       });
     }
@@ -6832,40 +7000,6 @@ const BlockGroupApp = (() => {
     refreshLayer(key, { force: true });
   }
 
-  // The publisher's categories actually on the map right now, grouped by the
-  // layer they came from, so the legend lists what you can see - not every
-  // code the city has ever defined. `unstyled` says some features had no
-  // publisher symbol and fell back to this app's colours.
-  function publisherLegendRows(key) {
-    const layer = layers[key];
-    const groups = new Map();
-    let unstyled = false;
-    if (layer) {
-      layer.eachLayer((l) => {
-        const p = l.feature && l.feature.properties;
-        if (!p) return;
-        if (!p.__symStyle) {
-          unstyled = true;
-          return;
-        }
-        if (!groups.has(p.__symSource)) groups.set(p.__symSource, new Map());
-        groups.get(p.__symSource).set(p.__symLabel, p.__symStyle);
-      });
-    }
-    const rows = [];
-    groups.forEach((labels, source) => {
-      rows.push(`<div class="legend-note"><strong>${Utils.escapeHTML(String(source))}</strong> - the publisher's own legend</div>`);
-      [...labels.entries()]
-        .sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }))
-        .forEach(([label, style]) =>
-          rows.push(
-            `<div class="legend-row"><span class="swatch" style="background:${style.fillColor};opacity:${Math.max(0.5, style.fillOpacity)};border:1px solid ${style.color}"></span>${Utils.escapeHTML(String(label))}</div>`
-          )
-        );
-    });
-    return { rows, unstyled };
-  }
-
   // One legend box per overlay, shown only while that overlay is on.
   function renderOverlayLegend(key) {
     const box = document.getElementById(`${key}-legend`);
@@ -6904,7 +7038,7 @@ const BlockGroupApp = (() => {
       );
       rows.push('<div class="legend-note">CGS zones where a site investigation is required before building - not a prediction that ground will fail.</div>');
     } else if (key === "zoning") {
-      const published = publisherLegendRows(key);
+      const published = layerRegistry.get("zoning").legendRows(layers.zoning);
       rows = published.rows;
       if (published.unstyled) {
         rows = rows.concat(
@@ -6914,11 +7048,13 @@ const BlockGroupApp = (() => {
         );
       }
       rows.push(
+        '<div class="legend-note">Hover the <span class="info-icon-inline">i</span> on a zone for what it lets you build. ' +
+          "Those limits are read from search summaries of the city's code and are marked unverified until checked.</div>",
         '<div class="legend-note">Grouped from each city\'s own codes, which differ - hover a zone for its real code. ' +
           "The code is the question to ask the city, not the answer: what it permits lives in the municipal code.</div>"
       );
     } else if (key === "historic") {
-      const published = publisherLegendRows(key);
+      const published = layerRegistry.get("historic").legendRows(layers.historic);
       rows = published.rows.concat(
         published.unstyled || !published.rows.length
           ? [`<div class="legend-row"><span class="swatch" style="background:${BG_CONFIG.STYLES.historic.fillColor};opacity:.5;border:1px dashed ${BG_CONFIG.STYLES.historic.color}"></span>Historic district or listed parcel</div>`]
@@ -7602,6 +7738,8 @@ const BlockGroupApp = (() => {
     addBasemap();
 
     initStatusPanel();
+    initLayerObjects();
+    initIdentify();
     initAddressSearch();
     initPinDrop();
     initInfoTips();
@@ -7749,6 +7887,11 @@ const BlockGroupApp = (() => {
     lookupDevelopmentForTest: (lat, lon) => lookupDevelopment(lat, lon),
     developmentRowsForTest: (context) => developmentRows(context),
     zoningClassForTest: (code) => zoningClass(code).key,
+    identifyForTest: (lat, lon) => identifyAt(L.latLng(lat, lon)).map((t) => t.key),
+    zoneRulesForTest: (zone, place) => {
+      const r = zoneRules && zoneRules.forZone(zone, place);
+      return r ? { zone: r.zone.zone, rules: r.zone.rules.length, state: r.state.map((s) => s.topic) } : null;
+    },
     // Re-reads the CSV folder from scratch, so a test can prove that a home
     // you removed comes back when a newer download still carries it.
     reloadListingsForTest: async () => {

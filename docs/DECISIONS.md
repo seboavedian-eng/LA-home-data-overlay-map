@@ -53,6 +53,24 @@ name is only believed when it leaves one school at that level.
 **Unrated schools are hidden by a rating filter.** Showing them alongside
 filtered ones would imply they qualified.
 
+**One click identifies every layer, rather than reordering layers.** GIS tools
+(ArcGIS, QGIS) answer a click with every visible layer at that point. The Here
+card does that locally against the drawn shapes - no network - with one tab per
+layer, and remembers the tab you last used. A drag-to-reorder list was
+considered and rejected as the way to inspect layers: it makes every look a
+two-step job.
+
+**Classes, in the browser; Python for data.** The map has to be JavaScript -
+browsers run nothing else. Layers are becoming classes there
+(`js/core/layers.js`); the scripts stay Python. Going nationwide is mainly a
+configuration problem (thousands of publishers, each with its own fields), which
+a registry of jurisdictions solves, not a language.
+
+**Zone rules from the code text only.** Web-search summaries of GMC 30.11 got
+four values wrong (landscaping %, setbacks, a 26 ft figure that does not
+exist). Table 30.11-B was transcribed from the rendered page instead, column by
+column, and each value cites its section.
+
 **Tests use real mouse clicks where hit-testing matters.** `layer.fire("click")`
 bypasses the DOM, and 218 tests once passed while the map was unusable.
 

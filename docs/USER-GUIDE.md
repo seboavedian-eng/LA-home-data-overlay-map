@@ -64,6 +64,24 @@ parcel number and mapped lot size - and the lot itself is outlined in
 exact-address answer: schools, jurisdiction, zoning, historic, parcel,
 commute. The lot is outlined in magenta here too.
 
+## Clicking the map: the Here card
+
+Click anywhere and the **Here** card (bottom right) lists every visible layer at
+that spot as tabs - Zoning, Historic, school zones, Fire, Flood, Seismic,
+Pollution. No need to reorder layers to reach one. The tab you pick stays
+picked for the next click.
+
+## What a zone lets you build
+
+Turn on **Zoning** and hover the small **i** beside a zone in the legend: lot
+coverage, floor area, height, setbacks, homes per lot, open space - from
+Glendale's code (Table 30.11-B), with the section each number comes from. The
+house card shows the same as rows. State rules (ADU, SB 9) are marked
+**unverified**: they have not been checked against the statute here.
+
+Floor area depends on a district (I, II or III) the code does not assign per
+lot, so all three are shown - check the zoning map or ask the city.
+
 ## What sits on top of what
 
 From the top: house pins, the magenta selected lot, parcel lines, school dots,

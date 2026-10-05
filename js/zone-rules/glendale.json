@@ -1,0 +1,486 @@
+{
+  "jurisdiction": "Glendale",
+  "matchJurisdiction": "glendale",
+  "matchSource": "glendaleca\\.gov",
+  "code": "Glendale Municipal Code Chapter 30.11 (Table 30.11-B)",
+  "codeUrl": "https://ecode360.com/43352065",
+  "asOf": "2026-10-05",
+  "verified": true,
+  "howCollected": "Transcribed from GMC Chapter 30.11 as downloaded from ecode360 on 2026-10-05 (latest amendment listed: Ord. 6034, 12/3/2024), supplied by the user. The table was read from the rendered page, column by column.",
+  "farDistrictNote": "Which FAR district (I, II or III) a lot is in is not set in Chapter 30.11 - check the zoning map or ask the city.",
+  "zones": [
+    {
+      "zone": "ROS",
+      "match": "(^|[^A-Z0-9])ROS([^A-Z0-9]|$)",
+      "name": "Residential Open Space (hillside)",
+      "rules": [
+        {
+          "topic": "Homes",
+          "value": "One home per lot; subdivision density falls with slope (Table 30.11-C)",
+          "verified": true,
+          "section": "GMC Table 30.11-B; 30.11.040.D"
+        },
+        {
+          "topic": "Minimum lot",
+          "value": "12,000 ft² to subdivide; 7,500 ft² to build on a lot split before 26 June 1986",
+          "verified": true,
+          "section": "GMC 30.11.060.A"
+        },
+        {
+          "topic": "Lot coverage",
+          "value": "40% of the lot, counting the house and every accessory building",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Floor area (FAR)",
+          "value": "District I 0.30 · District II 0.40 · District III 0.45, on the first 10,000 ft² of lot; 0.10 beyond. Up to 500 ft² of garage is not counted (700 ft² if the home is 3,500 ft² or more). On lots averaging 40%+ slope: 0.30, then 0.10",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Height",
+          "value": "2 stories / 32 ft (+3 ft for a roof pitched 3:12 or steeper); one extra story where the house sits on 40%+ slope",
+          "verified": true,
+          "section": "GMC 30.11.040.E"
+        },
+        {
+          "topic": "Setbacks",
+          "value": "Street front 15 ft · street side 15 ft · interior 10 ft (exceptions: GMC 30.11.070)",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Open space",
+          "value": "40% of the lot permanently landscaped; on lots over 30% slope, 40% must stay ungraded",
+          "verified": true,
+          "section": "GMC Table 30.11-B; 30.11.040.F"
+        },
+        {
+          "topic": "Accessory buildings",
+          "value": "12 ft tall, or 15 ft with a 3:12 roof pitch",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Review",
+          "value": "Hillside design review: size, bulk, rooflines and terrain are weighed against the neighbourhood; ridgeline and blue-line stream rules apply (GMC 16.08)",
+          "verified": true,
+          "section": "GMC 30.11.040.A-B"
+        }
+      ]
+    },
+    {
+      "zone": "R1R",
+      "match": "(^|[^A-Z0-9])R-?1R([^A-Z0-9]|$)",
+      "name": "Restricted Residential (hillside)",
+      "rules": [
+        {
+          "topic": "Homes",
+          "value": "One home per lot; subdivision density falls with slope (Table 30.11-C)",
+          "verified": true,
+          "section": "GMC Table 30.11-B; 30.11.040.D"
+        },
+        {
+          "topic": "Minimum lot",
+          "value": "12,000 ft² to subdivide (parcel maps average 30,000 ft² unless slope is under 30%); 7,500 ft² to build on a lot split before 26 June 1986",
+          "verified": true,
+          "section": "GMC 30.11.060.B"
+        },
+        {
+          "topic": "Lot coverage",
+          "value": "40% of the lot, counting the house and every accessory building",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Floor area (FAR)",
+          "value": "District I 0.30 · District II 0.40 · District III 0.45, on the first 10,000 ft² of lot; 0.10 beyond. Up to 500 ft² of garage is not counted (700 ft² if the home is 3,500 ft² or more). On lots averaging 40%+ slope: 0.30, then 0.10",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Height",
+          "value": "2 stories / 32 ft (+3 ft for a roof pitched 3:12 or steeper); one extra story where the house sits on 40%+ slope",
+          "verified": true,
+          "section": "GMC 30.11.040.E"
+        },
+        {
+          "topic": "Setbacks",
+          "value": "Street front 15 ft · street side 15 ft · interior 10 ft (exceptions: GMC 30.11.070)",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Open space",
+          "value": "40% of the lot permanently landscaped; on lots over 30% slope, 40% must stay ungraded",
+          "verified": true,
+          "section": "GMC Table 30.11-B; 30.11.040.F"
+        },
+        {
+          "topic": "Accessory buildings",
+          "value": "12 ft tall, or 15 ft with a 3:12 roof pitch",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Review",
+          "value": "Hillside design review: size, bulk, rooflines and terrain are weighed against the neighbourhood; ridgeline and blue-line stream rules apply (GMC 16.08)",
+          "verified": true,
+          "section": "GMC 30.11.040.A-B"
+        }
+      ]
+    },
+    {
+      "zone": "R1",
+      "match": "(^|[^A-Z0-9])R-?1([^A-Z0-9]|$)",
+      "name": "Low Density Residential (single-family)",
+      "rules": [
+        {
+          "topic": "Homes",
+          "value": "One home per lot; subdivisions of 5+ lots average no more than 1 per 5,500 ft²",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Minimum lot",
+          "value": "5,500 ft² to subdivide; 5,000 ft² for land divided before 26 June 1986",
+          "verified": true,
+          "section": "GMC 30.11.060.C"
+        },
+        {
+          "topic": "Lot coverage",
+          "value": "40% of the lot, counting the house and every accessory building",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Floor area (FAR)",
+          "value": "District I 0.30 · District II 0.40 · District III 0.45, on the first 10,000 ft² of lot; 0.10 beyond. Up to 500 ft² of garage is not counted (700 ft² if the home is 3,500 ft² or more)",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Height",
+          "value": "25 ft (+3 ft for a roof pitched 3:12 or steeper)",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Setbacks",
+          "value": "Street front 25 ft · street side 6 ft · interior 6 ft (exceptions: GMC 30.11.070)",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Open space",
+          "value": "40% of the lot permanently landscaped",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Accessory buildings",
+          "value": "12 ft tall, or 15 ft with a 3:12 roof pitch",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        }
+      ]
+    },
+    {
+      "zone": "R-3050",
+      "match": "(^|[^A-Z0-9])R-?3050([^0-9]|$)",
+      "name": "Moderate Density Residential",
+      "rules": [
+        {
+          "topic": "Homes",
+          "value": "1 home per 3,050 ft² of lot (a 7,000 ft² lot: 2 homes)",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Floor area (FAR)",
+          "value": "0.65 × lot area",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Lot coverage",
+          "value": "50% of the lot, counting every building",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Street front setback",
+          "value": "25 ft",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Side & interior setbacks",
+          "value": "5 ft minimum, 8 ft average (buildings of 3+ units may go to 6 ft with step-backs, Ch. 30.17)",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Height",
+          "value": "3 stories / 36 ft (+5 ft for a roof pitched 3:12 or steeper). On lots over 10% slope, 3+ unit buildings: GMC 30.11.050.J",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Open space",
+          "value": "25% of the lot permanently landscaped",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Accessory buildings",
+          "value": "12 ft tall, or 15 ft with a 3:12 roof pitch",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Corner lots",
+          "value": "Street setbacks grow by 5 ft along a frontage that faces a single-family zone",
+          "verified": true,
+          "section": "GMC Table 30.11-B note 3"
+        },
+        {
+          "topic": "Review",
+          "value": "Design review (Ch. 30.47); parking per Ch. 30.32; 3+ units also Ch. 30.17",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        }
+      ]
+    },
+    {
+      "zone": "R-2250",
+      "match": "(^|[^A-Z0-9])R-?2250([^0-9]|$)",
+      "name": "Medium Density Residential",
+      "rules": [
+        {
+          "topic": "Homes",
+          "value": "1 home per 2,250 ft² of lot (a 7,000 ft² lot: 3 homes); on lots 90 ft wide or more, 1 per 1,800 ft²",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Floor area (FAR)",
+          "value": "0.85 × lot area",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Lot coverage",
+          "value": "50% of the lot, counting every building",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Street front setback",
+          "value": "20 ft minimum, 23 ft average",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Side & interior setbacks",
+          "value": "5 ft minimum, 8 ft average (buildings of 3+ units may go to 6 ft with step-backs, Ch. 30.17)",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Height",
+          "value": "3 stories / 36 ft (+5 ft for a roof pitched 3:12 or steeper). On lots over 10% slope, 3+ unit buildings: GMC 30.11.050.J",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Open space",
+          "value": "20% of the lot permanently landscaped",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Accessory buildings",
+          "value": "12 ft tall, or 15 ft with a 3:12 roof pitch",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Corner lots",
+          "value": "Street setbacks grow by 5 ft along a frontage that faces a single-family zone",
+          "verified": true,
+          "section": "GMC Table 30.11-B note 3"
+        },
+        {
+          "topic": "Review",
+          "value": "Design review (Ch. 30.47); parking per Ch. 30.32; 3+ units also Ch. 30.17",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        }
+      ]
+    },
+    {
+      "zone": "R-1650",
+      "match": "(^|[^A-Z0-9])R-?1650([^0-9]|$)",
+      "name": "Medium-High Density Residential",
+      "rules": [
+        {
+          "topic": "Homes",
+          "value": "1 home per 1,650 ft² of lot (a 7,000 ft² lot: 4 homes); on lots 90 ft wide or more, 1 per 1,320 ft²",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Floor area (FAR)",
+          "value": "1.0 × lot area",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Lot coverage",
+          "value": "60% of the lot, counting every building",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Street front setback",
+          "value": "20 ft minimum, 23 ft average",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Side & interior setbacks",
+          "value": "5 ft minimum, 8 ft average (buildings of 3+ units may go to 6 ft with step-backs, Ch. 30.17)",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Height",
+          "value": "3 stories / 36 ft (+5 ft for a roof pitched 3:12 or steeper). On lots over 10% slope, 3+ unit buildings: GMC 30.11.050.J",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Open space",
+          "value": "20% of the lot permanently landscaped",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Accessory buildings",
+          "value": "12 ft tall, or 15 ft with a 3:12 roof pitch",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Corner lots",
+          "value": "Street setbacks grow by 5 ft along a frontage that faces a single-family zone",
+          "verified": true,
+          "section": "GMC Table 30.11-B note 3"
+        },
+        {
+          "topic": "Review",
+          "value": "Design review (Ch. 30.47); parking per Ch. 30.32; 3+ units also Ch. 30.17",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        }
+      ]
+    },
+    {
+      "zone": "R-1250",
+      "match": "(^|[^A-Z0-9])R-?1250([^0-9]|$)",
+      "name": "High Density Residential",
+      "rules": [
+        {
+          "topic": "Homes",
+          "value": "1 home per 1,250 ft² of lot (a 7,000 ft² lot: 5 homes); on lots 90 ft wide or more, 1 per 1,000 ft²",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Floor area (FAR)",
+          "value": "1.2 × lot area",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Lot coverage",
+          "value": "60% of the lot, counting every building",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Street front setback",
+          "value": "20 ft minimum, 23 ft average",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Side & interior setbacks",
+          "value": "5 ft minimum, 8 ft average (buildings of 3+ units may go to 6 ft with step-backs, Ch. 30.17)",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Height",
+          "value": "3 stories / 36 ft (+5 ft for a roof pitched 3:12 or steeper). On lots over 10% slope, 3+ unit buildings: GMC 30.11.050.J",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Open space",
+          "value": "20% of the lot permanently landscaped",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Accessory buildings",
+          "value": "12 ft tall, or 15 ft with a 3:12 roof pitch",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        },
+        {
+          "topic": "Corner lots",
+          "value": "Street setbacks grow by 5 ft along a frontage that faces a single-family zone",
+          "verified": true,
+          "section": "GMC Table 30.11-B note 3"
+        },
+        {
+          "topic": "Review",
+          "value": "Design review (Ch. 30.47); parking per Ch. 30.32; 3+ units also Ch. 30.17",
+          "verified": true,
+          "section": "GMC Table 30.11-B"
+        }
+      ]
+    }
+  ],
+  "stateRules": [
+    {
+      "appliesTo": [
+        "ROS",
+        "R1R",
+        "R1",
+        "R-3050",
+        "R-2250",
+        "R-1650",
+        "R-1250"
+      ],
+      "topic": "ADU (state law)",
+      "value": "A backyard ADU is allowed by right; Glendale's figures are reported as up to ~1,000 ft², 16 ft tall, 4 ft side/rear setbacks, regardless of the zone's coverage and floor-area limits",
+      "verified": false,
+      "source": "California ADU law (Gov. Code 66314 et seq.); Glendale figures from a search summary of aduzoning.org - not from Glendale's ADU ordinance"
+    },
+    {
+      "appliesTo": [
+        "ROS",
+        "R1R",
+        "R1"
+      ],
+      "topic": "SB 9 (state law)",
+      "value": "Up to 2 homes per lot, or a split into 2 lots, in single-family zones - NOT on a historic district or landmark property",
+      "verified": false,
+      "source": "California SB 9 (Gov. Code 65852.21, 66411.7), from general knowledge - not checked against the statute here"
+    }
+  ]
+}

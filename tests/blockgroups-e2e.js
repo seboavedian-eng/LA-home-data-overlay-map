@@ -3223,6 +3223,113 @@ async function main() {
       "...and the log says the publisher's legend is in use, rather than calling 220 unreadable",
       /using the publisher's own legend - 2 categories by "ZON_CD"/.test(await page.locator("#status-log").textContent())
     );
+    // --- Zone rules: what a zone lets you build ------------------------------
+    const ruleChecks = await page.evaluate(() => {
+      const f = BlockGroupApp.zoneRulesForTest;
+      const glendale = { jurisdiction: "Glendale" };
+      return {
+        byLabel: f("R-1650 Medium Density Residential", { sourceUrl: "https://gisapps.glendaleca.gov/arcgis/rest/services/Common/Zoning/FeatureServer" }),
+        r1District: f("R1-II", glendale),
+        r1r: f("R1R", glendale),
+        ros: f("ROS-III", glendale),
+        r1250: f("R-1250", glendale),
+        laCity: f("R1-1", { jurisdiction: "Los Angeles" }),
+        noPlace: f("R1", {}),
+      };
+    });
+    step(
+      "Glendale's rules load from the committed file and match a zone by its legend label",
+      ruleChecks.byLabel && ruleChecks.byLabel.zone === "R-1650" && ruleChecks.byLabel.rules >= 8,
+      JSON.stringify(ruleChecks.byLabel)
+    );
+    step(
+      "zone codes match the right zone: R1-II is R1 (not R1R), R1R is R1R, ROS-III is ROS, R-1250 is R-1250",
+      ruleChecks.r1District && ruleChecks.r1District.zone === "R1" && ruleChecks.r1r.zone === "R1R" &&
+        ruleChecks.ros.zone === "ROS" && ruleChecks.r1250.zone === "R-1250",
+      JSON.stringify([ruleChecks.r1District, ruleChecks.r1r, ruleChecks.ros, ruleChecks.r1250].map((r) => r && r.zone))
+    );
+    step(
+      "Glendale's rules are never applied to another city's zone with the same name",
+      ruleChecks.laCity === null && ruleChecks.noPlace === null,
+      JSON.stringify([ruleChecks.laCity, ruleChecks.noPlace])
+    );
+    step(
+      "SB 9 is attached to single-family zones only",
+      ruleChecks.r1District.state.includes("SB 9 (state law)") && !ruleChecks.r1250.state.includes("SB 9 (state law)")
+    );
+    const legendTip = await page.evaluate(() => {
+      const icon = document.querySelector("#zoning-legend .legend-row .info-icon");
+      return icon ? icon.getAttribute("data-tip") : null;
+    });
+    step(
+      "hovering a zone in the legend gives its limits as bullet points, from the code itself",
+      !!legendTip && /• Lot coverage: 60%/.test(legendTip) && /• Floor area \(FAR\): 1\.0/.test(legendTip) && /Table 30\.11-B/.test(legendTip),
+      (legendTip || "no icon").slice(0, 160)
+    );
+    step(
+      "...and the hover note marks state law it has not checked as unverified",
+      /ADU \(state law\).*\(unverified\)/.test(legendTip || "")
+    );
+    const ruleCard = await page.evaluate(() =>
+      BlockGroupApp.developmentRowsForTest({
+        jurisdiction: { value: "Glendale" },
+        zoning: { value: "R-1650 Medium Density Residential (code 220)" },
+        historic: { value: null },
+        parcel: { value: null },
+      })
+    );
+    step(
+      "the house card spells out what the zone lets you build, row by row, each citing its section",
+      /What R-1650 lets you build/.test(ruleCard) && /60% of the lot/.test(ruleCard) && /3 stories \/ 36 ft/.test(ruleCard) &&
+        /data-tip="GMC Table 30\.11-B/.test(ruleCard),
+      ruleCard.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").match(/What R-1650.{0,120}/)
+    );
+
+    // --- Identify: one click, every layer at that point ----------------------
+    await page.check("#toggle-historic");
+    await page.waitForTimeout(1500);
+    const identified = await page.evaluate(() => BlockGroupApp.identifyForTest(34.05, -118.25));
+    step(
+      "one click finds every visible layer at the point, without reordering anything",
+      identified.includes("zoning") && identified.includes("historic"),
+      JSON.stringify(identified)
+    );
+    step(
+      "...and shows them as tabs on the Here card, zoning first with its rules",
+      (await page.locator("#here-card").isVisible()) &&
+        (await page.locator("#here-card .here-tab").count()) >= 2 &&
+        /Lot coverage/.test(await page.locator("#here-card .here-body").innerText()),
+      (await page.locator("#here-card").innerText()).replace(/\s+/g, " ").slice(0, 160)
+    );
+    await page.locator('#here-card .here-tab[data-key="historic"]').click();
+    await page.waitForTimeout(200);
+    step(
+      "clicking the Historic tab switches the card to the historic answer",
+      /design review/i.test(await page.locator("#here-card .here-body").innerText()) &&
+        (await page.locator('#here-card .here-tab.on[data-key="historic"]').count()) === 1
+    );
+    await page.evaluate(() => BlockGroupApp.identifyForTest(34.049, -118.251));
+    step(
+      "the tab you chose stays chosen on the next click",
+      (await page.locator('#here-card .here-tab.on[data-key="historic"]').count()) === 1
+    );
+    // A real mouse click, because hit-testing is where these bugs live.
+    await page.locator("#here-card .here-close").click();
+    await page.waitForTimeout(200);
+    const herePt = await page.evaluate(() => {
+      const p = BlockGroupApp.state.map.latLngToContainerPoint([34.0475, -118.2475]);
+      const r = document.getElementById("map").getBoundingClientRect();
+      return { x: r.left + p.x, y: r.top + p.y };
+    });
+    await page.mouse.click(herePt.x, herePt.y);
+    await page.waitForTimeout(500);
+    step(
+      "a REAL click on the map opens the Here card for that point",
+      (await page.locator("#here-card").isVisible()) && /Historic/.test(await page.locator("#here-card .here-tabs").innerText()),
+      (await page.locator("#here-card").innerText()).replace(/\s+/g, " ").slice(0, 120)
+    );
+    await page.locator("#here-card .here-close").click();
+    await page.uncheck("#toggle-historic");
     await page.uncheck("#toggle-zoning");
     const glendaleContext = await page.evaluate(async () => {
       const ctx = await BlockGroupApp.lookupDevelopmentForTest(34.0501, -118.2501);

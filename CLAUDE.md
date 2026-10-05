@@ -2,6 +2,8 @@
 
 Personal LA County house-hunting tool. One user, runs locally, no backend.
 `blockgroups.html` is the whole app; `index.html` is an older, simpler page.
+`js/core/layers.js` holds the layer classes (see below); `js/zone-rules/*.json`
+holds what each zone lets you build, per jurisdiction.
 
 Read `docs/` before proposing anything big — `PRD.md` (what's built, what's
 blocked), `DATA-FLOW.md` (every source), `DECISIONS.md` (why things are the way
@@ -55,6 +57,17 @@ fetch script's output shape changes — the app tells the user their file is
 stale by comparing against it.
 
 ## Conventions that are load-bearing
+
+- **Layers are moving onto classes** (`js/core/layers.js`): a `MapLayer`
+  subclass owns its style, tooltip, legend and `describe()` for the Here card.
+  Zoning and historic are full subclasses; the rest are wrapped by
+  `AdapterLayer`. To migrate a layer, write its subclass and delete its special
+  case in `buildLayer()` / `renderOverlayLegend()`. Helpers are injected, never
+  reached for.
+- **Zone rules are transcribed, cited and flagged.** Each value in
+  `js/zone-rules/*.json` carries `section` and `verified`. Only set
+  `verified: true` from the code text itself, never from a search summary -
+  the summaries got four Glendale values wrong.
 
 - **Every card row cites its source.** `cardRow()` refuses a row with no tip,
   and `test_data_coverage.py` fails if a fetched field never reaches a card.
@@ -116,8 +129,10 @@ stale by comparing against it.
    parcel) and after ticking Zoning, Historic districts and Parcel outlines —
    none of these endpoints, Glendale's included, has been verified against a
    real browser. The log names the field each service was read from.
-2. Glendale zoning Table 30.11-B — every route to ecode360 is egress-blocked.
+2. Which FAR district (I/II/III) each Glendale R1/R1R/ROS lot is in - not set
+   in Chapter 30.11, so the card shows all three.
 3. Checking `gusd.net/8439_3` against the Glendale zones to date them.
 
 Next build items, in value order: sewer distance + county easement layers (need
-nothing), zone rules (blocked on #2), shortlist export.
+nothing), move the remaining layers onto classes, shortlist export, zone rules
+for other cities (each needs its code chapter).

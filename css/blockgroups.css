@@ -188,6 +188,8 @@ html, body {
   line-height: 1.45;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
   pointer-events: none;
+  /* Zone notes are bullet lists written with line breaks. */
+  white-space: pre-line;
 }
 
 .sub-label {
@@ -873,3 +875,54 @@ html, body {
 /* The legend's dot swatch is round, unlike the square area swatches. */
 .legend-row .school-dot-swatch { border-radius: 50%; }
 .school-popup .zone-sub { margin: 2px 0 6px; font-size: 0.72rem; color: var(--muted); }
+
+/* --- Identify: everything at the clicked point, as tabs --- */
+#here-card {
+  position: absolute;
+  z-index: 1100;
+  right: 16px;
+  bottom: 28px;
+  width: 320px;
+  max-height: 48%;
+  overflow-y: auto;
+  box-sizing: border-box;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+  padding: 10px 12px;
+  font-size: 0.78rem;
+}
+#here-card.hidden { display: none; }
+.here-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.here-hint { color: var(--muted); font-size: 0.72rem; flex: 1; }
+.here-close { border: 0; background: none; font-size: 1.1rem; cursor: pointer; color: var(--muted); }
+.here-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.here-tab {
+  border: 1px solid var(--border);
+  background: #f5f7f9;
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.here-tab.on { background: #1b4d8c; border-color: #1b4d8c; color: white; }
+.here-body h4 { margin: 6px 0 2px; font-size: 0.82rem; }
+.here-sub { margin: 0 0 4px; color: var(--muted); }
+ul.zone-rules { margin: 4px 0 6px; padding-left: 16px; }
+ul.zone-rules li { margin: 2px 0; }
+.unverified {
+  font-size: 0.66rem;
+  color: #8a5a00;
+  background: #fff4d6;
+  border-radius: 4px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+.conflict { color: #a3261e; font-size: 0.7rem; }
+.zone-tip-summary { display: inline-block; margin-top: 3px; font-size: 0.72rem; }
+.info-icon-inline {
+  display: inline-block; width: 12px; height: 12px; line-height: 12px; text-align: center;
+  border-radius: 50%; background: #e3e8ee; font-size: 0.6rem; font-style: italic;
+}
+.legend-row .info-icon { margin-left: 4px; }
