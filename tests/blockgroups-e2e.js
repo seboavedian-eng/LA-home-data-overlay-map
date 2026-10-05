@@ -61,12 +61,15 @@ const PARCEL_POLY = esriPolygon({ AIN: "5555001001" }, [
 // Glendale's services. Their real field names have never been read from the
 // build sandbox, so these use names the candidate lists do NOT carry - the
 // app has to find them by pattern, and say it did.
-// Stored as a NUMBER, the way the user saw it live ("220, 230, 357"); the
-// layer description below decodes it.
+// Stored as a NUMBER with no lookup table, exactly as the user saw it live
+// ("Codes not grouped: 700, 420, 310, 220..."). The only place 220 gets a name
+// is the layer's own legend (drawingInfo), below.
 const GLENDALE_ZONE = esriPolygon({ OBJECTID: 11, ZON_CD: 220 }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04],
 ]);
-const GLENDALE_HISTORIC = esriPolygon({ OBJECTID: 12, HIST_DIST_NM: "Rossmoyne Historic District" }, [
+// HIST_TYPE is a coded value (2 = district contributor) that the legend is
+// keyed on - so the legend has to be matched on the RAW code, before decoding.
+const GLENDALE_HISTORIC = esriPolygon({ OBJECTID: 12, HIST_DIST_NM: "Rossmoyne Historic District", HIST_TYPE: 2 }, [
   [-118.255, 34.045], [-118.255, 34.055], [-118.245, 34.055], [-118.245, 34.045],
 ]);
 
@@ -904,6 +907,26 @@ async function main() {
       if (/Zoning\/FeatureServer\/2\//.test(url)) return route.fulfill(json(esriFC([GLENDALE_ZONE])));
       return route.fulfill(json(esriFC([])));
     }
+    if (/HistoricParcels\/FeatureServer\/0\?/.test(url)) {
+      return route.fulfill(
+        json({
+          id: 0, name: "Historic Parcels", geometryType: "esriGeometryPolygon",
+          fields: [
+            { name: "HIST_DIST_NM", type: "esriFieldTypeString" },
+            { name: "HIST_TYPE", type: "esriFieldTypeInteger", domain: { type: "codedValue", codedValues: [{ code: 1, name: "Individual" }, { code: 2, name: "Contributor" }] } },
+          ],
+          drawingInfo: {
+            renderer: {
+              type: "uniqueValue", field1: "HIST_TYPE",
+              uniqueValueInfos: [
+                { value: "1", label: "Glendale Register - individual", symbol: { type: "esriSFS", color: [214, 190, 140, 255], outline: { color: [80, 60, 40, 255], width: 1 } } },
+                { value: "2", label: "Historic district contributor", symbol: { type: "esriSFS", color: [150, 200, 210, 255], outline: { color: [20, 40, 60, 255], width: 1.5 } } },
+              ],
+            },
+          },
+        })
+      );
+    }
     if (/HistoricParcels/.test(url)) {
       return route.fulfill(json({ layers: [{ id: 0, name: "Historic Parcels", geometryType: "esriGeometryPolygon" }] }));
     }
@@ -915,8 +938,18 @@ async function main() {
           id: 2, name: "Zoning", geometryType: "esriGeometryPolygon",
           fields: [
             { name: "OBJECTID", type: "esriFieldTypeOID" },
-            { name: "ZON_CD", type: "esriFieldTypeInteger", domain: { type: "codedValue", name: "ZoneCodes", codedValues: [{ code: 220, name: "R-1650" }, { code: 230, name: "R-1250" }] } },
+            { name: "ZON_CD", type: "esriFieldTypeInteger" },
           ],
+          drawingInfo: {
+            renderer: {
+              type: "uniqueValue", field1: "ZON_CD",
+              defaultLabel: "Other", defaultSymbol: { type: "esriSFS", color: [200, 200, 200, 255] },
+              uniqueValueInfos: [
+                { value: "220", label: "R-1650 Medium Density Residential", symbol: { type: "esriSFS", color: [237, 125, 49, 255], outline: { color: [120, 60, 20, 255], width: 1 } } },
+                { value: "310", label: "C1 Neighborhood Commercial", symbol: { type: "esriSFS", color: [224, 69, 69, 255] } },
+              ],
+            },
+          },
         })
       );
     }
@@ -3154,15 +3187,51 @@ async function main() {
       }),
       `${glendaleQueries.filter((u) => /HistoricParcels/.test(u)).length} Glendale historic queries`
     );
+    const historicLegend = await page.locator("#historic-legend").innerText();
+    step(
+      "the historic legend is Glendale's own, matched on the raw stored code before decoding",
+      /Historic Parcels/.test(historicLegend) && /Historic district contributor/.test(historicLegend),
+      historicLegend.replace(/\s+/g, " ").slice(0, 140)
+    );
+    step(
+      "...and the parcel is drawn in Glendale's colour for that category",
+      await page.evaluate(() => {
+        let fill = null;
+        BlockGroupApp.state.layers.historic.eachLayer((x) => { if (x.feature.properties.HIST_DIST_NM) fill = x.options.fillColor; });
+        return fill === "rgb(150,200,210)";
+      })
+    );
     await page.uncheck("#toggle-historic");
+    // Zoning with Glendale's numbers: the user's live log said "Codes not
+    // grouped: 700, 420, 310, 220". Their legend is what names them.
+    await page.evaluate(() => BlockGroupApp.state.map.setView([34.05, -118.25], 15));
+    await page.waitForTimeout(800);
+    await page.check("#toggle-zoning");
+    await page.waitForTimeout(1500);
+    const zoningLegendGlendale = await page.locator("#zoning-legend").innerText();
+    step(
+      "zoning draws Glendale's numbered zones in Glendale's colours, named by their legend",
+      /R-1650 Medium Density Residential/.test(zoningLegendGlendale) &&
+        (await page.evaluate(() => {
+          let fill = null;
+          BlockGroupApp.state.layers.zoning.eachLayer((x) => { if (x.feature.properties.ZON_CD === 220) fill = x.options.fillColor; });
+          return fill === "rgb(237,125,49)";
+        })),
+      zoningLegendGlendale.replace(/\s+/g, " ").slice(0, 160)
+    );
+    step(
+      "...and the log says the publisher's legend is in use, rather than calling 220 unreadable",
+      /using the publisher's own legend - 2 categories by "ZON_CD"/.test(await page.locator("#status-log").textContent())
+    );
+    await page.uncheck("#toggle-zoning");
     const glendaleContext = await page.evaluate(async () => {
       const ctx = await BlockGroupApp.lookupDevelopmentForTest(34.0501, -118.2501);
       return { ctx: JSON.parse(JSON.stringify({ ...ctx, parcel: { value: ctx.parcel.value && { ...ctx.parcel.value, feature: null } } })), rows: BlockGroupApp.developmentRowsForTest(ctx) };
     });
     step(
       "a Glendale point gets Glendale's zone code - asked of Glendale first, not the county",
-      // 220 is what the service stores; R-1650 is what its domain says it means.
-      glendaleContext.ctx.zoning.value === "R-1650",
+      // 220 is what the service stores; its own legend says what it means.
+      glendaleContext.ctx.zoning.value === "R-1650 Medium Density Residential (code 220)",
       JSON.stringify(glendaleContext.ctx.zoning)
     );
     step(
@@ -3171,8 +3240,9 @@ async function main() {
       ((await page.locator("#status-log").textContent()).match(/[^\n]{0,40}ZON_CD[^\n]{0,80}/) || [""])[0]
     );
     step(
-      "...and whether it is historic, from Glendale's historic parcels",
-      /Rossmoyne/.test(glendaleContext.ctx.historic.value || ""),
+      "...and whether it is historic, from Glendale's historic parcels, with the category from their legend",
+      /Rossmoyne/.test(glendaleContext.ctx.historic.value || "") &&
+        /Historic district contributor/.test(glendaleContext.ctx.historic.value || ""),
       JSON.stringify(glendaleContext.ctx.historic)
     );
     step(

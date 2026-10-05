@@ -1218,7 +1218,11 @@ const BlockGroupApp = (() => {
         // the layer description - decode them, or every zone reads "220".
         if (key === "zoning" || key === "historic") {
           const fields = await layerFields(source.url, sub.id);
-          got.forEach((f) => decodeDomains(f.properties, fields));
+          const sym = await layerSymbology(source.url, sub.id, sub.name);
+          got.forEach((f) => {
+            decodeDomains(f.properties, fields);
+            applySymbology(f.properties, sym);
+          });
         }
         // Where several services make up one layer, remember which one each
         // feature came from - the styling depends on it.
@@ -1271,6 +1275,10 @@ const BlockGroupApp = (() => {
     const counts = {};
     const unread = new Set();
     geojson.features.forEach((f) => {
+      if (f.properties.__symLabel) {
+        counts[`publisher's legend (${f.properties.__symSource})`] = (counts[`publisher's legend (${f.properties.__symSource})`] || 0) + 1;
+        return;
+      }
       const code = zoningCode(f.properties);
       const cls = zoningClass(code);
       counts[cls.label] = (counts[cls.label] || 0) + 1;
@@ -2485,20 +2493,102 @@ const BlockGroupApp = (() => {
   // and keeps the meaning ("R1 - Low Density Residential") in the layer's own
   // description, so the description is read once per layer and every feature
   // decoded with it. Never throws: no description just means no decoding.
-  const layerFieldsCache = new Map();
+  const layerMetaCache = new Map();
 
-  function layerFields(url, id) {
+  function layerMeta(url, id) {
     const key = `${url}/${id}`;
-    if (!layerFieldsCache.has(key)) {
-      layerFieldsCache.set(
-        key,
-        validateLayer(url, id).then(
-          (meta) => (meta && Array.isArray(meta.fields) ? meta.fields : []),
-          () => []
-        )
-      );
+    if (!layerMetaCache.has(key)) {
+      layerMetaCache.set(key, validateLayer(url, id).then((meta) => meta || {}, () => ({})));
     }
-    return layerFieldsCache.get(key);
+    return layerMetaCache.get(key);
+  }
+
+  async function layerFields(url, id) {
+    const meta = await layerMeta(url, id);
+    return Array.isArray(meta.fields) ? meta.fields : [];
+  }
+
+  // --- The publisher's own legend -------------------------------------------
+  // Every ArcGIS layer describes how its publisher draws it (drawingInfo):
+  // which field picks the colour, and for each value its colour and its
+  // human label. Glendale's zoning stores 220, 310, 700 with no lookup table -
+  // the only place "220" becomes a zone name is that legend. So zoning and
+  // historic are drawn, labelled and explained with the publisher's own
+  // symbology wherever it exists: our map cannot disagree with theirs.
+  const symbologyCache = new Map();
+
+  function esriColor(c) {
+    if (!Array.isArray(c) || c.length < 3) return null;
+    return { css: `rgb(${c[0]},${c[1]},${c[2]})`, alpha: c.length > 3 ? c[3] / 255 : 1 };
+  }
+
+  function symbolStyle(symbol) {
+    if (!symbol) return null;
+    const fill = esriColor(symbol.color);
+    const outline = esriColor(symbol.outline && symbol.outline.color);
+    if (!fill && !outline) return null;
+    return {
+      fillColor: fill ? fill.css : "transparent",
+      // Publishers often fill at full strength for a print-style map; over a
+      // basemap and under block groups that hides the streets, so cap it.
+      fillOpacity: fill ? Math.min(0.55, Math.max(0.2, fill.alpha * 0.6)) : 0,
+      color: outline ? outline.css : fill.css,
+      weight: Math.max(0.8, Math.min(2.5, (symbol.outline && symbol.outline.width) || 1)),
+      opacity: 0.95,
+    };
+  }
+
+  async function layerSymbology(url, id, layerName) {
+    const key = `${url}/${id}`;
+    if (symbologyCache.has(key)) return symbologyCache.get(key);
+    const meta = await layerMeta(url, id);
+    const r = meta.drawingInfo && meta.drawingInfo.renderer;
+    let sym = null;
+    if (r && r.type === "uniqueValue" && Array.isArray(r.uniqueValueInfos)) {
+      const values = new Map();
+      r.uniqueValueInfos.forEach((info) => {
+        values.set(String(info.value), { label: info.label || String(info.value), style: symbolStyle(info.symbol) });
+      });
+      sym = {
+        fields: [r.field1, r.field2, r.field3].filter(Boolean),
+        delimiter: r.fieldDelimiter || ",",
+        values,
+        fallback: r.defaultSymbol ? { label: r.defaultLabel || "Other", style: symbolStyle(r.defaultSymbol) } : null,
+        field: r.field1,
+        source: meta.name || layerName,
+      };
+    } else if (r && r.type === "simple") {
+      sym = { simple: { label: r.label || meta.name || layerName, style: symbolStyle(r.symbol) }, source: meta.name || layerName };
+    }
+    symbologyCache.set(key, sym);
+    Utils.logStatus(
+      "development",
+      sym ? "info" : "warn",
+      sym
+        ? `${meta.name || layerName}: using the publisher's own legend` +
+          (sym.values ? ` - ${sym.values.size} categories by "${sym.fields.join(" + ")}".` : " (one symbol).")
+        : `${meta.name || layerName}: the service publishes no usable legend; drawing with this app's own colours.`
+    );
+    return sym;
+  }
+
+  // Tag a feature's attributes with its publisher category. The RAW stored
+  // value is matched (before any domain decoding), because that is what the
+  // legend is keyed on.
+  function applySymbology(attrs, sym) {
+    if (!attrs || !sym) return null;
+    let hit = null;
+    if (sym.simple) hit = sym.simple;
+    else {
+      const raw = (f) => (attrs[`${f}__code`] !== undefined ? attrs[`${f}__code`] : attrs[f]);
+      const value = sym.fields.map((f) => (raw(f) === null || raw(f) === undefined ? "" : String(raw(f)))).join(sym.delimiter);
+      hit = sym.values.get(value) || sym.fallback;
+    }
+    if (!hit) return null;
+    attrs.__symLabel = hit.label;
+    attrs.__symSource = sym.source;
+    if (hit.style) attrs.__symStyle = hit.style;
+    return hit;
   }
 
   function decodeDomains(attrs, fields) {
@@ -2549,8 +2639,17 @@ const BlockGroupApp = (() => {
           const hit = (data.features || [])[0];
           if (!hit) continue;
           decodeDomains(hit.attributes, await layerFields(server.url, sub.id));
+          const symbol = applySymbology(hit.attributes, await layerSymbology(server.url, sub.id, sub.name));
           const where = `${server.url.split("/services/")[1] || server.url} (${sub.name})`;
           const value = contextValue(spec, hit.attributes || {}, where);
+          // The publisher's legend label is what their own map calls this
+          // spot. It replaces a bare code, and is added where it says more.
+          if (symbol && symbol.label) {
+            if (!value || isBareNumber(value)) return value ? `${symbol.label} (code ${value})` : symbol.label;
+            if (!value.toLowerCase().includes(symbol.label.toLowerCase()) && !symbol.label.toLowerCase().includes(value.toLowerCase())) {
+              return `${value} - ${symbol.label}`;
+            }
+          }
           if (value) return value;
           if (spec.hitLabel) return spec.hitLabel(sub.name);
         } catch (err) {
@@ -6418,14 +6517,18 @@ const BlockGroupApp = (() => {
       logZoningClasses(geojson);
       return L.geoJSON(geojson, {
         style: (feature) => {
+          if (feature.properties.__symStyle) return feature.properties.__symStyle;
           const cls = zoningClass(zoningCode(feature.properties));
           return { color: cls.color, weight: 1, opacity: 0.9, fillColor: cls.color, fillOpacity: 0.3 };
         },
         onEachFeature: (feature, layer) => {
-          const code = zoningCode(feature.properties);
+          const p = feature.properties;
+          const code = zoningCode(p);
+          const label = p.__symLabel || zoningClass(code).label;
           layer.bindTooltip(
-            `Zone ${Utils.escapeHTML(code || "?")}<br><span style="opacity:.7">${zoningClass(code).label} &middot; ` +
-              `${Utils.escapeHTML(feature.properties.SOURCE_LAYER || "")}</span>`,
+            `${Utils.escapeHTML(p.__symLabel || `Zone ${code || "?"}`)}<br><span style="opacity:.7">` +
+              `${p.__symLabel ? `code ${Utils.escapeHTML(String(code || "?"))} &middot; publisher's legend` : Utils.escapeHTML(label)} &middot; ` +
+              `${Utils.escapeHTML(p.SOURCE_LAYER || "")}</span>`,
             { sticky: true }
           );
         },
@@ -6434,12 +6537,14 @@ const BlockGroupApp = (() => {
 
     if (key === "historic") {
       return L.geoJSON(geojson, {
-        style: () => BG_CONFIG.STYLES.historic,
+        style: (feature) => feature.properties.__symStyle || BG_CONFIG.STYLES.historic,
         onEachFeature: (feature, layer) => {
           const spec = BG_CONFIG.PARCEL_CONTEXT.historic;
           const name = Utils.pickField(feature.properties, spec.fields);
+          const category = feature.properties.__symLabel;
           layer.bindTooltip(
-            `${Utils.escapeHTML(String(name || "Historic district"))}<br><span style="opacity:.7">` +
+            `${Utils.escapeHTML(String(name || category || "Historic district"))}<br><span style="opacity:.7">` +
+              `${category && category !== name ? `${Utils.escapeHTML(category)} &middot; ` : ""}` +
               `${Utils.escapeHTML(feature.properties.SOURCE_LAYER || "")} - design review applies to anything visible from the street</span>`,
             { sticky: true }
           );
@@ -6586,6 +6691,9 @@ const BlockGroupApp = (() => {
       // Whatever was just drawn goes to its place in the stack: area fills
       // under the block groups, the block groups under the houses and lots.
       restack();
+      // These legends list the publisher categories in view, so they can only
+      // be written once the features are on the map.
+      if (key === "zoning" || key === "historic") renderOverlayLegend(key);
       // Only now can the filter line count what is on the map.
       if (schoolKeyLevel(key)) updateSchoolFilterStatus();
       loadedBBox[key] = bbox;
@@ -6724,6 +6832,40 @@ const BlockGroupApp = (() => {
     refreshLayer(key, { force: true });
   }
 
+  // The publisher's categories actually on the map right now, grouped by the
+  // layer they came from, so the legend lists what you can see - not every
+  // code the city has ever defined. `unstyled` says some features had no
+  // publisher symbol and fell back to this app's colours.
+  function publisherLegendRows(key) {
+    const layer = layers[key];
+    const groups = new Map();
+    let unstyled = false;
+    if (layer) {
+      layer.eachLayer((l) => {
+        const p = l.feature && l.feature.properties;
+        if (!p) return;
+        if (!p.__symStyle) {
+          unstyled = true;
+          return;
+        }
+        if (!groups.has(p.__symSource)) groups.set(p.__symSource, new Map());
+        groups.get(p.__symSource).set(p.__symLabel, p.__symStyle);
+      });
+    }
+    const rows = [];
+    groups.forEach((labels, source) => {
+      rows.push(`<div class="legend-note"><strong>${Utils.escapeHTML(String(source))}</strong> - the publisher's own legend</div>`);
+      [...labels.entries()]
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }))
+        .forEach(([label, style]) =>
+          rows.push(
+            `<div class="legend-row"><span class="swatch" style="background:${style.fillColor};opacity:${Math.max(0.5, style.fillOpacity)};border:1px solid ${style.color}"></span>${Utils.escapeHTML(String(label))}</div>`
+          )
+        );
+    });
+    return { rows, unstyled };
+  }
+
   // One legend box per overlay, shown only while that overlay is on.
   function renderOverlayLegend(key) {
     const box = document.getElementById(`${key}-legend`);
@@ -6762,19 +6904,29 @@ const BlockGroupApp = (() => {
       );
       rows.push('<div class="legend-note">CGS zones where a site investigation is required before building - not a prediction that ground will fail.</div>');
     } else if (key === "zoning") {
-      rows = BG_CONFIG.ZONING_CLASSES.concat([BG_CONFIG.ZONING_OTHER]).map(
-        (c) => `<div class="legend-row"><span class="swatch" style="background:${c.color};opacity:.6"></span>${c.label}</div>`
-      );
+      const published = publisherLegendRows(key);
+      rows = published.rows;
+      if (published.unstyled) {
+        rows = rows.concat(
+          BG_CONFIG.ZONING_CLASSES.concat([BG_CONFIG.ZONING_OTHER]).map(
+            (c) => `<div class="legend-row"><span class="swatch" style="background:${c.color};opacity:.6"></span>${c.label}</div>`
+          )
+        );
+      }
       rows.push(
         '<div class="legend-note">Grouped from each city\'s own codes, which differ - hover a zone for its real code. ' +
           "The code is the question to ask the city, not the answer: what it permits lives in the municipal code.</div>"
       );
     } else if (key === "historic") {
-      rows = [
-        `<div class="legend-row"><span class="swatch" style="background:${BG_CONFIG.STYLES.historic.fillColor};opacity:.5;border:1px dashed ${BG_CONFIG.STYLES.historic.color}"></span>Historic district or listed parcel</div>`,
+      const published = publisherLegendRows(key);
+      rows = published.rows.concat(
+        published.unstyled || !published.rows.length
+          ? [`<div class="legend-row"><span class="swatch" style="background:${BG_CONFIG.STYLES.historic.fillColor};opacity:.5;border:1px dashed ${BG_CONFIG.STYLES.historic.color}"></span>Historic district or listed parcel</div>`]
+          : []
+      ).concat([
         '<div class="legend-note">Glendale historic districts and Register parcels; LA City HPOZs. Inside one, anything visible ' +
           "from the street goes through design review. Other cities' districts are not checked.</div>",
-      ];
+      ]);
     } else if (key === "noise" || key === "noiseSurface") {
       // The service hands over its own legend, so the sidebar cannot disagree
       // with what is actually painted on the map.
