@@ -68,7 +68,34 @@
           "verified": true,
           "section": "GMC 30.11.040.A-B"
         }
-      ]
+      ],
+      "envelope": {
+        "front": 15,
+        "streetSide": 15,
+        "interior": 10,
+        "coverage": 0.4,
+        "far": {
+          "type": "districts",
+          "firstSqft": 10000,
+          "districts": {
+            "I": 0.3,
+            "II": 0.4,
+            "III": 0.45
+          },
+          "beyond": 0.1,
+          "garageExcludedSqft": 500,
+          "garageExcludedLargeHomeSqft": 700,
+          "largeHomeSqft": 3500,
+          "steepSlope": {
+            "percent": 40,
+            "first": 0.3,
+            "beyond": 0.1
+          }
+        },
+        "section": "GMC Table 30.11-B",
+        "verified": true,
+        "note": "Minimum setbacks are used; where the code also sets an average, the drawn line is the minimum and the card says so."
+      }
     },
     {
       "zone": "R1R",
@@ -129,7 +156,34 @@
           "verified": true,
           "section": "GMC 30.11.040.A-B"
         }
-      ]
+      ],
+      "envelope": {
+        "front": 15,
+        "streetSide": 15,
+        "interior": 10,
+        "coverage": 0.4,
+        "far": {
+          "type": "districts",
+          "firstSqft": 10000,
+          "districts": {
+            "I": 0.3,
+            "II": 0.4,
+            "III": 0.45
+          },
+          "beyond": 0.1,
+          "garageExcludedSqft": 500,
+          "garageExcludedLargeHomeSqft": 700,
+          "largeHomeSqft": 3500,
+          "steepSlope": {
+            "percent": 40,
+            "first": 0.3,
+            "beyond": 0.1
+          }
+        },
+        "section": "GMC Table 30.11-B",
+        "verified": true,
+        "note": "Minimum setbacks are used; where the code also sets an average, the drawn line is the minimum and the card says so."
+      }
     },
     {
       "zone": "R1",
@@ -184,7 +238,29 @@
           "verified": true,
           "section": "GMC Table 30.11-B"
         }
-      ]
+      ],
+      "envelope": {
+        "front": 25,
+        "streetSide": 6,
+        "interior": 6,
+        "coverage": 0.4,
+        "far": {
+          "type": "districts",
+          "firstSqft": 10000,
+          "districts": {
+            "I": 0.3,
+            "II": 0.4,
+            "III": 0.45
+          },
+          "beyond": 0.1,
+          "garageExcludedSqft": 500,
+          "garageExcludedLargeHomeSqft": 700,
+          "largeHomeSqft": 3500
+        },
+        "section": "GMC Table 30.11-B",
+        "verified": true,
+        "note": "Minimum setbacks are used; where the code also sets an average, the drawn line is the minimum and the card says so."
+      }
     },
     {
       "zone": "R-3050",
@@ -251,7 +327,21 @@
           "verified": true,
           "section": "GMC Table 30.11-B"
         }
-      ]
+      ],
+      "envelope": {
+        "front": 25,
+        "streetSide": 5,
+        "interior": 5,
+        "averages": "street side and interior average 8 ft",
+        "coverage": 0.5,
+        "far": {
+          "type": "flat",
+          "ratio": 0.65
+        },
+        "section": "GMC Table 30.11-B",
+        "verified": true,
+        "note": "Minimum setbacks are used; where the code also sets an average, the drawn line is the minimum and the card says so."
+      }
     },
     {
       "zone": "R-2250",
@@ -318,7 +408,21 @@
           "verified": true,
           "section": "GMC Table 30.11-B"
         }
-      ]
+      ],
+      "envelope": {
+        "front": 20,
+        "streetSide": 5,
+        "interior": 5,
+        "averages": "front average 23 ft; street side and interior average 8 ft",
+        "coverage": 0.5,
+        "far": {
+          "type": "flat",
+          "ratio": 0.85
+        },
+        "section": "GMC Table 30.11-B",
+        "verified": true,
+        "note": "Minimum setbacks are used; where the code also sets an average, the drawn line is the minimum and the card says so."
+      }
     },
     {
       "zone": "R-1650",
@@ -385,7 +489,21 @@
           "verified": true,
           "section": "GMC Table 30.11-B"
         }
-      ]
+      ],
+      "envelope": {
+        "front": 20,
+        "streetSide": 5,
+        "interior": 5,
+        "averages": "front average 23 ft; street side and interior average 8 ft",
+        "coverage": 0.6,
+        "far": {
+          "type": "flat",
+          "ratio": 1.0
+        },
+        "section": "GMC Table 30.11-B",
+        "verified": true,
+        "note": "Minimum setbacks are used; where the code also sets an average, the drawn line is the minimum and the card says so."
+      }
     },
     {
       "zone": "R-1250",
@@ -452,7 +570,21 @@
           "verified": true,
           "section": "GMC Table 30.11-B"
         }
-      ]
+      ],
+      "envelope": {
+        "front": 20,
+        "streetSide": 5,
+        "interior": 5,
+        "averages": "front average 23 ft; street side and interior average 8 ft",
+        "coverage": 0.6,
+        "far": {
+          "type": "flat",
+          "ratio": 1.2
+        },
+        "section": "GMC Table 30.11-B",
+        "verified": true,
+        "note": "Minimum setbacks are used; where the code also sets an average, the drawn line is the minimum and the card says so."
+      }
     }
   ],
   "stateRules": [
@@ -482,5 +614,15 @@
       "verified": false,
       "source": "California SB 9 (Gov. Code 65852.21, 66411.7), from general knowledge - not checked against the statute here"
     }
-  ]
+  ],
+  "adu": {
+    "side": 4,
+    "rear": 4,
+    "front": "zone",
+    "streetSide": "zone",
+    "guaranteedSqft": 800,
+    "maxHeightFt": 16,
+    "verified": false,
+    "source": "California ADU law (Gov. Code 66314 et seq.): side and rear setbacks capped at 4 ft; an ADU up to 800 ft² cannot be refused for lot coverage or floor area. Front setback assumed to be the zone's. Not checked against Glendale's ADU ordinance."
+  }
 }

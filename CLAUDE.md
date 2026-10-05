@@ -3,7 +3,8 @@
 Personal LA County house-hunting tool. One user, runs locally, no backend.
 `blockgroups.html` is the whole app; `index.html` is an older, simpler page.
 `js/core/layers.js` holds the layer classes (see below); `js/zone-rules/*.json`
-holds what each zone lets you build, per jurisdiction.
+holds what each zone lets you build, per jurisdiction; `js/core/envelope.js`
+works out room to build on one lot (setbacks, built footprint, ADU space).
 
 Read `docs/` before proposing anything big — `PRD.md` (what's built, what's
 blocked), `DATA-FLOW.md` (every source), `DECISIONS.md` (why things are the way

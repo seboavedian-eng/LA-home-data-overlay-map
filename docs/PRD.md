@@ -38,6 +38,7 @@ Zip codes are useless for this. A zip can span a canyon and a flood plain.
 | Satellite + parcel outlines | Where the trees, slope and lot lines actually are |
 | Zoning + historic district layers | See where the rules change before clicking a house |
 | Selected lot outlined, with parcel number and mapped lot size | The lot, not a dot on it |
+| Room to build: setbacks, built footprint, ADU open ground | Whether an ADU physically fits, before paying anyone |
 | Add a house by address | Not everything comes from Redfin |
 | Paste a listing, it fills the card | Typing beds/baths/sqft by hand is the tedious part |
 

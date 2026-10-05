@@ -10,7 +10,7 @@
 <!-- ?v= is bumped with every release. Without it a browser keeps its cached
      copy of the script while showing the new page, so new toggles appear and
      do nothing - which is exactly what happened on 2026-10-05. -->
-<link rel="stylesheet" href="css/blockgroups.css?v=2026-10-06" />
+<link rel="stylesheet" href="css/blockgroups.css?v=2026-10-07" />
 </head>
 <body>
   <header id="app-header">
@@ -169,6 +169,13 @@
             <label for="toggle-historic">
               <span>Historic districts</span>
               <span class="layer-desc">Glendale historic districts and Register parcels, and LA City HPOZs. Design review applies inside. Zoom <span class="zoom-req">13+</span>.</span>
+            </label>
+          </li>
+          <li>
+            <input type="checkbox" id="toggle-buildable" />
+            <label for="toggle-buildable">
+              <span>Room to build (selected lot)</span>
+              <span class="layer-desc">On the house or address you select: buildings in grey, the zone's setback envelope dashed blue, open ground for a detached ADU in green, the largest open rectangle outlined. Glendale residential zones only, so far. Not counted: easements, slope, trees, utilities.</span>
             </label>
           </li>
         </ul>
@@ -366,8 +373,9 @@
      work from a folder on disk with no build step and no CDN. -->
 <script src="vendor/maplibre/maplibre-gl.js"></script>
 <script src="vendor/maplibre/leaflet-maplibre-gl.js"></script>
-<script src="js/utils.js?v=2026-10-06"></script>
-<script src="js/core/layers.js?v=2026-10-06"></script>
-<script src="js/blockgroups.js?v=2026-10-06"></script>
+<script src="js/utils.js?v=2026-10-07"></script>
+<script src="js/core/layers.js?v=2026-10-07"></script>
+<script src="js/core/envelope.js?v=2026-10-07"></script>
+<script src="js/blockgroups.js?v=2026-10-07"></script>
 </body>
 </html>

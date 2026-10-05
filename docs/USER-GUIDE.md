@@ -82,6 +82,23 @@ house card shows the same as rows. State rules (ADU, SB 9) are marked
 Floor area depends on a district (I, II or III) the code does not assign per
 lot, so all three are shown - check the zoning map or ask the city.
 
+## Room to build on a lot
+
+Tick **Room to build (selected lot)**, then click a house or search an
+address. On that lot:
+
+- **Grey** - buildings already there (county outlines, traced from aerial photos)
+- **Dashed blue** - where the main house may go, inside the zone's setbacks
+- **Green** - open ground inside the ADU setbacks (4 ft side and rear) that no
+  building covers
+- **Dashed green box** - the largest open rectangle, and whether an 800 ft² ADU fits
+- **Coloured lot lines** - front red, street side orange, side grey, rear purple
+
+The card adds: footprint built, coverage left, floor area allowed (by FAR
+district), and what is NOT counted - easements, slope, trees, utilities,
+access, separation from the house. Treat green as where to look, not what you
+can build. Glendale residential zones only, so far.
+
 ## What sits on top of what
 
 From the top: house pins, the magenta selected lot, parcel lines, school dots,

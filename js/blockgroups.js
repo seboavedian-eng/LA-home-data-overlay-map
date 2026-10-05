@@ -795,6 +795,25 @@ const BG_CONFIG = {
     ],
   },
 
+  // Building outlines, for "room to build" on a selected lot. LA County's
+  // countywide outlines (captured from aerial imagery, with height and AIN),
+  // published in Regional Planning's GIS-NET service. Unverified from the
+  // build sandbox; layer found by name, the log says which answered.
+  BUILDINGS: {
+    label: "Building outlines",
+    servers: [
+      {
+        url: "https://rpgis.isd.lacounty.gov/arcgis/rest/services/GISNET/GISNET_Public/MapServer",
+        discover: { match: /building outline|building footprint|buildings/i, exclude: /label|annotation|deleted/i, polygonsOnly: true, fallbackId: 434 },
+      },
+      {
+        url: "https://arcgis.gis.lacounty.gov/arcgis/rest/services/DRP/GISNET_Public/MapServer",
+        discover: { match: /building outline|building footprint|buildings/i, exclude: /label|annotation|deleted/i, polygonsOnly: true, fallbackId: 434 },
+      },
+    ],
+    FIELDS: { height: ["HEIGHT", "BLD_HEIGHT", "HGT", "Height"], year: ["YEAR", "SOURCE_YEAR", "CAPTURE_YEAR"] },
+  },
+
   // Aerial imagery, as an alternative basemap. Esri's World Imagery is the
   // same service already used as the raster fallback, so nothing new is
   // trusted here.
@@ -821,6 +840,12 @@ const BG_CONFIG = {
     blockGroupNoMatch: { color: "#9aa3ad", weight: 0.4, fillColor: "#c8ced4", fillOpacity: 0.05 },
     parcels: { color: "#f5d90a", weight: 1, fill: false, opacity: 0.95 },
     parcelSelected: { color: "#e11d8f", weight: 3.5, fillColor: "#e11d8f", fillOpacity: 0.18, opacity: 1 },
+    // Room to build, on the selected lot.
+    buildableOpen: { stroke: false, fillColor: "#16a34a", fillOpacity: 0.38 },
+    buildableBuilding: { color: "#1f2937", weight: 1, fillColor: "#374151", fillOpacity: 0.6 },
+    buildableEnvelope: { color: "#1b4d8c", weight: 2, dashArray: "6 4", fill: false },
+    buildableLargest: { color: "#15803d", weight: 2.5, dashArray: "3 3", fill: false },
+    buildableEdges: { front: "#dc2626", "street side": "#f97316", side: "#6b7280", rear: "#7c3aed" },
     historic: { color: "#7c2d12", weight: 2, fillColor: "#b45309", fillOpacity: 0.28, dashArray: "5 3" },
   },
 };
@@ -834,6 +859,7 @@ const BlockGroupApp = (() => {
     fire: false, pollution: false, wind: false,
     flood: false, seismic: false, noise: false, noiseSurface: false,
     zoning: false, historic: false,
+    buildable: false,  // "room to build" drawn on the selected lot
     schoolElementary: false,
     schoolMiddle: false,
     schoolHigh: false,
@@ -2275,6 +2301,8 @@ const BlockGroupApp = (() => {
     selectedListingId = null;
     currentListing = null;
     highlightParcel(null); // the magenta lot belongs to the card that just closed
+    clearBuildable();
+    buildableFor = null;
     if (selectedFeature || enabled.listings) showListingsFor(); // redraw pins unselected
   }
 
@@ -2290,6 +2318,10 @@ const BlockGroupApp = (() => {
         listingContext = context;
         renderHouseCard();
         highlightParcel(context);
+        computeBuildable(context, {
+          floorSqft: listing.sqft || null,
+          rerender: () => currentListing && currentListing.id === listing.id && renderHouseCard(),
+        });
       }
     });
     // Redraw so the chosen dot is the highlighted one. The block group card is
@@ -2718,6 +2750,9 @@ const BlockGroupApp = (() => {
           address: Utils.pickField(props, spec.FIELDS.address) || null,
           sqft: polygonSqft(feature.geometry),
           source: server.url.split("/services/")[1] || server.url,
+          // Kept so the neighbouring lots can be asked of the same service.
+          serverUrl: server.url,
+          layerId: sublayers[0].id,
         };
       } catch (err) {
         problems.push(`${server.url}: ${err.message}`);
@@ -2777,6 +2812,216 @@ const BlockGroupApp = (() => {
     restack();
   }
 
+  // --- Room to build ---------------------------------------------------------
+  // For the selected lot: what is already built, where the zone's setbacks
+  // put the main-building envelope, and the open ground left for a detached
+  // ADU. Geometry in js/core/envelope.js; numbers from js/zone-rules/*.json.
+  let buildableLayer = null;
+  let buildableFor = null;   // { context, floorSqft, rerender } of the selected lot
+
+  function clearBuildable() {
+    if (buildableLayer) {
+      map.removeLayer(buildableLayer);
+      buildableLayer = null;
+    }
+  }
+
+  async function queryAround(serverUrl, layerId, feature, padDeg) {
+    const b = L.geoJSON(feature).getBounds();
+    const bbox = { xmin: b.getWest() - padDeg, ymin: b.getSouth() - padDeg, xmax: b.getEast() + padDeg, ymax: b.getNorth() + padDeg };
+    const gj = await Utils.fetchEsriAsGeoJSON(Utils.arcgisQueryUrl(serverUrl, layerId, { bbox, outFields: "*" }), { timeoutMs: 25000 });
+    return gj.features || [];
+  }
+
+  async function fetchBuildingsAround(feature) {
+    const problems = [];
+    for (const server of BG_CONFIG.BUILDINGS.servers) {
+      const sublayers = await contextSublayers(BG_CONFIG.BUILDINGS.label, server);
+      if (sublayers instanceof Error) {
+        problems.push(`${server.url}: ${sublayers.message}`);
+        continue;
+      }
+      try {
+        const features = await queryAround(server.url, sublayers[0].id, feature, 0.00005);
+        return { features, source: `${server.url.split("/services/")[1] || server.url} (${sublayers[0].name})` };
+      } catch (err) {
+        problems.push(`${server.url}: ${err.message}`);
+      }
+    }
+    throw new Error(problems.join(" | ") || "no building outline service configured");
+  }
+
+  function farAllowance(far, lotSqft) {
+    if (!far) return null;
+    if (far.type === "flat") return [{ label: "", sqft: Math.round(far.ratio * lotSqft), ratio: far.ratio }];
+    const first = Math.min(lotSqft, far.firstSqft);
+    const beyond = Math.max(0, lotSqft - far.firstSqft);
+    return Object.entries(far.districts).map(([d, r]) => ({ label: `District ${d}`, sqft: Math.round(first * r + beyond * far.beyond), ratio: r }));
+  }
+
+  async function computeBuildable(context, { floorSqft = null, rerender = null } = {}) {
+    buildableFor = { context, floorSqft, rerender };
+    clearBuildable();
+    if (!enabled.buildable || !context) return null;
+    const parcel = context.parcel && context.parcel.value;
+    if (!parcel || !parcel.feature) return null;
+    const zoning = context.zoning && context.zoning.value;
+    const jurisdiction = context.jurisdiction && context.jurisdiction.value;
+    const rule = zoneRules && zoning ? zoneRules.forZone(zoning, { jurisdiction }) : null;
+    const env = rule && rule.zone.envelope;
+    const set = rule && rule.set;
+    if (!env) {
+      context.buildable = { unavailable: `No setback rules on file for ${zoning ? `"${zoning}"` : "this zone"}${jurisdiction ? ` in ${jurisdiction}` : ""} - only Glendale's residential zones are transcribed so far.` };
+      if (rerender) rerender();
+      return context.buildable;
+    }
+    const [neighbours, buildings] = await Promise.all([
+      parcel.serverUrl
+        ? queryAround(parcel.serverUrl, parcel.layerId, parcel.feature, 0.0002).catch((err) => {
+            Utils.logStatus("buildable", "warn", `Neighbouring lots did not load (${err.message}); street frontage cannot be told.`);
+            return [];
+          })
+        : Promise.resolve([]),
+      fetchBuildingsAround(parcel.feature).catch((err) => {
+        Utils.logStatus("buildable", "warn", `Building outlines did not load: ${err.message}`);
+        return { features: [], source: null, error: err.message };
+      }),
+    ]);
+    // A newer lot was selected while this one was being worked out.
+    if (!buildableFor || buildableFor.context !== context || !enabled.buildable) return null;
+
+    const adu = set.adu || { side: 4, rear: 4 };
+    const result = LotEnvelope.compute({
+      lot: parcel.feature,
+      neighbours,
+      buildings: buildings.features,
+      rules: { front: env.front, streetSide: env.streetSide, interior: env.interior },
+      adu: {
+        front: adu.front === "zone" || adu.front == null ? env.front : adu.front,
+        streetSide: adu.streetSide === "zone" || adu.streetSide == null ? env.streetSide : adu.streetSide,
+        side: adu.side,
+        rear: adu.rear,
+      },
+    });
+    if (result.error) {
+      context.buildable = { unavailable: `Room to build could not be worked out: ${result.error}.` };
+      if (rerender) rerender();
+      return context.buildable;
+    }
+    context.buildable = { ...result, rule, env, adu, floorSqft, buildingSource: buildings.source, buildingError: buildings.error || null };
+    drawBuildable(context.buildable, buildings.features, parcel.feature);
+    Utils.logStatus(
+      "buildable",
+      "ok",
+      `Room to build: lot ${result.lotSqft.toLocaleString()} ft², ${result.buildingCount} building(s) covering ${result.builtSqft.toLocaleString()} ft², ` +
+        `${result.freeSqft.toLocaleString()} ft² open for a detached ADU` +
+        (result.largest ? `, largest open rectangle ${result.largest.wFt} × ${result.largest.hFt} ft` : "") +
+        (result.streetUnknown ? " - street frontage unknown" : "") + "."
+    );
+    if (rerender) rerender();
+    return context.buildable;
+  }
+
+  function drawBuildable(b, buildingFeatures, lotFeature) {
+    clearBuildable();
+    const S = BG_CONFIG.STYLES;
+    const lotBounds = L.geoJSON(lotFeature).getBounds();
+    const group = L.featureGroup();
+    const poly = (ring, style) => L.polygon(ring.map(([lon, lat]) => [lat, lon]), { ...style, interactive: false });
+    b.aduOpen.forEach((ring) => group.addLayer(poly(ring, S.buildableOpen)));
+    buildingFeatures
+      .filter((f) => L.geoJSON(f).getBounds().intersects(lotBounds))
+      .forEach((f) => group.addLayer(L.geoJSON(f, { style: S.buildableBuilding, interactive: false })));
+    if (b.mainEnvelope) group.addLayer(poly(b.mainEnvelope, S.buildableEnvelope));
+    if (b.largest) group.addLayer(poly(b.largest.ring, S.buildableLargest));
+    b.edges.forEach((e) =>
+      group.addLayer(
+        L.polyline(e.line.map(([lon, lat]) => [lat, lon]), {
+          color: S.buildableEdges[e.role] || "#6b7280",
+          weight: 4,
+          opacity: 0.9,
+          interactive: false,
+        })
+      )
+    );
+    buildableLayer = group.addTo(map);
+    restack();
+  }
+
+  function buildableRows(context) {
+    const b = context && context.buildable;
+    if (!b) return "";
+    if (b.unavailable) {
+      return `${subLabel("Room to build", "Built footprint, setbacks and open ground on this lot.")}${cardTable(
+        cardRow("Room to build", `<span class="dim">${Utils.escapeHTML(b.unavailable)}</span>`, "Needs the zone's setbacks in js/zone-rules/, the lot outline and the building outlines.")
+      )}`;
+    }
+    const env = b.env;
+    const sec = `${env.section}, ${b.rule.set.jurisdiction}`;
+    const fmt = (n) => Math.round(n).toLocaleString();
+    const allowedCov = env.coverage * b.lotSqft;
+    const covLeft = allowedCov - b.builtSqft;
+    const far = farAllowance(env.far, b.lotSqft);
+    const roles = b.edges.reduce((acc, e) => ((acc[e.role] = (acc[e.role] || 0) + 1), acc), {});
+    const guaranteed = b.adu.guaranteedSqft || 800;
+    const fits = b.largest && b.largest.sqft >= guaranteed && Math.min(b.largest.wFt, b.largest.hFt) >= 16;
+    const rows = [
+      cardRow(
+        "Built now",
+        b.buildingError
+          ? '<span class="dim">building outlines did not load</span>'
+          : `${fmt(b.builtSqft)} ft² in ${b.buildingCount} building${b.buildingCount === 1 ? "" : "s"} (${Math.round((100 * b.builtSqft) / b.lotSqft)}% of the lot)`,
+        `Footprint of every building outline on the lot, drawn dark grey. From ${b.buildingSource || "the county building outlines"} - traced from aerial photos, so a recent addition or a demolished garage may be missing. ` +
+          (b.buildingError ? `It did not load: ${b.buildingError}` : "")
+      ),
+      cardRow(
+        "Coverage left",
+        `${fmt(Math.max(0, covLeft))} ft² of ${fmt(allowedCov)} allowed (${Math.round(env.coverage * 100)}%)${covLeft < 0 ? ' <span class="unverified">over</span>' : ""}`,
+        `Lot coverage limit for ${b.rule.zone.zone} is ${Math.round(env.coverage * 100)}% counting every building (${sec}). An ADU up to ${guaranteed} ft² cannot be refused for coverage under state law.`
+      ),
+      far
+        ? cardRow(
+            "Floor area allowed",
+            far.map((f) => `${f.label ? `${f.label}: ` : ""}${fmt(f.sqft)} ft²`).join(" · ") +
+              (b.floorSqft ? ` <span class="dim">(listing: ${fmt(b.floorSqft)} ft²)</span>` : ""),
+            `Floor area ratio for ${b.rule.zone.zone} applied to the mapped lot (${sec}).` +
+              (env.far.type === "districts"
+                ? ` Garage up to ${env.far.garageExcludedSqft} ft² is not counted (${env.far.garageExcludedLargeHomeSqft} ft² for homes of ${env.far.largeHomeSqft.toLocaleString()} ft²+). ${b.rule.set.farDistrictNote || ""}`
+                : "") +
+              " The listing's floor area is the seller's figure."
+          )
+        : "",
+      cardRow(
+        "Open for an ADU",
+        `${fmt(b.freeSqft)} ft² <span class="dim">(green)</span>`,
+        `Ground inside the ADU setbacks - front ${b.edges.find((e) => e.role === "front") ? b.edges.find((e) => e.role === "front").aduSetbackFt : "?"} ft, side ${b.adu.side} ft, rear ${b.adu.rear} ft - that no building covers. ${b.adu.source || ""} ` +
+          `Counted on a ${b.gridCellFt} ft grid. Separation from the house, trees, slope and access are not modelled.`
+      ),
+      cardRow(
+        "Largest open rectangle",
+        b.largest
+          ? `${b.largest.wFt} × ${b.largest.hFt} ft (${fmt(b.largest.sqft)} ft²) - ${fits ? `fits a ${guaranteed} ft² ADU` : `too small for a ${guaranteed} ft² ADU`}`
+          : '<span class="dim">no open ground inside the setbacks</span>',
+        `The biggest rectangle, squared to the front lot line, that fits in the green area - outlined in green. "Fits" means at least ${guaranteed} ft² with no side under 16 ft. A real ADU also needs access, utility runs and the house separation the building code requires.`
+      ),
+      cardRow(
+        "Lot lines read as",
+        Object.entries(roles).map(([r, n]) => `${n} ${r}`).join(" · ") + (b.streetUnknown ? ' <span class="unverified">street unknown</span>' : ""),
+        `Lines with no neighbouring parcel beyond them face a street; the shorter street frontage is the front. Drawn as coloured edges: front red, street side orange, side grey, rear purple. ${b.assumptions.join(" ")} ` +
+          `Setbacks used (${sec}): front ${env.front} ft, street side ${env.streetSide} ft, interior ${env.interior} ft - the minimums${env.averages ? `; the code also sets averages (${env.averages})` : ""}. The main-building envelope is the dashed blue line.`
+      ),
+      cardRow(
+        "Not counted",
+        '<span class="dim">easements, slope, trees, utilities, access</span>',
+        "None of these are mapped here: a drainage or utility easement can rule out exactly the spot the green area shows, and only a title report and a survey list them. Treat this as where to look, not what you can build."
+      ),
+    ];
+    return `${subLabel(
+      "Room to build",
+      "Built footprint, setbacks and open ground on this exact lot, drawn on the map. Screening only - a survey and the city's counter have the final word."
+    )}${cardTable(rows.join(""))}`;
+  }
+
   function developmentRows(context) {
     if (!context) return "";
     const rows = Object.entries(BG_CONFIG.PARCEL_CONTEXT)
@@ -2799,7 +3044,7 @@ const BlockGroupApp = (() => {
       "What the public maps say about building on this exact spot - not the block group, because zoning changes " +
         "across a street. It is a screening answer: it tells you which questions to ask and whom to ask them of, " +
         "and none of it is a substitute for the city's own counter."
-    )}${cardTable(rows + parcelRows)}${ruleRows}`;
+    )}${cardTable(rows + parcelRows)}${buildableRows(context)}${ruleRows}`;
   }
 
   // What the zone lets you build, from the jurisdiction's rules file. Read at
@@ -4896,6 +5141,7 @@ const BlockGroupApp = (() => {
       const context = await contextPromise;
       renderAddressCard({ address, lat, lon, schools, district, context });
       highlightParcel(context);
+      computeBuildable(context, { rerender: () => renderAddressCard({ address, lat, lon, schools, district, context }) });
     } catch (err) {
       renderAddressCard({ address, lat, lon, schools: [], district: null, context: await contextPromise });
       Utils.logStatus("schoolZones", "warn", `Could not look up schools for this address: ${err.message}`);
@@ -6643,6 +6889,7 @@ const BlockGroupApp = (() => {
       layers[k].eachLayer((l) => l.feature && l.feature.properties.__kind === "dot" && front(l));
     });
     front(layers.parcels);
+    front(buildableLayer);
     front(parcelHighlight);
   }
 
@@ -7826,6 +8073,19 @@ const BlockGroupApp = (() => {
     document.getElementById("toggle-seismic").addEventListener("change", (e) => onToggle("seismic", e.target.checked));
     document.getElementById("toggle-zoning").addEventListener("change", (e) => onToggle("zoning", e.target.checked));
     document.getElementById("toggle-historic").addEventListener("change", (e) => onToggle("historic", e.target.checked));
+    document.getElementById("toggle-buildable").addEventListener("change", (e) => {
+      enabled.buildable = e.target.checked;
+      if (!enabled.buildable) {
+        clearBuildable();
+        if (buildableFor && buildableFor.context) {
+          delete buildableFor.context.buildable;
+          if (buildableFor.rerender) buildableFor.rerender();
+        }
+        return;
+      }
+      if (buildableFor) computeBuildable(buildableFor.context, buildableFor);
+      else Utils.logStatus("buildable", "info", "Room to build: click a house or search an address to see it on that lot.");
+    });
     document.getElementById("toggle-noise").addEventListener("change", (e) => onToggle("noise", e.target.checked));
     document
       .getElementById("toggle-noise-surface")
@@ -7888,6 +8148,14 @@ const BlockGroupApp = (() => {
     developmentRowsForTest: (context) => developmentRows(context),
     zoningClassForTest: (code) => zoningClass(code).key,
     identifyForTest: (lat, lon) => identifyAt(L.latLng(lat, lon)).map((t) => t.key),
+    // Room to build for a context a test assembles (the lot, its zone, its city).
+    computeBuildableForTest: async (ctx, floorSqft) => {
+      enabled.buildable = true;
+      const b = await computeBuildable(ctx, { floorSqft });
+      if (!b) return null;
+      const { rule, env, adu, ...rest } = b;
+      return { ...rest, zone: rule && rule.zone.zone, aduOpen: (b.aduOpen || []).length };
+    },
     zoneRulesForTest: (zone, place) => {
       const r = zoneRules && zoneRules.forZone(zone, place);
       return r ? { zone: r.zone.zone, rules: r.zone.rules.length, state: r.state.map((s) => s.topic) } : null;
@@ -7905,7 +8173,7 @@ const BlockGroupApp = (() => {
       return {
         map, enabled, layers, censusData, selectedProps, windGrid, windOverlay,
         pinArmed, cesByTract, basemapKind, filters, parcelData, districtLayer,
-        listingsData, listingsMeta, listingStore, parcelHighlight, parcelRaster, selectedLayer,
+        listingsData, listingsMeta, listingStore, parcelHighlight, parcelRaster, selectedLayer, buildableLayer,
       };
     },
   };

@@ -73,6 +73,21 @@ const GLENDALE_HISTORIC = esriPolygon({ OBJECTID: 12, HIST_DIST_NM: "Rossmoyne H
   [-118.255, 34.045], [-118.255, 34.055], [-118.245, 34.055], [-118.245, 34.045],
 ]);
 
+// Room to build: neighbours west, east and north of PARCEL_POLY, so its south
+// line is the only one with no lot beyond it - the street. And one house.
+const NEIGHBOUR_W = esriPolygon({ AIN: "5555001000" }, [
+  [-118.2515, 34.0495], [-118.2515, 34.0505], [-118.2505, 34.0505], [-118.2505, 34.0495],
+]);
+const NEIGHBOUR_E = esriPolygon({ AIN: "5555001002" }, [
+  [-118.2495, 34.0495], [-118.2495, 34.0505], [-118.2485, 34.0505], [-118.2485, 34.0495],
+]);
+const NEIGHBOUR_N = esriPolygon({ AIN: "5555001100" }, [
+  [-118.2505, 34.0505], [-118.2505, 34.0515], [-118.2495, 34.0515], [-118.2495, 34.0505],
+]);
+const HOUSE_OUTLINE = esriPolygon({ OBJECTID: 77, HEIGHT: 18 }, [
+  [-118.2502, 34.0497], [-118.2502, 34.0500], [-118.2498, 34.0500], [-118.2498, 34.0497],
+]);
+
 const FIRE_VERY_HIGH = esriPolygon({ HAZ_CLASS: "Very High", OBJECTID: 1 }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04],
 ]);
@@ -802,6 +817,8 @@ async function main() {
       if (url.includes("/query")) {
         parcelQueries.push(url);
         if (parcelQueriesFail) return route.fulfill(json({ error: { code: 400, message: "Invalid or missing input parameters." } }));
+        // The lot plus its neighbours, for the "room to build" frontage test.
+        if (url.includes("esriGeometryEnvelope")) return route.fulfill(json(esriFC([PARCEL_POLY, NEIGHBOUR_W, NEIGHBOUR_E, NEIGHBOUR_N])));
         return route.fulfill(json(esriFC([PARCEL_POLY])));
       }
       return route.fulfill(json({ layers: [{ id: 0, name: "Parcels", geometryType: "esriGeometryPolygon" }] }));
@@ -964,6 +981,16 @@ async function main() {
     );
   };
   await page.route("**://gisapps.glendaleca.gov/**", glendaleRoute);
+  // LA County building outlines (Regional Planning's GIS-NET).
+  let buildingQueries = [];
+  await page.route("**://rpgis.isd.lacounty.gov/**", (route) => {
+    const url = route.request().url();
+    if (url.includes("/query")) {
+      buildingQueries.push(url);
+      return route.fulfill(json(esriFC([HOUSE_OUTLINE])));
+    }
+    return route.fulfill(json({ layers: [{ id: 434, name: "Building Outline (2023)", geometryType: "esriGeometryPolygon" }] }));
+  });
   await page.route("**://gismap.glendaleca.gov/**", glendaleRoute);
 
   // LA City GeoHub: LAUSD attendance boundaries, one sublayer per level,
@@ -3357,6 +3384,103 @@ async function main() {
       /Parcel/.test(glendaleContext.rows) && /5555001001/.test(glendaleContext.rows) && /Lot \(mapped\)/.test(glendaleContext.rows) && /ft/.test(glendaleContext.rows),
       glendaleContext.rows.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").match(/Parcel.{0,80}/)
     );
+    // --- Room to build on the selected lot -----------------------------------
+    await page.evaluate(() => BlockGroupApp.state.map.setView([34.05, -118.25], 17));
+    await page.waitForTimeout(1200);
+    const buildable = await page.evaluate(async () => {
+      const ctx = await BlockGroupApp.lookupDevelopmentForTest(34.0499, -118.2499);
+      ctx.jurisdiction = { value: "Glendale" };
+      ctx.zoning = { value: "R1" };
+      const result = await BlockGroupApp.computeBuildableForTest(ctx, 1800);
+      return { result, rows: BlockGroupApp.developmentRowsForTest(ctx) };
+    });
+    const br = buildable.result || {};
+    step(
+      "room to build reads the lot lines: the one with no neighbour beyond it is the street front, the opposite one the rear",
+      br.zone === "R1" && !br.streetUnknown && br.edges.filter((e) => e.role === "front").length === 1 &&
+        br.edges.some((e) => e.role === "rear") && br.edges.filter((e) => e.role === "side").length === 2,
+      JSON.stringify(br.edges && br.edges.map((e) => [e.role, e.lengthFt]))
+    );
+    step(
+      "...applies R1's setbacks to the main envelope and the state ADU setbacks to the ADU area",
+      br.edges.find((e) => e.role === "front").mainSetbackFt === 25 && br.edges.find((e) => e.role === "side").mainSetbackFt === 6 &&
+        br.edges.find((e) => e.role === "side").aduSetbackFt === 4 && br.edges.find((e) => e.role === "rear").aduSetbackFt === 4,
+      JSON.stringify(br.edges && br.edges.map((e) => [e.role, e.mainSetbackFt, e.aduSetbackFt]))
+    );
+    step(
+      "...counts the existing house as built, and the open ground left around it",
+      br.buildingCount === 1 && br.builtSqft > 12000 && br.builtSqft < 14500 && br.freeSqft > 50000 && br.aduOpen > 0,
+      JSON.stringify({ built: br.builtSqft, free: br.freeSqft, lot: br.lotSqft, n: br.buildingCount })
+    );
+    step(
+      "...and finds the largest open rectangle, squared to the front",
+      br.largest && br.largest.sqft > 800 && br.largest.wFt > 16 && br.largest.hFt > 16,
+      JSON.stringify(br.largest && { w: br.largest.wFt, h: br.largest.hFt, sqft: br.largest.sqft })
+    );
+    const brText = buildable.rows.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+    step(
+      "the card lists built, coverage left, floor area by district, ADU space, largest rectangle, lot lines and what is not counted",
+      /Built now/.test(brText) && /Coverage left/.test(brText) && /Floor area allowed i District I: /.test(brText) &&
+        /listing: 1,800/.test(brText) && /Open for an ADU/.test(brText) && /fits a 800 ft² ADU/.test(brText) &&
+        /1 front/.test(brText) && /Not counted i easements/.test(brText),
+      brText.match(/Open for an ADU.{0,400}/)
+    );
+    step(
+      "every room-to-build row cites where its numbers come from",
+      /data-tip="Lot coverage limit for R1 is 40%/.test(buildable.rows) && /GMC Table 30\.11-B/.test(buildable.rows)
+    );
+    const buildOrder = await page.evaluate(() => {
+      const s = BlockGroupApp.state;
+      if (!s.buildableLayer || !s.layers.blockGroup) return null;
+      const renderer = s.layers.blockGroup.getLayers()[0]._renderer;
+      const order = [];
+      for (let o = renderer._drawFirst; o; o = o.next) order.push(o.layer);
+      const parts = [];
+      s.buildableLayer.eachLayer((l) => (l.eachLayer ? l.eachLayer((x) => parts.push(x)) : parts.push(l)));
+      return {
+        allQuiet: parts.every((x) => x.options.interactive === false),
+        minBuild: Math.min(...parts.map((x) => order.indexOf(x)).filter((i) => i >= 0)),
+        maxBg: Math.max(...s.layers.blockGroup.getLayers().map((x) => order.indexOf(x))),
+      };
+    });
+    step(
+      "the room-to-build drawing sits above the block groups and never takes a click",
+      buildOrder && buildOrder.allQuiet && buildOrder.minBuild > buildOrder.maxBg,
+      JSON.stringify(buildOrder)
+    );
+    await page.evaluate(() => BlockGroupApp.state.map.closePopup());
+    const lotPt = await page.evaluate(() => {
+      const p = BlockGroupApp.state.map.latLngToContainerPoint([34.0503, -118.2503]);
+      const r = document.getElementById("map").getBoundingClientRect();
+      return { x: r.left + p.x, y: r.top + p.y };
+    });
+    await page.mouse.click(lotPt.x, lotPt.y);
+    await page.waitForTimeout(500);
+    step(
+      "a REAL click on the drawn lot still selects the block group beneath it",
+      (await page.locator(".leaflet-popup").count()) >= 1 && !!(await page.evaluate(() => BlockGroupApp.state.selectedProps)),
+      `popups: ${await page.locator(".leaflet-popup").count()}`
+    );
+    const notGlendale = await page.evaluate(async () => {
+      const ctx = await BlockGroupApp.lookupDevelopmentForTest(34.0498, -118.2498);
+      ctx.jurisdiction = { value: "Burbank" };
+      ctx.zoning = { value: "R1-1-HCR" };
+      await BlockGroupApp.computeBuildableForTest(ctx, null);
+      return BlockGroupApp.developmentRowsForTest(ctx).replace(/<[^>]+>/g, " ");
+    });
+    step(
+      "a lot whose city has no transcribed rules says so, rather than borrowing Glendale's",
+      /No setback rules on file for (&quot;|")R1-1-HCR(&quot;|") in Burbank/.test(notGlendale),
+      notGlendale.match(/No setback.{0,90}/)
+    );
+    await page.check("#toggle-buildable");
+    await page.uncheck("#toggle-buildable");
+    await page.waitForTimeout(200);
+    step(
+      "turning Room to build off clears the drawing",
+      await page.evaluate(() => !BlockGroupApp.state.buildableLayer)
+    );
+
     glendaleHits = false;
     await page.evaluate((v) => BlockGroupApp.state.map.setView([v.lat, v.lng], v.zoom), savedState);
     await page.waitForTimeout(1500);
