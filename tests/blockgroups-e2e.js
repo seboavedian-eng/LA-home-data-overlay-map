@@ -61,7 +61,9 @@ const PARCEL_POLY = esriPolygon({ AIN: "5555001001" }, [
 // Glendale's services. Their real field names have never been read from the
 // build sandbox, so these use names the candidate lists do NOT carry - the
 // app has to find them by pattern, and say it did.
-const GLENDALE_ZONE = esriPolygon({ OBJECTID: 11, ZON_CD: "R-1650" }, [
+// Stored as a NUMBER, the way the user saw it live ("220, 230, 357"); the
+// layer description below decodes it.
+const GLENDALE_ZONE = esriPolygon({ OBJECTID: 11, ZON_CD: 220 }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04],
 ]);
 const GLENDALE_HISTORIC = esriPolygon({ OBJECTID: 12, HIST_DIST_NM: "Rossmoyne Historic District" }, [
@@ -904,6 +906,19 @@ async function main() {
     }
     if (/HistoricParcels/.test(url)) {
       return route.fulfill(json({ layers: [{ id: 0, name: "Historic Parcels", geometryType: "esriGeometryPolygon" }] }));
+    }
+    // The zoning layer's own description: a coded-value domain from the
+    // stored number to the zone it means.
+    if (/Zoning\/FeatureServer\/2\?/.test(url)) {
+      return route.fulfill(
+        json({
+          id: 2, name: "Zoning", geometryType: "esriGeometryPolygon",
+          fields: [
+            { name: "OBJECTID", type: "esriFieldTypeOID" },
+            { name: "ZON_CD", type: "esriFieldTypeInteger", domain: { type: "codedValue", name: "ZoneCodes", codedValues: [{ code: 220, name: "R-1650" }, { code: 230, name: "R-1250" }] } },
+          ],
+        })
+      );
     }
     return route.fulfill(
       json({
@@ -3092,7 +3107,9 @@ async function main() {
         const c = BlockGroupApp.zoningClassForTest;
         return c("R1-1-HCR") === "single" && c("R-1650") === "multi" && c("RE11-1") === "single" &&
           c("[Q]R3-1") === "multi" && c("C2-1VL") === "commercial" && c("M1-1") === "industrial" &&
-          c("SFMU") === "mixed" && c("OS-1XL") === "open" && c("") === "other";
+          c("SFMU") === "mixed" && c("OS-1XL") === "open" && c("") === "other" &&
+          c("Low Density Residential") === "single" && c("Medium Density Residential") === "multi" &&
+          c("Neighborhood Commercial") === "commercial" && c("220") === "other";
       })
     );
     await page.uncheck("#toggle-zoning");
@@ -3144,6 +3161,7 @@ async function main() {
     });
     step(
       "a Glendale point gets Glendale's zone code - asked of Glendale first, not the county",
+      // 220 is what the service stores; R-1650 is what its domain says it means.
       glendaleContext.ctx.zoning.value === "R-1650",
       JSON.stringify(glendaleContext.ctx.zoning)
     );

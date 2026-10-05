@@ -518,13 +518,16 @@ const BG_CONFIG = {
   // single-family lot - so the multi-family density test runs BEFORE the
   // single-family one, or R-1650 would read as R-1.
   ZONING_CLASSES: [
-    { key: "mixed", label: "Mixed use", color: "#c55a9e", match: /MU\b|MIXED|^MX/ },
-    { key: "multi", label: "Multi-family residential", color: "#ed7d31", match: /^R-?\d{3,4}\b|^R-?[2-5]|^RD|^RMP|^RW|^RU|^RZ|^R-?MF/ },
-    { key: "single", label: "Single-family residential", color: "#f2c53d", match: /^R-?1|^RS\b|^RE\d*|^RA\b|^R-?A\b|^RR|^ROS|^A-?[12]\b|^R-?E\b/ },
-    { key: "commercial", label: "Commercial", color: "#e04545", match: /^C|^CR\b|^CPD/ },
-    { key: "industrial", label: "Industrial", color: "#8e6bbf", match: /^M-?\d|^MR\b|^IND|^I-?\d|^IMU/ },
-    { key: "open", label: "Open space / public", color: "#5aa05a", match: /^OS|^O-S|^PF|^PS\b|^SR\b|^OR\b|^P-?R/ },
-    { key: "plan", label: "Specific plan / planned development", color: "#4a90c2", match: /^SP|^DSP|^PD|^PUD/ },
+    // `words` is the second chance, for services that store a description
+    // ("Low Density Residential") rather than a code, or whose numeric codes
+    // decode to one.
+    { key: "mixed", label: "Mixed use", color: "#c55a9e", match: /MU\b|MIXED|^MX/, words: /MIXED/ },
+    { key: "multi", label: "Multi-family residential", color: "#ed7d31", match: /^R-?\d{3,4}\b|^R-?[2-5]|^RD|^RMP|^RW|^RU|^RZ|^R-?MF/, words: /MULTI|MEDIUM DENSITY|HIGH DENSITY|APARTMENT|TWO.?FAMILY|DUPLEX/ },
+    { key: "single", label: "Single-family residential", color: "#f2c53d", match: /^R-?1|^RS\b|^RE\d*|^RA\b|^R-?A\b|^RR|^ROS|^A-?[12]\b|^R-?E\b/, words: /SINGLE.?FAMILY|LOW DENSITY RESID|ESTATE|HILLSIDE RESID/ },
+    { key: "commercial", label: "Commercial", color: "#e04545", match: /^C|^CR\b|^CPD/, words: /COMMERCIAL|RETAIL|OFFICE/ },
+    { key: "industrial", label: "Industrial", color: "#8e6bbf", match: /^M-?\d|^MR\b|^IND|^I-?\d|^IMU/, words: /INDUSTR|MANUFACTUR/ },
+    { key: "open", label: "Open space / public", color: "#5aa05a", match: /^OS|^O-S|^PF|^PS\b|^SR\b|^OR\b|^P-?R/, words: /OPEN SPACE|PARK|RECREATION|PUBLIC/ },
+    { key: "plan", label: "Specific plan / planned development", color: "#4a90c2", match: /^SP|^DSP|^PD|^PUD/, words: /SPECIFIC PLAN|PLANNED/ },
   ],
   ZONING_OTHER: { key: "other", label: "Other / unreadable code", color: "#9aa3ad" },
 
@@ -1211,6 +1214,12 @@ const BlockGroupApp = (() => {
       const stats = { requests: 0, split: false, stillTruncated: false };
       try {
         const got = await fetchOverlayFeatures(key, source, sub, bbox, 0, new Set(), stats);
+        // Zone codes are often stored as numbers with their meaning kept in
+        // the layer description - decode them, or every zone reads "220".
+        if (key === "zoning" || key === "historic") {
+          const fields = await layerFields(source.url, sub.id);
+          got.forEach((f) => decodeDomains(f.properties, fields));
+        }
         // Where several services make up one layer, remember which one each
         // feature came from - the styling depends on it.
         if (source.hazard) got.forEach((f) => (f.properties.HAZARD_KIND = source.hazard));
@@ -1239,11 +1248,7 @@ const BlockGroupApp = (() => {
   // --- Zoning -------------------------------------------------------------
 
   function zoningCode(props) {
-    const spec = BG_CONFIG.PARCEL_CONTEXT.zoning;
-    const listed = Utils.pickField(props, spec.fields);
-    if (listed !== undefined && listed !== null && String(listed).trim() !== "") return String(listed).trim();
-    const guess = Object.keys(props).find((k) => spec.fieldPattern.test(k) && props[k] !== null && String(props[k]).trim() !== "");
-    return guess ? String(props[guess]).trim() : null;
+    return readField(BG_CONFIG.PARCEL_CONTEXT.zoning, props).value;
   }
 
   function zoningClass(code) {
@@ -1252,7 +1257,11 @@ const BlockGroupApp = (() => {
       .replace(/^(\[[^\]]*\]|\([^)]*\))+/g, "")
       .trim();
     if (!clean) return BG_CONFIG.ZONING_OTHER;
-    return BG_CONFIG.ZONING_CLASSES.find((c) => c.match.test(clean)) || BG_CONFIG.ZONING_OTHER;
+    return (
+      BG_CONFIG.ZONING_CLASSES.find((c) => c.match.test(clean)) ||
+      BG_CONFIG.ZONING_CLASSES.find((c) => c.words && c.words.test(clean)) ||
+      BG_CONFIG.ZONING_OTHER
+    );
   }
 
   // The same guard as the fire layer: if the codes stop being readable, the
@@ -1267,6 +1276,17 @@ const BlockGroupApp = (() => {
       counts[cls.label] = (counts[cls.label] || 0) + 1;
       if (cls === BG_CONFIG.ZONING_OTHER && code) unread.add(code);
     });
+    const numeric = [...unread].filter(isBareNumber);
+    if (numeric.length) {
+      const sample = geojson.features.find((f) => isBareNumber(zoningCode(f.properties) || ""));
+      Utils.logStatus(
+        "zoning",
+        "error",
+        `Zoning: ${numeric.length} zone codes are bare numbers (${numeric.slice(0, 6).join(", ")}) that the service's own ` +
+          `lookup table did not decode, so they cannot be grouped. Fields on these zones: ` +
+          `${sample ? Object.keys(sample.properties).filter((k) => !/__code$/.test(k)).join(", ") : "?"}.`
+      );
+    }
     Utils.logStatus(
       "zoning",
       "info",
@@ -2418,28 +2438,80 @@ const BlockGroupApp = (() => {
     return null;
   }
 
-  function contextValue(spec, attrs, where) {
+  // A value that is only a number - 220, 357 - is a code, not a zone. When
+  // the chosen field holds one and the service's lookup table could not
+  // decode it, any other matching field that carries words wins instead.
+  const isBareNumber = (v) => /^\s*-?\d+(\.\d+)?\s*$/.test(String(v));
+
+  function readField(spec, attrs) {
+    const usable = (k) => k && attrs[k] !== null && attrs[k] !== undefined && String(attrs[k]).trim() !== "";
     let key = fieldKeyFor(attrs, spec.fields);
-    const guessed = !key && spec.fieldPattern;
-    if (guessed) {
-      key = Object.keys(attrs).find(
-        (k) => spec.fieldPattern.test(k) && !/^(objectid|fid|oid|globalid|shape)/i.test(k) &&
-          attrs[k] !== null && attrs[k] !== undefined && String(attrs[k]).trim() !== ""
-      ) || null;
+    let guessed = false;
+    if (!key && spec.fieldPattern) {
+      key = Object.keys(attrs).find((k) => spec.fieldPattern.test(k) && !/^(objectid|fid|oid|globalid|shape)/i.test(k) && usable(k)) || null;
+      guessed = !!key;
     }
+    let numeric = false;
+    if (key && isBareNumber(attrs[key])) {
+      const wordy = Object.keys(attrs).find(
+        (k) => k !== key && usable(k) && !isBareNumber(attrs[k]) && !/__code$/.test(k) &&
+          (spec.fields.some((c) => k.toLowerCase().includes(c.toLowerCase())) || (spec.fieldPattern && spec.fieldPattern.test(k)))
+      );
+      if (wordy) key = wordy;
+      else numeric = true;
+    }
+    return { key, guessed, numeric, value: key ? String(attrs[key]).trim() : null };
+  }
+
+  function contextValue(spec, attrs, where) {
+    const { key, guessed, numeric, value } = readField(spec, attrs);
     const tag = `${spec.label}|${where}`;
     if (!loggedFieldChoice.has(tag)) {
       loggedFieldChoice.add(tag);
-      const fields = Object.keys(attrs).join(", ");
+      const fields = Object.keys(attrs).filter((k) => !/__code$/.test(k)).join(", ");
       Utils.logStatus(
         "development",
-        !key ? "error" : guessed ? "warn" : "info",
+        !key || numeric ? "error" : guessed ? "warn" : "info",
         !key
           ? `${spec.label} on ${where}: no field to read. Fields there: ${fields} - add the right one to BG_CONFIG.`
-          : `${spec.label} on ${where}: reading "${key}"${guessed ? " (none of the expected names - found by pattern)" : ""}. Fields there: ${fields}.`
+          : `${spec.label} on ${where}: reading "${key}"${guessed ? " (none of the expected names - found by pattern)" : ""}` +
+            `${numeric ? ` - but it holds a bare number (${value}) the service did not decode; it is shown as-is` : ""}. Fields there: ${fields}.`
       );
     }
-    return key ? String(attrs[key]).trim() : null;
+    return value;
+  }
+
+  // Coded-value domains. ArcGIS answers a query with the stored CODE (220)
+  // and keeps the meaning ("R1 - Low Density Residential") in the layer's own
+  // description, so the description is read once per layer and every feature
+  // decoded with it. Never throws: no description just means no decoding.
+  const layerFieldsCache = new Map();
+
+  function layerFields(url, id) {
+    const key = `${url}/${id}`;
+    if (!layerFieldsCache.has(key)) {
+      layerFieldsCache.set(
+        key,
+        validateLayer(url, id).then(
+          (meta) => (meta && Array.isArray(meta.fields) ? meta.fields : []),
+          () => []
+        )
+      );
+    }
+    return layerFieldsCache.get(key);
+  }
+
+  function decodeDomains(attrs, fields) {
+    if (!attrs || !fields || !fields.length) return attrs;
+    fields.forEach((field) => {
+      const coded = field.domain && field.domain.type === "codedValue" && field.domain.codedValues;
+      if (!coded || !(field.name in attrs) || attrs[field.name] === null) return;
+      const hit = coded.find((c) => String(c.code) === String(attrs[field.name]));
+      if (!hit) return;
+      attrs[`${field.name}__code`] = attrs[field.name];
+      attrs[field.name] = hit.name;
+    });
+    return attrs;
   }
 
   function pointQueryUrl(url, id, lat, lon, returnGeometry) {
@@ -2476,6 +2548,7 @@ const BlockGroupApp = (() => {
           answered = true;
           const hit = (data.features || [])[0];
           if (!hit) continue;
+          decodeDomains(hit.attributes, await layerFields(server.url, sub.id));
           const where = `${server.url.split("/services/")[1] || server.url} (${sub.name})`;
           const value = contextValue(spec, hit.attributes || {}, where);
           if (value) return value;
