@@ -54,7 +54,9 @@ const ZONE_POLY = esriPolygon({ ZONE_CMPLT: "R1-1-HCR" }, [
 const HPOZ_POLY = esriPolygon({ NAME: "Spaulding Square HPOZ" }, [
   [-118.26, 34.04], [-118.26, 34.06], [-118.24, 34.06], [-118.24, 34.04],
 ]);
-const PARCEL_POLY = esriPolygon({ AIN: "5555001001" }, [
+// Carries its situs address, the way the county roll writes it - which is how
+// a searched address finds its lot, and how a clicked lot gets its address.
+const PARCEL_POLY = esriPolygon({ AIN: "5555001001", SitusHouseNo: "1745", SitusStreet: "GRANDVIEW AVE", SitusFullAddress: "1745 GRANDVIEW AVE", SitusCity: "GLENDALE CA", SitusZIP: "91201-1234" }, [
   [-118.2505, 34.0495], [-118.2505, 34.0505], [-118.2495, 34.0505], [-118.2495, 34.0495],
 ]);
 
@@ -820,6 +822,22 @@ async function main() {
         // The lot plus its neighbours, for the "room to build" frontage test.
         if (url.includes("esriGeometryEnvelope")) return route.fulfill(json(esriFC([PARCEL_POLY, NEIGHBOUR_W, NEIGHBOUR_E, NEIGHBOUR_N])));
         return route.fulfill(json(esriFC([PARCEL_POLY])));
+      }
+      // The layer's own description: which address fields it has.
+      if (/MapServer\/0\?/.test(url)) {
+        return route.fulfill(
+          json({
+            id: 0, name: "Parcels", geometryType: "esriGeometryPolygon",
+            fields: [
+              { name: "AIN", type: "esriFieldTypeString" },
+              { name: "SitusHouseNo", type: "esriFieldTypeString" },
+              { name: "SitusStreet", type: "esriFieldTypeString" },
+              { name: "SitusFullAddress", type: "esriFieldTypeString" },
+              { name: "SitusCity", type: "esriFieldTypeString" },
+              { name: "SitusZIP", type: "esriFieldTypeString" },
+            ],
+          })
+        );
       }
       return route.fulfill(json({ layers: [{ id: 0, name: "Parcels", geometryType: "esriGeometryPolygon" }] }));
     }
@@ -3384,6 +3402,61 @@ async function main() {
       /Parcel/.test(glendaleContext.rows) && /5555001001/.test(glendaleContext.rows) && /Lot \(mapped\)/.test(glendaleContext.rows) && /ft/.test(glendaleContext.rows),
       glendaleContext.rows.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").match(/Parcel.{0,80}/)
     );
+    // --- An address, on its lot ------------------------------------------------
+    // The user's case: the geocoder put 1745 Grandview in the street, outside
+    // the lot. The county roll knows which lot carries that address.
+    const snapped = await page.evaluate(() =>
+      BlockGroupApp.findLotForAddressForTest("1745, Grandview Avenue, Glendale, Los Angeles County, California, 91201", 34.0493, -118.25)
+    );
+    step(
+      "a searched address is moved onto the lot the county roll gives that address",
+      snapped && /address record/.test(snapped.method) && snapped.apn === "5555001001" && snapped.moved > 10 &&
+        snapped.point.lat > 34.0495 && snapped.point.lat < 34.0505,
+      JSON.stringify(snapped)
+    );
+    const farAway = await page.evaluate(() => BlockGroupApp.findLotForAddressForTest("1745 Grandview Avenue, Glendale", 34.0563, -118.2500));
+    step(
+      "...but a lot with the same number 700 m away is NOT taken for it",
+      farAway === null,
+      JSON.stringify(farAway)
+    );
+    // Below street zoom a click is a block group click and nothing more - the
+    // limit once read an undefined setting, which made EVERY click a lot lookup.
+    await page.evaluate(() => document.getElementById("clear-pin").click());
+    await page.evaluate(() => BlockGroupApp.state.map.setView([34.05, -118.25], 14));
+    await page.waitForTimeout(900);
+    const farPt = await page.evaluate(() => {
+      const p = BlockGroupApp.state.map.latLngToContainerPoint([34.0502, -118.2502]);
+      const r = document.getElementById("map").getBoundingClientRect();
+      return { x: r.left + p.x, y: r.top + p.y };
+    });
+    await page.mouse.click(farPt.x, farPt.y);
+    await page.waitForTimeout(700);
+    step(
+      "zoomed out (below 16), clicking the map does NOT look a lot up",
+      (await page.inputValue("#address-input")) === "",
+      await page.inputValue("#address-input")
+    );
+    await page.evaluate(() => BlockGroupApp.state.map.setView([34.05, -118.25], 17));
+    await page.waitForTimeout(900);
+    step(
+      "a lot's address reads the way people write it",
+      (await page.evaluate(() =>
+        BlockGroupApp.lotAddressForTest({ SitusFullAddress: "1745 GRANDVIEW AVE", SitusCity: "GLENDALE CA", SitusZIP: "91201-1234" })
+      )) === "1745 Grandview Ave, Glendale, 91201"
+    );
+    parcelQueriesFail = true;
+    const noLot = await page.evaluate(async () => {
+      const ctx = await BlockGroupApp.lookupDevelopmentForTest(34.04, -118.3);
+      return { value: ctx.parcel.value, error: ctx.parcel.error || null };
+    });
+    parcelQueriesFail = false;
+    step(
+      "a point where one service fails and another answers 'no lot' says no lot, not 'lookup failed'",
+      noLot.value === null && noLot.error === null,
+      JSON.stringify(noLot)
+    );
+
     // --- Room to build on the selected lot -----------------------------------
     await page.evaluate(() => BlockGroupApp.state.map.setView([34.05, -118.25], 17));
     await page.waitForTimeout(1200);
@@ -3456,6 +3529,27 @@ async function main() {
     });
     await page.mouse.click(lotPt.x, lotPt.y);
     await page.waitForTimeout(500);
+    await page.waitForTimeout(800);
+    step(
+      "clicking a lot (zoomed in) fills the search box with ITS address, from the county roll",
+      (await page.inputValue("#address-input")) === "1745 Grandview Ave, Glendale, 91201",
+      await page.inputValue("#address-input")
+    );
+    step(
+      "...and drops the pin inside that lot, not where the click happened to land",
+      await page.evaluate(() => {
+        let pin = null;
+        BlockGroupApp.state.map.eachLayer((l) => {
+          if (l instanceof L.Marker && !(l.options.icon instanceof L.DivIcon)) pin = l.getLatLng();
+        });
+        return !!pin && pin.lat > 34.0495 && pin.lat < 34.0505 && pin.lng > -118.2505 && pin.lng < -118.2495;
+      })
+    );
+    step(
+      "...and the address card fills in, the same as if it had been typed",
+      /This address/.test(await page.locator("#address-card").innerText()) &&
+        /1745 Grandview Ave/.test(await page.locator("#address-card").innerText())
+    );
     step(
       "a REAL click on the drawn lot still selects the block group beneath it",
       (await page.locator(".leaflet-popup").count()) >= 1 && !!(await page.evaluate(() => BlockGroupApp.state.selectedProps)),
@@ -3482,6 +3576,9 @@ async function main() {
     );
 
     glendaleHits = false;
+    // The real clicks above were at street zoom, where a click also looks the
+    // lot up and drops a pin. Later checks expect no pin yet.
+    await page.evaluate(() => document.getElementById("clear-pin").click());
     await page.evaluate((v) => BlockGroupApp.state.map.setView([v.lat, v.lng], v.zoom), savedState);
     await page.waitForTimeout(1500);
     if (savedState.geoid) {

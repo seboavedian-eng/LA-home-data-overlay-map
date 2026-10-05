@@ -66,6 +66,14 @@ browsers run nothing else. Layers are becoming classes there
 configuration problem (thousands of publishers, each with its own fields), which
 a registry of jurisdictions solves, not a language.
 
+**An address is placed by the county roll, not the geocoder.** Nominatim and
+the Census geocoder interpolate house numbers along a street segment, so 1745
+Grandview landed in the road beside its lot - and every point lookup (zoning,
+historic, parcel) then answered for the road. The parcel layer's own situs
+fields (house number + street) find the lot; a same-numbered lot more than
+300 m away is rejected; failing that, the lot under or nearest (40 m) the
+point. A clicked lot uses the same fields in reverse.
+
 **Zone rules from the code text only.** Web-search summaries of GMC 30.11 got
 four values wrong (landscaping %, setbacks, a 26 ft figure that does not
 exist). Table 30.11-B was transcribed from the rendered page instead, column by

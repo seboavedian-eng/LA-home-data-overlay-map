@@ -765,7 +765,21 @@ const BG_CONFIG = {
     FIELDS: {
       apn: ["AIN", "APN", "APN_NUM", "PARCEL_NO", "PARCELNO", "PARCEL_ID", "ParcelID", "PIN"],
       address: ["SitusAddress", "SITUS_ADDR", "SitusFullAddress", "ADDRESS", "SITE_ADDR", "FullAddress", "ADDR"],
+      // The parts of the situs (property) address, for finding a lot BY its
+      // address - which is what puts a searched address on the right lot.
+      houseNo: ["SitusHouseNo", "SITUS_HOUSE_NO", "HOUSE_NO", "HouseNo", "ST_NUM", "ADDR_NUM", "HSE_NBR"],
+      street: ["SitusStreet", "SITUS_STREET", "STREET_NAME", "ST_NAME", "STREET"],
+      fullAddress: ["SitusFullAddress", "SitusAddress", "SITUS_ADDR", "SITE_ADDR", "FullAddress", "ADDRESS"],
+      city: ["SitusCity", "SITUS_CITY", "CITY"],
+      zip: ["SitusZIP", "SitusZip", "SITUS_ZIP", "ZIP", "ZIPCODE"],
     },
+    // How far a geocoder's point may be from the lot it names. Geocoders
+    // interpolate along the street, so tens of metres is normal; hundreds
+    // means the match is a different property with the same number.
+    ADDRESS_MATCH_MAX_METRES: 300,
+    NEAREST_LOT_MAX_METRES: 40,
+    // At this zoom and closer, clicking a lot looks up its address.
+    CLICK_TO_ADDRESS_MIN_ZOOM: 16,
     // The first source that returns outlines for the view wins; the rest are
     // there because the county's parcel service has moved before, and
     // Glendale publishes its own.
@@ -2446,9 +2460,14 @@ const BlockGroupApp = (() => {
   const contextServerCache = new Map(); // url -> Promise<sublayers | Error>
 
   function contextSublayers(label, server) {
-    if (!contextServerCache.has(server.url)) {
+    // Keyed by URL AND what is being looked for: one service can hold several
+    // layers (Glendale's Common/Zoning has both Parcels and Zoning), and a
+    // URL-only key handed the parcel lookup the zoning layer.
+    const d = server.discover || {};
+    const cacheKey = `${server.url}|${d.match || ""}|${d.exclude || ""}|${d.fallbackId}`;
+    if (!contextServerCache.has(cacheKey)) {
       contextServerCache.set(
-        server.url,
+        cacheKey,
         resolveOverlaySublayers(server.url, server.discover).then(
           (sublayers) => {
             Utils.logStatus(
@@ -2462,7 +2481,7 @@ const BlockGroupApp = (() => {
         )
       );
     }
-    return contextServerCache.get(server.url);
+    return contextServerCache.get(cacheKey);
   }
 
   // Which field carries the answer: the candidate list first (exact name,
@@ -2733,6 +2752,10 @@ const BlockGroupApp = (() => {
   async function lookupParcel(lat, lon) {
     const spec = BG_CONFIG.PARCELS;
     const problems = [];
+    // A service that answered "no lot here" is an answer. Only when none
+    // answered at all is it a failure - "lookup failed" for a point in the
+    // street was the wrong message.
+    let answered = false;
     for (const server of spec.servers) {
       const sublayers = await contextSublayers(spec.label, server);
       if (sublayers instanceof Error) {
@@ -2741,6 +2764,7 @@ const BlockGroupApp = (() => {
       }
       try {
         const gj = await Utils.fetchEsriAsGeoJSON(pointQueryUrl(server.url, sublayers[0].id, lat, lon, true), { timeoutMs: 20000 });
+        answered = true;
         const feature = (gj.features || [])[0];
         if (!feature) continue;
         const props = feature.properties || {};
@@ -2758,7 +2782,8 @@ const BlockGroupApp = (() => {
         problems.push(`${server.url}: ${err.message}`);
       }
     }
-    if (problems.length) throw new Error(problems.join(" | "));
+    if (!answered && problems.length) throw new Error(problems.join(" | "));
+    if (problems.length) Utils.logStatus("development", "warn", `Parcel lookup: ${problems.join(" | ")}`);
     return null;
   }
 
@@ -2791,6 +2816,161 @@ const BlockGroupApp = (() => {
     })();
     contextCache.set(key, pending);
     return pending;
+  }
+
+  // --- An address, on its lot ------------------------------------------------
+  // Geocoders place most house numbers by spacing them evenly along the
+  // street, so the point lands in the road or on a neighbour. The county's
+  // own roll knows each lot's address: ask the parcel layer for the lot WITH
+  // that address near the geocoder's point, and put the pin inside it.
+  const STREET_WORDS = /\b(AVENUE|AVE|STREET|ST|ROAD|RD|DRIVE|DR|BOULEVARD|BLVD|LANE|LN|PLACE|PL|COURT|CT|WAY|TERRACE|TER|CIRCLE|CIR|PARKWAY|PKWY|HIGHWAY|HWY|TRAIL|TRL|NORTH|SOUTH|EAST|WEST|N|S|E|W)\b/g;
+
+  function addressParts(text, details) {
+    const d = details || {};
+    let houseNo = d.house_number || null;
+    let road = d.road || null;
+    if (!houseNo || !road) {
+      const m = String(text || "").match(/^\s*(\d+[A-Z]?)\s*,?\s+([^,]+)/i);
+      if (m) {
+        houseNo = houseNo || m[1];
+        road = road || m[2];
+      }
+    }
+    if (!houseNo || !road) return null;
+    const street = String(road).toUpperCase().replace(/[^A-Z0-9 ]/g, " ").replace(STREET_WORDS, " ").replace(/\s+/g, " ").trim();
+    return street ? { houseNo: String(houseNo).toUpperCase(), street } : null;
+  }
+
+  function metresBetween(a, b) {
+    return L.latLng(a[0], a[1]).distanceTo(L.latLng(b[0], b[1]));
+  }
+
+  // A point well inside the lot (an L-shaped lot's centroid can fall outside
+  // it): the inside grid point farthest from every lot line.
+  function interiorPoint(feature) {
+    const g = feature.geometry;
+    const ring = g.type === "Polygon" ? g.coordinates[0] : g.coordinates[0][0];
+    const lons = ring.map((p) => p[0]);
+    const lats = ring.map((p) => p[1]);
+    const [x0, x1, y0, y1] = [Math.min(...lons), Math.max(...lons), Math.min(...lats), Math.max(...lats)];
+    const kx = Math.cos((((y0 + y1) / 2) * Math.PI) / 180);
+    const segDist = (p, a, b) => {
+      const ax = (a[0] - p[0]) * kx, ay = a[1] - p[1], bx = (b[0] - p[0]) * kx, by = b[1] - p[1];
+      const dx = bx - ax, dy = by - ay;
+      const t = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (dx * dx + dy * dy || 1)));
+      return Math.hypot(ax + t * dx, ay + t * dy);
+    };
+    let best = null;
+    const N = 24;
+    for (let i = 1; i < N; i++) {
+      for (let j = 1; j < N; j++) {
+        const p = [x0 + ((x1 - x0) * i) / N, y0 + ((y1 - y0) * j) / N];
+        if (!MapLayers.pointInFeature(feature, p[0], p[1])) continue;
+        let d = Infinity;
+        for (let k = 0; k < ring.length - 1; k++) d = Math.min(d, segDist(p, ring[k], ring[k + 1]));
+        if (!best || d > best.d) best = { p, d };
+      }
+    }
+    const p = best ? best.p : [(x0 + x1) / 2, (y0 + y1) / 2];
+    return { lat: p[1], lon: p[0] };
+  }
+
+  function sqlQuote(v) {
+    return `'${String(v).replace(/'/g, "''")}'`;
+  }
+
+  async function findLotForAddress(parts, lat, lon) {
+    const spec = BG_CONFIG.PARCELS;
+    const problems = [];
+    for (const server of spec.servers) {
+      const sublayers = await contextSublayers(spec.label, server);
+      if (sublayers instanceof Error) {
+        problems.push(`${server.url}: ${sublayers.message}`);
+        continue;
+      }
+      const sub = sublayers[0];
+      const fields = await layerFields(server.url, sub.id);
+      const names = fields.map((f) => f.name);
+      const pick = (cands) => cands.map((c) => names.find((n) => n.toLowerCase() === c.toLowerCase())).find(Boolean) || null;
+      const hn = pick(spec.FIELDS.houseNo);
+      const st = pick(spec.FIELDS.street);
+      const full = pick(spec.FIELDS.fullAddress);
+      let where = null;
+      if (parts && !hn && !st && !full) {
+        Utils.logStatus("search", "warn", `${server.url.split("/services/")[1] || server.url} lists no address fields (${names.length} fields seen); matching by position only.`);
+      }
+      if (parts && hn && st) {
+        const hnField = fields.find((f) => f.name === hn);
+        const numeric = hnField && /Integer|Double|Single|SmallInteger/.test(hnField.type || "");
+        where = `${hn} = ${numeric ? Number.parseInt(parts.houseNo, 10) : sqlQuote(parts.houseNo)} AND UPPER(${st}) LIKE ${sqlQuote(`%${parts.street}%`)}`;
+      } else if (parts && full) {
+        where = `UPPER(${full}) LIKE ${sqlQuote(`${parts.houseNo} %${parts.street}%`)}`;
+      }
+      const pad = 0.004;
+      const bbox = { xmin: lon - pad, ymin: lat - pad, xmax: lon + pad, ymax: lat + pad };
+      try {
+        if (where) {
+          const gj = await Utils.fetchEsriAsGeoJSON(
+            Utils.arcgisQueryUrl(server.url, sub.id, { bbox, where, outFields: "*", extraParams: { maxAllowableOffset: "0.000002" } }),
+            { timeoutMs: 20000 }
+          );
+          const scored = (gj.features || [])
+            .map((f) => {
+              const c = interiorPoint(f);
+              return { f, c, m: metresBetween([lat, lon], [c.lat, c.lon]) };
+            })
+            .sort((a, b) => a.m - b.m);
+          const near = scored.filter((x) => x.m <= BG_CONFIG.PARCELS.ADDRESS_MATCH_MAX_METRES)[0];
+          Utils.logStatus(
+            "search",
+            "info",
+            `Lot match on ${server.url.split("/services/")[1] || server.url}: ${where} -> ${scored.length} lot(s)` +
+              (scored.length ? `, nearest ${Math.round(scored[0].m)} m from the geocoder's point` : "") + "."
+          );
+          if (near) return { feature: near.f, point: near.c, moved: near.m, method: "the county's address record", server: server.url };
+        }
+        // No address match: the lot under the point, or the nearest one.
+        const smallPad = 0.0004;
+        const around = await Utils.fetchEsriAsGeoJSON(
+          Utils.arcgisQueryUrl(server.url, sub.id, {
+            bbox: { xmin: lon - smallPad, ymin: lat - smallPad, xmax: lon + smallPad, ymax: lat + smallPad },
+            outFields: "*",
+            extraParams: { maxAllowableOffset: "0.000002" },
+          }),
+          { timeoutMs: 20000 }
+        );
+        const inside = (around.features || []).find((f) => MapLayers.pointInFeature(f, lon, lat));
+        if (inside) return { feature: inside, point: { lat, lon }, moved: 0, method: "the lot under the point", server: server.url };
+        const nearest = (around.features || [])
+          .map((f) => {
+            const c = interiorPoint(f);
+            return { f, c, m: metresBetween([lat, lon], [c.lat, c.lon]) };
+          })
+          .filter((x) => x.m <= BG_CONFIG.PARCELS.NEAREST_LOT_MAX_METRES)
+          .sort((a, b) => a.m - b.m)[0];
+        if (nearest) return { feature: nearest.f, point: nearest.c, moved: nearest.m, method: "the nearest lot (no address match)", server: server.url };
+        return null;
+      } catch (err) {
+        problems.push(`${server.url}: ${err.message}`);
+      }
+    }
+    if (problems.length) Utils.logStatus("search", "warn", `Could not place the address on its lot: ${problems.join(" | ")}`);
+    return null;
+  }
+
+  // The lot's own address, as the roll writes it, for a clicked lot.
+  function lotAddress(props) {
+    const F = BG_CONFIG.PARCELS.FIELDS;
+    const full = Utils.pickField(props, F.fullAddress);
+    const line =
+      full && String(full).trim()
+        ? String(full).trim()
+        : [Utils.pickField(props, F.houseNo), Utils.pickField(props, F.street)].filter(Boolean).join(" ").trim();
+    if (!line) return null;
+    const city = Utils.pickField(props, F.city);
+    const zip = Utils.pickField(props, F.zip);
+    const title = (s) => String(s).toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
+    return [title(line), city ? title(String(city).replace(/\s+CA$/i, "")) : null, zip ? String(zip).slice(0, 5) : null].filter(Boolean).join(", ");
   }
 
   // The selected lot, outlined on the map. Above the block groups, and not
@@ -2829,7 +3009,11 @@ const BlockGroupApp = (() => {
   async function queryAround(serverUrl, layerId, feature, padDeg) {
     const b = L.geoJSON(feature).getBounds();
     const bbox = { xmin: b.getWest() - padDeg, ymin: b.getSouth() - padDeg, xmax: b.getEast() + padDeg, ymax: b.getNorth() + padDeg };
-    const gj = await Utils.fetchEsriAsGeoJSON(Utils.arcgisQueryUrl(serverUrl, layerId, { bbox, outFields: "*" }), { timeoutMs: 25000 });
+    // A 0.2 m generalisation: lot-scale queries keep their exact shape.
+    const gj = await Utils.fetchEsriAsGeoJSON(
+      Utils.arcgisQueryUrl(serverUrl, layerId, { bbox, outFields: "*", extraParams: { maxAllowableOffset: "0.000002" } }),
+      { timeoutMs: 25000 }
+    );
     return gj.features || [];
   }
 
@@ -7383,6 +7567,8 @@ const BlockGroupApp = (() => {
     return (Array.isArray(results) ? results : []).map((r) => ({
       matchedAddress: r.display_name,
       coordinates: { x: Number(r.lon), y: Number(r.lat) },
+      // House number and road, kept apart, for finding the lot by address.
+      details: r.address || null,
     }));
   }
 
@@ -7437,15 +7623,41 @@ const BlockGroupApp = (() => {
     document.getElementById("address-suggestions").classList.add("hidden");
     document.getElementById("address-input").value = match.matchedAddress;
 
-    const lat = match.coordinates.y;
-    const lon = match.coordinates.x;
+    let lat = match.coordinates.y;
+    let lon = match.coordinates.x;
 
     if (searchMarker) map.removeLayer(searchMarker);
     searchMarker = L.marker([lat, lon]).addTo(map).bindPopup(match.matchedAddress);
     document.getElementById("clear-pin").classList.remove("hidden");
     map.setView([lat, lon], Math.max(map.getZoom(), BG_CONFIG.MIN_ZOOM.blockGroup + 2));
 
+    // Put the pin ON the lot before anything is looked up from it: the
+    // zoning, the historic check and the parcel are all point questions.
     status.className = "hint";
+    status.textContent = "Placing the address on its lot...";
+    let lotNote = "";
+    try {
+      const lot = await findLotForAddress(addressParts(match.matchedAddress, match.details), lat, lon);
+      if (lot) {
+        lat = lot.point.lat;
+        lon = lot.point.lon;
+        searchMarker.setLatLng([lat, lon]);
+        lotNote = lot.moved >= 1 ? ` · pin moved ${Math.round(lot.moved)} m onto the lot (${lot.method})` : ` · on the lot (${lot.method})`;
+        Utils.logStatus(
+          "search",
+          "ok",
+          `Address placed on its lot by ${lot.method}` +
+            (lot.moved >= 1 ? `, ${Math.round(lot.moved)} m from where the geocoder put it` : "") +
+            ` (${lot.server.split("/services/")[1] || lot.server}).`
+        );
+      } else {
+        lotNote = " · could not match a lot - pin is where the geocoder put it";
+        Utils.logStatus("search", "warn", "No lot matched this address near the geocoder's point; the pin stays where the geocoder put it.");
+      }
+    } catch (err) {
+      lotNote = " · lot match failed";
+    }
+
     status.textContent = "Finding the block group for this address...";
 
     try {
@@ -7488,7 +7700,7 @@ const BlockGroupApp = (() => {
 
       const { tractLabel, bgLabel } = tractAndBlockGroup(feature.properties);
       status.className = "hint ok";
-      status.textContent = `Tract ${tractLabel}, Block Group ${bgLabel}`;
+      status.textContent = `Tract ${tractLabel}, Block Group ${bgLabel}${lotNote}`;
     } catch (err) {
       status.className = "hint error";
       status.textContent = `Could not resolve the block group: ${err.message}`;
@@ -7582,8 +7794,55 @@ const BlockGroupApp = (() => {
     }
   }
 
+  // Click a lot (zoomed in) and it becomes the selected address: the lot's
+  // own situs address goes in the search box, the pin goes inside the lot,
+  // and the address card fills in - the same as typing it. Two-way.
+  let lotClickBusy = false;
+
+  async function selectLotAt(latlng) {
+    if (lotClickBusy) return;
+    lotClickBusy = true;
+    const status = document.getElementById("search-status");
+    try {
+      const parcel = await lookupParcel(latlng.lat, latlng.lng);
+      if (!parcel || !parcel.feature) return; // a street or a gap: leave it to the block group click
+      const point = interiorPoint(parcel.feature);
+      let address = lotAddress(parcel.feature.properties || {});
+      let how = "the county's address record";
+      if (!address) {
+        try {
+          address = shortAddress(await reverseGeocode(point.lat, point.lon));
+          how = "a reverse geocode (the lot carries no address)";
+        } catch (err) {
+          address = `${point.lat.toFixed(5)}, ${point.lon.toFixed(5)}`;
+          how = "coordinates only - no address found";
+        }
+      }
+      if (searchMarker) map.removeLayer(searchMarker);
+      searchMarker = L.marker([point.lat, point.lon]).addTo(map).bindPopup(address);
+      document.getElementById("clear-pin").classList.remove("hidden");
+      document.getElementById("address-input").value = address;
+      status.className = "hint ok";
+      status.textContent = `${address} · from ${how}`;
+      Utils.logStatus("search", "ok", `Lot clicked: ${address} (APN ${parcel.apn || "?"}), address from ${how}.`);
+      describeAddress(address, point.lat, point.lon);
+      if (destination) routeFromPin();
+    } catch (err) {
+      Utils.logStatus("search", "warn", `Could not look up the clicked lot: ${err.message}`);
+    } finally {
+      lotClickBusy = false;
+    }
+  }
+
   function initPinDrop() {
     document.getElementById("drop-pin").addEventListener("click", () => setPinArmed(!pinArmed));
+    map.on("click", (e) => {
+      if (pinArmed || !e.latlng) return;
+      const box = document.getElementById("toggle-click-lot");
+      if (box && !box.checked) return;
+      if (map.getZoom() < BG_CONFIG.PARCELS.CLICK_TO_ADDRESS_MIN_ZOOM) return;
+      selectLotAt(e.latlng);
+    });
 
     map.on("click", (e) => {
       if (!pinArmed) return;
@@ -8148,6 +8407,11 @@ const BlockGroupApp = (() => {
     developmentRowsForTest: (context) => developmentRows(context),
     zoningClassForTest: (code) => zoningClass(code).key,
     identifyForTest: (lat, lon) => identifyAt(L.latLng(lat, lon)).map((t) => t.key),
+    findLotForAddressForTest: async (text, lat, lon) => {
+      const lot = await findLotForAddress(addressParts(text), lat, lon);
+      return lot && { point: lot.point, moved: lot.moved, method: lot.method, apn: lot.feature.properties.AIN || null };
+    },
+    lotAddressForTest: (props) => lotAddress(props),
     // Room to build for a context a test assembles (the lot, its zone, its city).
     computeBuildableForTest: async (ctx, floorSqft) => {
       enabled.buildable = true;

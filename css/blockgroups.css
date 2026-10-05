@@ -926,3 +926,6 @@ ul.zone-rules li { margin: 2px 0; }
   border-radius: 50%; background: #e3e8ee; font-size: 0.6rem; font-style: italic;
 }
 .legend-row .info-icon { margin-left: 4px; }
+
+.inline-toggle { display: block; margin: 6px 0 2px; font-size: 0.74rem; color: var(--muted); cursor: pointer; }
+.inline-toggle input { vertical-align: -2px; margin-right: 4px; }

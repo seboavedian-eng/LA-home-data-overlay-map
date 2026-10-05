@@ -64,6 +64,16 @@ parcel number and mapped lot size - and the lot itself is outlined in
 exact-address answer: schools, jurisdiction, zoning, historic, parcel,
 commute. The lot is outlined in magenta here too.
 
+## Addresses and lots, both ways
+
+- **Type an address** and pick it: the pin goes **inside that lot**, found in
+  the county roll by its house number and street. The search line says how far
+  the pin moved from where the geocoder put it (geocoders space house numbers
+  evenly along the street, so their point is often in the road or next door).
+- **Click a lot** (zoomed in to 16+): its address from the roll goes into the
+  search box, the pin drops inside it, and the address card fills in. Untick
+  "Click a lot to look it up" to turn this off.
+
 ## Clicking the map: the Here card
 
 Click anywhere and the **Here** card (bottom right) lists every visible layer at
