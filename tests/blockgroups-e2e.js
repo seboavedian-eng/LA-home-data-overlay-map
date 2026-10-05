@@ -793,7 +793,7 @@ async function main() {
       }
       return route.fulfill(json({ layers: [{ id: 0, name: "Zoning", geometryType: "esriGeometryPolygon" }] }));
     }
-    if (/\/Parcel\//.test(url)) {
+    if (/Parcel\//.test(url)) {
       if (url.includes("/query")) {
         parcelQueries.push(url);
         if (parcelQueriesFail) return route.fulfill(json({ error: { code: 400, message: "Invalid or missing input parameters." } }));
@@ -3108,7 +3108,7 @@ async function main() {
     });
     step(
       "when no parcel service will answer a query, the lines are drawn as images from /export",
-      !!rasterSrc && /\/Parcel\/MapServer\/export\?/.test(rasterSrc) && /layers=show%3A0/.test(rasterSrc),
+      !!rasterSrc && /LACounty_Parcel\/MapServer\/export\?/.test(rasterSrc) && /layers=show%3A0/.test(rasterSrc),
       (rasterSrc || "no image tiles").slice(0, 140)
     );
     step(
@@ -4521,6 +4521,19 @@ async function main() {
     step("toggling a layer off removes it", zipOff);
 
     step("no console/page errors thrown", consoleErrors.length === 0, consoleErrors.join(" | "));
+    // A browser that keeps its cached script while showing a new page shows
+    // toggles that do nothing - the user hit exactly that. Every local script
+    // and stylesheet must carry the same release tag, so a new download always
+    // fetches new code.
+    const assetTags = await page.evaluate(() =>
+      [...document.querySelectorAll('script[src^="js/"], link[href^="css/"]')].map((el) => el.getAttribute("src") || el.getAttribute("href"))
+    );
+    const versions = new Set(assetTags.map((s) => (s.match(/[?&]v=([^&]+)/) || [])[1]));
+    step(
+      "every local script and stylesheet carries one release tag (?v=), so a new version is never served stale",
+      assetTags.length >= 3 && !versions.has(undefined) && versions.size === 1,
+      assetTags.join(", ")
+    );
 
     // --- Basemap fallback when OpenFreeMap is unreachable ---
     // OpenFreeMap is donation-funded and single-maintainer, so "it is down"

@@ -56,6 +56,13 @@ const OTHER_ZONING_SERVERS = [
     url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Zoning/MapServer",
     discover: { match: /zoning/i, exclude: /label|annotation/i, polygonsOnly: true, fallbackId: 0 },
   },
+  // Regional Planning's GIS-NET service, which carries unincorporated county
+  // zoning. Unverified from the build sandbox; the status log names the layer
+  // it matched.
+  {
+    url: "https://arcgis.gis.lacounty.gov/arcgis/rest/services/DRP/GISNET_Public/MapServer",
+    discover: { match: /zoning/i, exclude: /label|annotation|case|overlay|plan|histor/i, polygonsOnly: true },
+  },
   {
     url: "https://maps.lacity.org/lahub/rest/services/Boundaries/MapServer",
     discover: { match: /zoning/i, exclude: /label|annotation/i, polygonsOnly: true, fallbackId: 0 },
@@ -755,12 +762,16 @@ const BG_CONFIG = {
     // there because the county's parcel service has moved before, and
     // Glendale publishes its own.
     servers: [
+      // The county Assessor's parcel layer (layer 0, "Parcels": AIN, APN,
+      // SitusFullAddress). The LACounty_Dynamic/Parcel path used before
+      // answers 404 "Service not found" on both hosts - confirmed from the
+      // user's own status log, 2026-10-05.
       {
-        url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Parcel/MapServer",
+        url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Cache/LACounty_Parcel/MapServer",
         discover: { match: /parcel/i, exclude: /label|annotation|point/i, polygonsOnly: true, fallbackId: 0 },
       },
       {
-        url: "https://arcgis.gis.lacounty.gov/arcgis/rest/services/LACounty_Dynamic/Parcel/MapServer",
+        url: "https://cache.gis.lacounty.gov/cache/rest/services/LACounty_Cache/LACounty_Parcel/MapServer",
         discover: { match: /parcel/i, exclude: /label|annotation|point/i, polygonsOnly: true, fallbackId: 0 },
       },
       // Glendale's zoning service carries its parcels too (the same service

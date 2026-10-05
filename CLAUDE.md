@@ -68,6 +68,10 @@ stale by comparing against it.
 
 ## Gotchas that cost real time
 
+- **Bump `?v=` on the script and stylesheet tags in `blockgroups.html` with
+  every release.** Without it the browser shows the new page with the OLD
+  cached script: new toggles appear and do nothing. A test checks the tags.
+
 - **Draw order is paint order on ONE canvas.** `restack()` re-sorts it after
   every redraw: area fills < school zones < boundaries < block groups <
   school dots < parcels < selected lot. Never give a vector layer its own
