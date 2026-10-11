@@ -5205,6 +5205,79 @@ async function main() {
     );
     await pageNoRatings.close();
 
+    // --- Phone layout -----------------------------------------------------------
+    // The user's iPhone showed the sidebar and NO map: in the old phone rule
+    // the map's flex: 1 beat its height and left it 0 px tall.
+    const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const phone = await phoneCtx.newPage();
+    await phone.route("**://tile.openstreetmap.org/**", (route) => route.fulfill({ contentType: "image/png", body: BLANK_PNG }));
+    await phone.goto(`http://localhost:${PORT}/blockgroups.html`, { waitUntil: "load" });
+    await phone.waitForFunction(() => typeof BlockGroupApp !== "undefined" && BlockGroupApp.state.map);
+    const phoneBox = await phone.evaluate(() => {
+      const b = (s) => document.querySelector(s).getBoundingClientRect();
+      return { map: b("#map").height, sheetTop: b("#sidebar").top, sheetH: b("#sidebar").height, vh: window.innerHeight };
+    });
+    step(
+      "on a phone the map fills the screen (it was 0 px tall)",
+      phoneBox.map > phoneBox.vh * 0.85,
+      JSON.stringify(phoneBox)
+    );
+    step(
+      "...and the panel is a sheet at the bottom, peeking with the address search",
+      phoneBox.sheetH < 160 && phoneBox.sheetTop > phoneBox.vh * 0.75 && (await phone.locator("#address-input").isVisible()),
+      JSON.stringify(phoneBox)
+    );
+    await phone.locator("#sheet-handle").tap();
+    await phone.waitForTimeout(300);
+    const half = await phone.evaluate(() => [BlockGroupApp.sheetStateForTest(), document.querySelector("#sidebar").getBoundingClientRect().height]);
+    await phone.locator("#sheet-handle").tap();
+    await phone.waitForTimeout(300);
+    const full = await phone.evaluate(() => [BlockGroupApp.sheetStateForTest(), document.querySelector("#sidebar").getBoundingClientRect().height]);
+    step(
+      "tapping the handle opens the sheet to half, then nearly full",
+      half[0] === "sheet-half" && full[0] === "sheet-full" && half[1] > 300 && full[1] > half[1],
+      JSON.stringify({ half, full })
+    );
+    await phone.locator("#sheet-handle").tap();
+    await phone.waitForTimeout(300);
+    step(
+      "...and a third tap folds it back to the peek",
+      (await phone.evaluate(() => BlockGroupApp.sheetStateForTest())) === "sheet-peek"
+    );
+    step(
+      "the search box is 16px, so iOS does not zoom the page when it is tapped",
+      (await phone.evaluate(() => getComputedStyle(document.getElementById("address-input")).fontSize)) === "16px"
+    );
+    await phone.locator("#address-input").tap();
+    await phone.waitForTimeout(300);
+    step(
+      "tapping the search box opens the sheet full, so the suggestions have room",
+      (await phone.evaluate(() => BlockGroupApp.sheetStateForTest())) === "sheet-full"
+    );
+    const cardPos = await phone.evaluate(() => {
+      const c = document.getElementById("here-card");
+      c.classList.remove("hidden");
+      c.innerHTML = "<p>test</p>";
+      const s = getComputedStyle(c);
+      const r = c.getBoundingClientRect();
+      return { position: s.position, width: r.width, vw: window.innerWidth };
+    });
+    step(
+      "cards become full-width sheets on a phone, not 300 px boxes docked off-screen",
+      cardPos.position === "fixed" && cardPos.width > cardPos.vw - 24,
+      JSON.stringify(cardPos)
+    );
+    await phoneCtx.close();
+    const deskSheet = await page.evaluate(() => {
+      const s = document.getElementById("sidebar");
+      return { handle: getComputedStyle(document.getElementById("sheet-handle")).display, position: getComputedStyle(s).position };
+    });
+    step(
+      "the desktop layout is untouched: no sheet handle, sidebar in the page flow",
+      deskSheet.handle === "none" && deskSheet.position !== "fixed",
+      JSON.stringify(deskSheet)
+    );
+
     // --- An old ratings file, and zones whose school is gone ------------------
     // A schema-1 file holds ratings computed from test scores. Your table is
     // now the only source, so such a file must be refused, not shown as yours.

@@ -317,10 +317,91 @@ html, body {
 
 .hidden { display: none !important; }
 
+/* The sheet handle is a phone control; on a desktop the sidebar is a column. */
+#sheet-handle { display: none; }
+
+/* --- Phone layout -------------------------------------------------------
+   The old rule stacked sidebar over map inside a column flexbox, where the
+   map's flex: 1 (basis 0) beat its 55vh height and left it 0 px tall - the
+   blank screen on the user's iPhone. Instead: the map fills the screen, the
+   sidebar becomes a bottom sheet (peek / half / full), and the house and Here
+   cards slide up above it. dvh, not vh: Safari's toolbar comes and goes. */
 @media (max-width: 800px) {
-  #app { flex-direction: column; height: auto; }
-  #sidebar { width: 100%; min-width: 0; max-height: 45vh; }
-  #map-wrap { height: 55vh; }
+  body { --sheet-h: 124px; overflow: hidden; }
+  body.sheet-half { --sheet-h: 50dvh; }
+  body.sheet-full { --sheet-h: 88dvh; }
+
+  #app-header { padding: 6px 12px; height: 36px; }
+  #app-header h1 { font-size: 0.95rem; }
+  #app-header .subtitle { display: none; }
+
+  #app { display: block; position: fixed; top: 36px; left: 0; right: 0; bottom: 0; height: auto; }
+  #map-wrap { position: absolute; inset: 0; height: auto; }
+
+  #sidebar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    min-width: 0;
+    height: var(--sheet-h);
+    max-height: none;
+    z-index: 1200;
+    border-right: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.18);
+    padding: 0 14px 14px;
+    transition: height 0.2s ease;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  #sheet-handle {
+    display: block;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    width: calc(100% + 28px);
+    margin: 0 -14px 6px;
+    padding: 8px 0 6px;
+    border: 0;
+    background: var(--panel-bg);
+    cursor: pointer;
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+  #sheet-handle::before {
+    content: "";
+    display: block;
+    width: 40px;
+    height: 5px;
+    margin: 0 auto 4px;
+    border-radius: 3px;
+    background: #c4ccd5;
+  }
+  #sidebar section:first-of-type h2 { margin-top: 2px; }
+
+  /* 16px: anything smaller and iOS zooms the whole page on focus. */
+  #address-input, #destination-input, #sidebar input[type="number"], #sidebar select { font-size: 16px; }
+
+  /* Cards become sheets above the sidebar sheet. Inline left/top from the
+     desktop docking code are overridden here on purpose. */
+  #house-card, #here-card {
+    position: fixed !important;
+    left: 8px !important;
+    right: 8px !important;
+    top: auto !important;
+    bottom: calc(var(--sheet-h) + 8px) !important;
+    width: auto !important;
+    max-height: calc(100dvh - var(--sheet-h) - 70px);
+  }
+  #house-card { z-index: 1160; }
+  #here-card { z-index: 1150; }
+
+  .leaflet-popup-content { max-width: calc(100vw - 70px); }
+  .bg-popup { max-height: 45dvh; overflow-y: auto; }
+  .leaflet-control-zoom { display: none; } /* pinch does it, and it sits under the header */
 }
 
 /* --- Drop-pin mode --- */

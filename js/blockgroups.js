@@ -2321,6 +2321,7 @@ const BlockGroupApp = (() => {
   }
 
   function openHouseCard(listing) {
+    if (isPhone()) setSheet("sheet-peek");
     selectedListingId = listing.id;
     currentListing = listing;
     listingContext = null;
@@ -7622,6 +7623,10 @@ const BlockGroupApp = (() => {
     const status = document.getElementById("search-status");
     document.getElementById("address-suggestions").classList.add("hidden");
     document.getElementById("address-input").value = match.matchedAddress;
+    if (isPhone()) {
+      document.getElementById("address-input").blur(); // put the keyboard away
+      setSheet("sheet-peek");
+    }
 
     let lat = match.coordinates.y;
     let lon = match.coordinates.x;
@@ -8193,6 +8198,43 @@ const BlockGroupApp = (() => {
     }
   }
 
+  // --- Phone: the sidebar as a bottom sheet --------------------------------
+  // Three heights, set by a body class the phone CSS reads (desktop ignores
+  // it). Tap the handle to cycle; typing an address opens it full; picking a
+  // result, or a house, folds it down so the map is visible.
+  const SHEET_STATES = ["sheet-peek", "sheet-half", "sheet-full"];
+  const SHEET_LABELS = { "sheet-peek": "Tap for layers & filters", "sheet-half": "Tap for more", "sheet-full": "Tap to show the map" };
+
+  function isPhone() {
+    return window.matchMedia && window.matchMedia("(max-width: 800px)").matches;
+  }
+
+  function setSheet(state) {
+    SHEET_STATES.forEach((s) => document.body.classList.toggle(s, s === state));
+    const handle = document.getElementById("sheet-handle");
+    if (handle) handle.textContent = SHEET_LABELS[state];
+    if (state === "sheet-peek") document.getElementById("sidebar").scrollTop = 0;
+  }
+
+  function sheetState() {
+    return SHEET_STATES.find((s) => document.body.classList.contains(s)) || "sheet-peek";
+  }
+
+  function initMobileSheet() {
+    setSheet("sheet-peek");
+    const handle = document.getElementById("sheet-handle");
+    if (handle) {
+      handle.addEventListener("click", () => {
+        const i = SHEET_STATES.indexOf(sheetState());
+        setSheet(SHEET_STATES[(i + 1) % SHEET_STATES.length]);
+      });
+    }
+    const input = document.getElementById("address-input");
+    if (input) input.addEventListener("focus", () => isPhone() && setSheet("sheet-full"));
+    // A tap on the map means "show me the map".
+    map.on("click", () => isPhone() && sheetState() === "sheet-full" && setSheet("sheet-peek"));
+  }
+
   function initStatusPanel() {
     const toggle = document.getElementById("status-toggle");
     const list = document.getElementById("status-log");
@@ -8244,6 +8286,7 @@ const BlockGroupApp = (() => {
     addBasemap();
 
     initStatusPanel();
+    initMobileSheet();
     initLayerObjects();
     initIdentify();
     initAddressSearch();
@@ -8407,6 +8450,7 @@ const BlockGroupApp = (() => {
     developmentRowsForTest: (context) => developmentRows(context),
     zoningClassForTest: (code) => zoningClass(code).key,
     identifyForTest: (lat, lon) => identifyAt(L.latLng(lat, lon)).map((t) => t.key),
+    sheetStateForTest: () => sheetState(),
     findLotForAddressForTest: async (text, lat, lon) => {
       const lot = await findLotForAddress(addressParts(text), lat, lon);
       return lot && { point: lot.point, moved: lot.moved, method: lot.method, apn: lot.feature.properties.AIN || null };

@@ -10,7 +10,7 @@
 <!-- ?v= is bumped with every release. Without it a browser keeps its cached
      copy of the script while showing the new page, so new toggles appear and
      do nothing - which is exactly what happened on 2026-10-05. -->
-<link rel="stylesheet" href="css/blockgroups.css?v=2026-10-08" />
+<link rel="stylesheet" href="css/blockgroups.css?v=2026-10-11" />
 </head>
 <body>
   <header id="app-header">
@@ -20,6 +20,8 @@
 
   <div id="app">
     <aside id="sidebar">
+      <!-- Phone only (hidden by CSS on a desktop): tap to resize the sheet. -->
+      <button id="sheet-handle" type="button" aria-label="Show more or less of the panel">Tap for layers &amp; filters</button>
       <section id="search-section">
         <h2>Find an address</h2>
         <div id="search-wrap">
@@ -376,9 +378,9 @@
      work from a folder on disk with no build step and no CDN. -->
 <script src="vendor/maplibre/maplibre-gl.js"></script>
 <script src="vendor/maplibre/leaflet-maplibre-gl.js"></script>
-<script src="js/utils.js?v=2026-10-08"></script>
-<script src="js/core/layers.js?v=2026-10-08"></script>
-<script src="js/core/envelope.js?v=2026-10-08"></script>
-<script src="js/blockgroups.js?v=2026-10-08"></script>
+<script src="js/utils.js?v=2026-10-11"></script>
+<script src="js/core/layers.js?v=2026-10-11"></script>
+<script src="js/core/envelope.js?v=2026-10-11"></script>
+<script src="js/blockgroups.js?v=2026-10-11"></script>
 </body>
 </html>

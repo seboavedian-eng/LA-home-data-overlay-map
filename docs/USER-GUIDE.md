@@ -22,6 +22,19 @@ Same page, plus one extra box. Needs `pip install anthropic` and your key in a
 **Don't double-click the HTML file.** Browsers block local data over `file://`.
 The page will tell you if you do.
 
+## On your phone
+
+Through Tailscale, from anywhere: run the server on the laptop as usual, keep
+the laptop awake and plugged in, and open
+`http://<laptop's Tailscale address>:8000/blockgroups.html` in Safari. Share ->
+Add to Home Screen gives it an icon.
+
+On a phone the map fills the screen and the left pane becomes a sheet at the
+bottom: it peeks with the address search; tap its handle for half, again for
+nearly full, again to fold it. Tapping the search box opens it full; picking an
+address or a house folds it so the map shows. House and Here cards slide up
+above it. Hearts and notes are kept per browser, so the phone has its own.
+
 ## The basic loop
 
 1. Zoom in past 12. Tick **Block group borders**.
