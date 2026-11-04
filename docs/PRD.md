@@ -42,6 +42,8 @@ Zip codes are useless for this. A zip can span a canyon and a flood plain.
 | Add a house by address | Not everything comes from Redfin |
 | Paste a listing, it fills the card | Typing beds/baths/sqft by hand is the tedious part |
 
+| Pilot page (`brickline.html`): check a house, or find a neighbourhood in 8 questions | Something to put in front of buyers; captures sign-ups |
+
 ### Not built yet
 
 | Feature | Why it matters | What's blocking it |

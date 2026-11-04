@@ -683,6 +683,11 @@ const BG_CONFIG = {
   // in ors-api-key.txt beside this project (gitignored) and is read at start.
   ORS_KEY_FILE: "ors-api-key.txt",
   ORS_DIRECTIONS: "https://api.openrouteservice.org/v2/directions/driving-car",
+  // The area reachable within N minutes of a destination, for brickline.html's
+  // commute question. Same key and daily allowance as the directions call.
+  ORS_ISOCHRONES: "https://api.openrouteservice.org/v2/isochrones/driving-car",
+  // brickline.html's sign-up and click log - served by scripts/listing-server.py.
+  LEAD_ENDPOINT: "api/lead",
 
   // --- What you could build on it -----------------------------------------
   // Everything about developing a lot - fees, timing, what is allowed at all -
@@ -8484,7 +8489,125 @@ const BlockGroupApp = (() => {
         listingsData, listingsMeta, listingStore, parcelHighlight, parcelRaster, selectedLayer, buildableLayer,
       };
     },
+
+    // --- Read-only engine for other pages (brickline.html) -----------------
+    // The same lookups this page uses, without a map or this page's DOM, so a
+    // second front end reuses the candidate lists, field fallbacks and domain
+    // decoding rather than re-deriving them. Nothing here changes how this
+    // page behaves; it only hands out functions that already exist.
+    engine: {
+      async ready() {
+        if (!zoneRules) {
+          zoneRules = new MapLayers.ZoneRules();
+          await Promise.all(
+            (BG_CONFIG.ZONE_RULES_FILES || []).map(async (url) => {
+              try {
+                zoneRules.add(await Utils.fetchJSON(url, { timeoutMs: 20000 }));
+              } catch (err) {
+                Utils.logStatus("zoning", "warn", `Zone rules ${url} did not load (${err.message}).`);
+              }
+            })
+          );
+        }
+        return true;
+      },
+      census: () => loadCensusData(),
+      censusError: () => censusDataError,
+      prices: async () => {
+        await loadParcelData();
+        return parcelData;
+      },
+      sales: () => loadSalesData(),
+      schools: () => loadSchoolRatings(),
+      listings: async () => {
+        await loadListings();
+        return listingsData || [];
+      },
+      geocode: (text) => geocode(text),
+      addressParts: (text, details) => addressParts(text, details),
+      findLotForAddress: (parts, lat, lon) => findLotForAddress(parts, lat, lon),
+      lookupDevelopment: (lat, lon) => lookupDevelopment(lat, lon),
+      blockGroupAt: (lat, lon) => blockGroupAt(lat, lon),
+      blockGroupLayerId: () => resolveLayerId("blockGroup"),
+      lotSqft: (geometry) => polygonSqft(geometry),
+      zoneRule: (zone, jurisdiction) => (zoneRules && zone ? zoneRules.forZone(zone, { jurisdiction }) : null),
+      fireClass: (props) => fireClass(props),
+      floodClass: (props) => floodClass(props),
+      // Every sublayer of an overlay that covers one point, with its raw
+      // attributes. An empty list means "asked, nothing here".
+      async hazardAt(key, lat, lon) {
+        const source = await resolveOverlaySource(key);
+        const sources = source.multi || [source];
+        const hits = [];
+        for (const s of sources) {
+          for (const sub of s.sublayers) {
+            const data = await Utils.fetchJSON(pointQueryUrl(s.url, sub.id, lat, lon, false), { timeoutMs: 20000 });
+            (data.features || []).forEach((f) => hits.push({ name: sub.name, hazard: s.hazard || key, attrs: f.attributes || {} }));
+          }
+        }
+        return hits;
+      },
+      // Room to build for a lookupDevelopment() context, without drawing it.
+      async buildable(context) {
+        const parcel = context && context.parcel && context.parcel.value;
+        if (!parcel || !parcel.feature) return { unavailable: "No lot found at this point." };
+        const zoning = context.zoning && context.zoning.value;
+        const jurisdiction = context.jurisdiction && context.jurisdiction.value;
+        const rule = zoneRules && zoning ? zoneRules.forZone(zoning, { jurisdiction }) : null;
+        const env = rule && rule.zone.envelope;
+        if (!env) {
+          return { unavailable: `No setback rules on file for ${zoning ? `"${zoning}"` : "this zone"}${jurisdiction ? ` in ${jurisdiction}` : ""} - only Glendale's residential zones are transcribed so far.`, rule };
+        }
+        const [neighbours, buildings] = await Promise.all([
+          parcel.serverUrl ? queryAround(parcel.serverUrl, parcel.layerId, parcel.feature, 0.0002).catch(() => []) : Promise.resolve([]),
+          fetchBuildingsAround(parcel.feature).catch((err) => ({ features: [], source: null, error: err.message })),
+        ]);
+        const adu = rule.set.adu || { side: 4, rear: 4 };
+        const result = LotEnvelope.compute({
+          lot: parcel.feature,
+          neighbours,
+          buildings: buildings.features,
+          rules: { front: env.front, streetSide: env.streetSide, interior: env.interior },
+          adu: {
+            front: adu.front === "zone" || adu.front == null ? env.front : adu.front,
+            streetSide: adu.streetSide === "zone" || adu.streetSide == null ? env.streetSide : adu.streetSide,
+            side: adu.side,
+            rear: adu.rear,
+          },
+        });
+        if (result.error) return { unavailable: `Room to build could not be worked out: ${result.error}.`, rule };
+        return { ...result, rule, env, adu, buildings: buildings.features, buildingSource: buildings.source, buildingError: buildings.error || null };
+      },
+      farAllowance: (far, lotSqft) => farAllowance(far, lotSqft),
+      // An overlay's polygons inside a box, as GeoJSON with each feature's
+      // sublayer name and hazard kind attached, for drawing on another map.
+      async hazardShapes(key, bbox) {
+        const spec = BG_CONFIG.OVERLAYS[key];
+        const source = await resolveOverlaySource(key);
+        const sources = source.multi || [source];
+        const features = [];
+        for (const s of sources) {
+          for (const sub of s.sublayers) {
+            const gj = await Utils.fetchEsriAsGeoJSON(
+              Utils.arcgisQueryUrl(s.url, sub.id, {
+                bbox,
+                outFields: spec.outFields || "*",
+                extraParams: spec.simplifyDegrees ? { maxAllowableOffset: String(spec.simplifyDegrees) } : {},
+              }),
+              { timeoutMs: 30000 }
+            );
+            (gj.features || []).forEach((f) => {
+              f.properties = { ...f.properties, __layer: sub.name, __hazard: s.hazard || key };
+              features.push(f);
+            });
+          }
+        }
+        return { type: "FeatureCollection", features };
+      },
+    },
   };
 })();
 
-document.addEventListener("DOMContentLoaded", () => BlockGroupApp.init());
+// A page that only wants the engine (brickline.html) sets this first, so this
+// page's own map and panels are not built into a document that lacks them.
+if (!window.BLOCKGROUPS_HEADLESS) document.addEventListener("DOMContentLoaded", () => BlockGroupApp.init());

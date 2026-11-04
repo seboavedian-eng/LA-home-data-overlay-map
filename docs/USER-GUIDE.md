@@ -19,6 +19,9 @@ python scripts/listing-server.py
 Same page, plus one extra box. Needs `pip install anthropic` and your key in a
 `.env` file. Everything else works either way.
 
+For the pilot page you show other people, run the listing server and open
+<http://localhost:8000/brickline.html>. See `docs/BRICKLINE.md`.
+
 **Don't double-click the HTML file.** Browsers block local data over `file://`.
 The page will tell you if you do.
 

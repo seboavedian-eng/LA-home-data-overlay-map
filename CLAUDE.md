@@ -2,6 +2,9 @@
 
 Personal LA County house-hunting tool. One user, runs locally, no backend.
 `blockgroups.html` is the whole app; `index.html` is an older, simpler page.
+`brickline.html` (+ `js/brickline/app.js`, `css/brickline.css`) is the pilot for
+other people: two journeys on the explorer's data, read through
+`BlockGroupApp.engine`. See `docs/BRICKLINE.md`. Never break the explorer for it.
 `js/core/layers.js` holds the layer classes (see below); `js/zone-rules/*.json`
 holds what each zone lets you build, per jurisdiction; `js/core/envelope.js`
 works out room to build on one lot (setbacks, built footprint, ADU space).
@@ -26,6 +29,7 @@ Always run both browser suites before saying something works.
 ```
 node tests/blockgroups-e2e.js     # ~368 checks, real Chromium
 node tests/mock-e2e.js            # ~24 checks
+node tests/brickline-e2e.js       # ~66 checks, the pilot page
 python3 tests/test_fetch_urls.py
 python3 tests/test_parcel_data.py
 python3 tests/test_wind_grid.py
@@ -82,8 +86,8 @@ stale by comparing against it.
 
 ## Gotchas that cost real time
 
-- **Bump `?v=` on the script and stylesheet tags in `blockgroups.html` with
-  every release.** Without it the browser shows the new page with the OLD
+- **Bump `?v=` on the script and stylesheet tags in `blockgroups.html` (and
+  `brickline.html`, which loads the same scripts) with every release.** Without it the browser shows the new page with the OLD
   cached script: new toggles appear and do nothing. A test checks the tags.
 
 - **Draw order is paint order on ONE canvas.** `restack()` re-sorts it after
@@ -120,7 +124,10 @@ stale by comparing against it.
   computed. Match rows by address + zip, never by name alone (names collide).
 - Don't hand-digitise attendance boundaries from written descriptions. One slip
   puts a house in the wrong school zone.
-- Don't commit `.env` (the API key) or anything in `js/data/` or `raw-data/`.
+- Don't commit `.env` (the API key) or anything in `js/data/` or `raw-data/`
+  (that includes `raw-data/leads.jsonl`, the pilot's sign-ups).
+- Don't show GreatSchools ratings or Redfin data on `brickline.html` outside
+  personal mode - both are licensed for personal use only.
 - Don't claim a live layer works from a test run — the sandbox can't reach the
   GIS hosts, so only the user can confirm.
 

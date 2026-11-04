@@ -10,6 +10,13 @@ Everything the plain server did still works - the page, the vendored map
 libraries, js/data/*.json - and one endpoint is added:
 
     POST /api/extract   {"text": "...", "url": "..."}
+    POST /api/lead      {"kind": "lead", "email": "...", ...}
+
+/api/extract hands the text to Claude and gets back the listing's fields;
+/api/lead appends one line to raw-data/leads.jsonl (gitignored) so the
+Brickline pilot page (brickline.html) can record who used it and what they
+asked for - the people to call back. Nothing is sent anywhere else.
+
 
 which hands the text to Claude and gets back the listing's fields, so the
 property card fills itself instead of you typing beds, baths and square feet
@@ -38,8 +45,10 @@ Optional environment variables:
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -48,6 +57,42 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_MODEL = "claude-haiku-4-5"
+
+# The pilot page's sign-ups and clicks, one JSON object per line. raw-data/ is
+# gitignored, so nobody's email address can end up in the repository.
+LEADS_FILE = os.path.join(ROOT, "raw-data", "leads.jsonl")
+LEAD_KINDS = {"lead", "search", "report_request", "alert"}
+MAX_LEAD_BYTES = 20_000
+EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$")
+
+
+def record_lead(payload: dict, path: str | None = None) -> dict:
+    """Validate one pilot-page event and append it. Raises ValueError with a
+    message the page can show as-is."""
+    kind = str(payload.get("kind") or "").strip()
+    if kind not in LEAD_KINDS:
+        raise ValueError(f"Unknown kind {kind!r}; expected one of {sorted(LEAD_KINDS)}.")
+    email = str(payload.get("email") or "").strip()
+    if email and not EMAIL_RE.match(email):
+        raise ValueError("That doesn't look like an email address.")
+    if kind in {"lead", "alert"} and not email:
+        raise ValueError("An email address is needed for this.")
+    entry = {
+        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "kind": kind,
+        "email": email or None,
+        "journey": payload.get("journey"),
+        "answers": payload.get("answers"),
+        "geoid": payload.get("geoid"),
+        "address": payload.get("address"),
+        "price": payload.get("price"),
+    }
+    path = path or LEADS_FILE
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return {"ok": True}
+
 
 # Enough of a listing page to hold every field we want, and a hard stop so a
 # pathological paste cannot turn into a surprising bill.
@@ -192,6 +237,10 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):  # noqa: N802 - the base class names it this
+        if self.path.rstrip("/") == "/api/lead":
+            # The pilot page asks this to know whether sign-ups can be saved.
+            self._send_json(200, {"ready": True})
+            return
         if self.path.rstrip("/") == "/api/extract":
             # The page asks this on load so it can show or hide the paste box
             # rather than offering a button that cannot work.
@@ -214,6 +263,9 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):  # noqa: N802
+        if self.path.rstrip("/") == "/api/lead":
+            self._handle_lead()
+            return
         if self.path.rstrip("/") != "/api/extract":
             self._send_json(404, {"error": "No such endpoint."})
             return
@@ -264,6 +316,26 @@ class Handler(SimpleHTTPRequestHandler):
 
         self._send_json(200, result)
 
+    def _handle_lead(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > MAX_LEAD_BYTES:
+            self._send_json(400, {"error": "Empty or oversized request."})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("Expected a JSON object.")
+            self._send_json(200, record_lead(payload))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "Could not read the request."})
+        except ValueError as err:
+            self._send_json(400, {"error": str(err)})
+        except OSError as err:
+            self._send_json(500, {"error": f"Could not save it: {err}"})
+
     def log_message(self, fmt, *args):
         # Keep the API calls visible, drop the static-file chatter that would
         # bury them.
@@ -279,6 +351,7 @@ def main() -> int:
 
     have_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
     print(f"Serving {ROOT} on http://localhost:{port}/blockgroups.html")
+    print(f"Pilot page: http://localhost:{port}/brickline.html (sign-ups go to raw-data/leads.jsonl)")
     if have_key:
         print(f"Listing extraction is ON, using {os.environ.get('LISTING_MODEL', DEFAULT_MODEL)}.")
     else:

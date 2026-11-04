@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Brickline</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+<link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css" />
+<!-- ?v= is bumped with every release, for the same reason as blockgroups.html:
+     a cached old script under a new page shows controls that do nothing. -->
+<link rel="stylesheet" href="css/brickline.css?v=2026-11-04" />
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#home"><i aria-hidden="true"></i>Brickline</a>
+    <nav class="nav" aria-label="Views">
+      <a href="#home" data-v="home">Home</a>
+      <a href="#find" data-v="find"><span class="lg">Find a neighbourhood</span><span class="sm">Areas</span></a>
+      <a href="#house" data-v="house"><span class="lg">Check a house</span><span class="sm">Houses</span></a>
+    </nav>
+    <span class="pilot" id="pilot-tag">Pilot</span>
+    <button type="button" class="status-btn" id="status-btn" aria-expanded="false" title="Which data sources answered"><span class="lg">Data status</span><span class="sm">Data</span></button>
+  </header>
+
+  <!-- Landing -->
+  <section id="view-home" class="view home" aria-label="Home">
+    <div class="hero">
+      <div class="kicker">LA County · block by block</div>
+      <h1>Know the block before you buy.</h1>
+      <p>Neighbourhood, schools, risk and what you could build, for any LA County address. Every number shows its source.</p>
+      <div class="choices">
+        <div class="choice">
+          <b>I have an address and want to know everything about the house</b>
+          <span>People, schools, risk, prices and the lot, on one card.</span>
+          <form class="bar" id="home-search" autocomplete="off">
+            <input id="home-q" type="text" aria-label="Address or listing link" placeholder="Paste an address or a Redfin / Zillow link" />
+            <button class="btn" type="submit">Check it</button>
+          </form>
+        </div>
+        <div class="choice">
+          <b>I want to narrow down and find my neighbourhood</b>
+          <span>Eight quick questions narrow LA County's block groups to a shortlist.</span>
+          <div class="bar"><span class="hint">About 2 minutes</span><a class="btn" href="#find">Start the questions</a></div>
+        </div>
+      </div>
+      <div class="trust"><span>Census, county and city sources</span><span>Built for LA County</span><span>Free during the pilot</span></div>
+    </div>
+  </section>
+
+  <!-- Working area: one panel on the left, one map on the right, shared by the three journeys' screens -->
+  <div id="workspace" class="split" hidden>
+    <aside class="panel" id="panel" aria-live="polite"></aside>
+    <main class="mapbox">
+      <div id="map"></div>
+      <div class="map-overlay" id="map-overlay"></div>
+      <div class="map-layers" id="map-layers" hidden></div>
+      <div class="map-hint" id="map-hint" hidden></div>
+    </main>
+  </div>
+
+  <div class="status-panel" id="status-panel" hidden>
+    <div class="status-head"><b>Data status</b><button type="button" id="status-close" aria-label="Close">×</button></div>
+    <ul id="status-list"></ul>
+  </div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="vendor/maplibre/maplibre-gl.js"></script>
+<script src="vendor/maplibre/leaflet-maplibre-gl.js"></script>
+<script src="vendor/turf/turf.min.js"></script>
+<script src="js/utils.js?v=2026-11-04"></script>
+<script src="js/core/layers.js?v=2026-11-04"></script>
+<script src="js/core/envelope.js?v=2026-11-04"></script>
+<!-- The explorer's script supplies BG_CONFIG and its lookup engine; this flag
+     stops it building its own map and panels into this page. -->
+<script>window.BLOCKGROUPS_HEADLESS = true;</script>
+<script src="js/blockgroups.js?v=2026-11-04"></script>
+<script src="js/brickline/app.js?v=2026-11-04"></script>
+</body>
+</html>

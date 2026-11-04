@@ -95,3 +95,17 @@ version, SABS-style field names) and says what they mean.
 **ArcGIS marks polygon holes by winding order, not position.** Converting each
 ring to its own polygon turns one donut-shaped zone into two overlapping ones -
 which on a translucent layer reads as a darker patch, not as a bug.
+
+**The pilot is a second page on the same engine, not a rewrite.** `brickline.html`
+reads every lookup through `BlockGroupApp.engine`, so service URLs, field
+fallbacks and zone rules live in one place. A copy would drift the first time a
+publisher renamed a field. The explorer page is untouched apart from the
+export and the headless flag.
+
+**Personal-use data stays on your own machine.** Your GreatSchools table and
+Redfin exports show on the pilot only on localhost or a Tailscale address. A
+public host gets the page without them, automatically.
+
+**The pilot's summary describes the place, never the people.** It is written from
+housing, commute, schools and hazards only. Demographic facts stay as plain
+numbers in the People tab, and the age-mix question is opt-in (fair housing).

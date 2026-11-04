@@ -225,10 +225,60 @@ def test_server():
         server.server_close()
 
 
+def test_leads():
+    """The pilot page's sign-ups: valid ones are appended, bad ones refused,
+    and none of it is written outside raw-data/ (which is gitignored)."""
+    check(
+        "sign-ups are written under raw-data/, which .gitignore keeps out of the repo",
+        os.path.relpath(listing_server.LEADS_FILE, REPO).startswith("raw-data" + os.sep),
+        listing_server.LEADS_FILE,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        real = listing_server.LEADS_FILE
+        listing_server.LEADS_FILE = os.path.join(tmp, "leads.jsonl")
+        server, base = serve()
+        try:
+            def send(payload):
+                request = urllib.request.Request(
+                    f"{base}/api/lead", data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=10) as response:
+                        return response.status, json.loads(response.read())
+                except urllib.error.HTTPError as err:
+                    return err.code, json.loads(err.read())
+
+            with urllib.request.urlopen(f"{base}/api/lead", timeout=10) as response:
+                probe = json.loads(response.read())
+            check("the page can ask whether sign-ups will be saved", probe.get("ready") is True, json.dumps(probe))
+
+            code, body = send({"kind": "lead", "email": "pilot@example.com", "journey": "neighbourhood", "answers": {"commute": [35]}})
+            check("a valid sign-up is accepted", code == 200 and body.get("ok") is True, f"{code} {body}")
+            code, body = send({"kind": "lead", "email": "not-an-email"})
+            check("a malformed email is refused with a message the page can show", code == 400 and "email" in body["error"].lower(), f"{code} {body}")
+            code, body = send({"kind": "alert"})
+            check("an alert without an email is refused", code == 400, f"{code} {body}")
+            code, body = send({"kind": "report_request", "address": "100 Example Ave", "price": 129})
+            check("a report click needs no email - it still counts as demand", code == 200, f"{code} {body}")
+            code, body = send({"kind": "delete_everything"})
+            check("an unknown kind is refused, not stored", code == 400 and "Unknown kind" in body["error"], f"{code} {body}")
+
+            with open(listing_server.LEADS_FILE, encoding="utf-8") as fh:
+                rows = [json.loads(line) for line in fh if line.strip()]
+            check("exactly the two good events were stored, one JSON object per line", [r["kind"] for r in rows] == ["lead", "report_request"], json.dumps(rows))
+            check("each stored line carries a UTC timestamp", all(r.get("at", "").endswith("+00:00") for r in rows), json.dumps(rows))
+        finally:
+            server.shutdown()
+            server.server_close()
+            listing_server.LEADS_FILE = real
+
+
 def main():
     test_dotenv_does_not_overwrite_the_shell()
     test_schema_is_self_consistent()
     test_server()
+    test_leads()
     print(f"\n{'FAILED: ' + ', '.join(failures) if failures else 'All listing-server checks passed.'}")
     return 1 if failures else 0
 
