@@ -24,12 +24,13 @@ Never open the HTML directly — `file://` blocks the local data reads.
 
 ## Test it
 
-Always run both browser suites before saying something works.
+Always run both browser suites before saying something works. Run the browser
+suites one at a time: blockgroups-e2e and mock-e2e both write `js/data/`.
 
 ```
 node tests/blockgroups-e2e.js     # ~368 checks, real Chromium
 node tests/mock-e2e.js            # ~24 checks
-node tests/brickline-e2e.js       # ~66 checks, the pilot page
+node tests/brickline-e2e.js       # ~110 checks, the pilot page
 python3 tests/test_fetch_urls.py
 python3 tests/test_parcel_data.py
 python3 tests/test_wind_grid.py

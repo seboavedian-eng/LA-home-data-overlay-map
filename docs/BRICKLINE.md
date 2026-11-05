@@ -14,11 +14,39 @@ Use the listing server, not plain `http.server`. It is what saves sign-ups to
 `raw-data/leads.jsonl`. Without it, sign-ups are kept only in that browser, and
 Data status says so.
 
+## The map, and what a click does
+
+- Neighbourhoods are block group outlines, shaded by street busyness, drawn only from zoom 12 in (`BG_CONFIG.MIN_ZOOM.blockGroup`). Zoomed out, nothing; a click there zooms in.
+- Your answers to the questions show as **orange** areas on every screen. The card top-left has "Hide matches" (clean map, answers kept), "Edit answers" and "Reset".
+- A searched neighbourhood, city or zip has a dashed blue border, and its block groups a blue edge. The × on its chip clears it.
+
+| You click | What happens |
+|---|---|
+| An area, with nothing selected | Selects it (a preview on the questions screen; the area card elsewhere) |
+| Inside the selected area | Opens the house card for that point |
+| Inside another area | Selects that one instead |
+| Outside every area | Clears the selection (from a card, back to the questions) |
+
+Six map layers, upper right, all off until switched on: fire, flood, landslide & liquefaction, noise, air quality, wind.
+
+## The search box
+
+One box for an address, a neighbourhood, a city or a zip, with suggestions as you type.
+
+| You type | It suggests / does | From |
+|---|---|---|
+| A name ("silv") | Neighbourhoods, communities, cities | County Countywide Statistical Areas, then city boundaries (`BG_CONFIG.PLACES`) |
+| Five digits | That zip code | Census TIGERweb ZCTA |
+| A street address | Address matches (after a short pause) | Nominatim, the explorer's geocoder |
+| A Redfin / Zillow link | The house | Address read from the link |
+
+A place's block groups are those whose Census interior point is inside its border. **Not yet verified live:** which county layer answers for names is in Data status.
+
 ## The two journeys
 
 | Journey | Starts from | Ends at |
 |---|---|---|
-| Check a house | An address or a Redfin / Zillow link on the landing page | House card |
+| I have a place in mind | An address, neighbourhood, city or zip on the landing page | House card, or a place card listing its block groups |
 | Find a neighbourhood | "Start the questions" | Shortlist → area card → house card |
 
 ### The eight questions
@@ -83,7 +111,7 @@ The email step comes before results and has "Skip for now".
   - That stops the explorer from building its own map into this page.
 - Block group centres and land areas come from TIGERweb, one query of about 6,500 rows.
   - They're cached in localStorage (`brickline.bgIndex.v1`).
-- Test: `node tests/brickline-e2e.js` (66 checks, stubbed network, real clicks).
+- Test: `node tests/brickline-e2e.js` (110 checks, stubbed network, real clicks).
 
 ## Known limits
 

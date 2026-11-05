@@ -61,11 +61,14 @@ const NEIGHBOURS = [
 ];
 const HOUSE = esriPolygon({ OBJECTID: 1 }, box(-118.27035, 34.16505, -118.27015, 34.16518));
 
+// A query's geometry: a point "x,y" or a box "xmin,ymin,xmax,ymax", always as a box.
 function pointOf(url) {
-  const m = decodeURIComponent(url).match(/geometry=([-\d.]+),([-\d.]+)/);
-  return m ? [Number(m[1]), Number(m[2])] : null;
+  const m = decodeURIComponent(url).match(/geometry=([-\d.]+),([-\d.]+)(?:,([-\d.]+),([-\d.]+))?/);
+  if (!m) return null;
+  return m[3] ? [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])] : [Number(m[1]), Number(m[2]), Number(m[1]), Number(m[2])];
 }
-const inside = (p, r) => p && p[0] >= r[0][0] && p[0] <= r[2][0] && p[1] >= r[0][1] && p[1] <= r[2][1];
+// Does a query box touch a ring's bounding box?
+const inside = (p, r) => p && p[0] <= r[2][0] && p[2] >= r[0][0] && p[1] <= r[2][1] && p[3] >= r[0][1];
 
 async function stub(page, captured) {
   // Anything not named below fails like a dead host, so the page's
@@ -96,7 +99,16 @@ async function stub(page, captured) {
       "2": { name: "Far Desert High", district: "Antelope Valley", levels: ["high"], ratings: { high: 4 }, lat: 34.60, lon: -118.15 },
     },
   })));
-  await page.route("**/js/data/wind-la-county.json", (r) => r.fulfill({ status: 404, body: "" }));
+  await page.route("**/js/data/wind-la-county.json", (r) => r.fulfill(json({ bbox: { north: 34.3, south: 34.0, west: -118.4, east: -118.1 }, nrows: 2, ncols: 2, values: [3.2, 5.1, 6.4, 8.0], meta: { height: "100m" } })));
+  // CalEnviroScreen tract (air quality), one polygon over the test area.
+  await page.route("**://services1.arcgis.com/**", (r) => r.fulfill(json(esriFC([esriPolygon({ Tract: 6037302000, CIscoreP: 64.2 }, box(-118.30, 34.10, -118.20, 34.20))]))));
+  // DOT noise: an empty folder listing, and one tile-cached aviation service.
+  await page.route("**://tiles.arcgis.com/**", (r) => r.fulfill(json({ services: [] })));
+  await page.route("**://geo.dot.gov/**", (r) => {
+    captured.noise++;
+    if (/\/tile\//.test(r.request().url())) return r.fulfill({ contentType: "image/png", body: BLANK });
+    return r.fulfill(json({ singleFusedMapCache: true, tileInfo: { lods: Array.from({ length: 13 }, (_, level) => ({ level, resolution: 156543.03 / 2 ** level, scale: 591657527.59 / 2 ** level })) } }));
+  });
   await page.route("**/raw-data/redfin-listings/**", (r) => r.fulfill({ status: 404, body: "" }));
   await page.route("**/ors-api-key.txt", (r) => r.fulfill({ contentType: "text/plain", body: "test-key" }));
   await page.route("**/api/lead", (r) => {
@@ -123,22 +135,36 @@ async function stub(page, captured) {
   // Census TIGERweb: the list of every block group centre, and outlines.
   await page.route("**://tigerweb.geo.census.gov/**", (r) => {
     const u = decodeURIComponent(r.request().url());
-    if (!u.includes("/query")) return r.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }, { id: 8, name: "Census Tracts", geometryType: "esriGeometryPolygon" }] }));
+    if (!u.includes("/query")) return r.fulfill(json({ layers: [{ id: 10, name: "Census Block Groups", geometryType: "esriGeometryPolygon" }, { id: 2, name: "2020 Census ZIP Code Tabulation Areas", geometryType: "esriGeometryPolygon" }, { id: 8, name: "Census Tracts", geometryType: "esriGeometryPolygon" }] }));
+    if (/\/2\/query/.test(u)) {
+      if (/BASENAME=/.test(u)) return r.fulfill(json({ error: { code: 400, message: "Failed to execute query." } }));
+      if (/ZCTA5='91201'/.test(u)) return r.fulfill(json(esriFC([esriPolygon({ ZCTA5: "91201" }, box(-118.28, 34.16, -118.261, 34.17))])));
+      return r.fulfill(json(esriFC([])));
+    }
     if (/returnGeometry=false/.test(u)) {
       captured.index++;
       return r.fulfill(json({ features: Object.entries(BG_SHAPES).map(([g, s]) => ({ attributes: { GEOID: g, AREALAND: s.aland, INTPTLAT: String(s.c[0]), INTPTLON: String(s.c[1]) } })) }));
     }
     const p = pointOf(u);
-    const hit = Object.entries(BG_SHAPES).find(([, s]) => inside(p, s.ring));
-    return r.fulfill(json(esriFC(hit ? [esriPolygon({ GEOID: hit[0] }, hit[1].ring)] : [])));
+    // A point (one block group) or a map tile (every one it touches). A
+    // point on a shared edge goes to the first, as a server would pick one.
+    const hits = Object.entries(BG_SHAPES).filter(([, s]) => inside(p, s.ring));
+    const one = p && p[0] === p[2] && p[1] === p[3];
+    return r.fulfill(json(esriFC((one ? hits.slice(0, 1) : hits).map(([g, s]) => esriPolygon({ GEOID: g }, s.ring)))));
   });
 
   // LA County: city boundaries (Glendale), parcels, the rest empty.
   await page.route("**://public.gis.lacounty.gov/**", (r) => {
     const u = decodeURIComponent(r.request().url());
+    if (/Political_Boundaries/.test(u) && /\/23\/query/.test(u)) {
+      if (/returnGeometry=false/.test(u)) return r.fulfill(json({ features: ["Los Angeles - Silver Lake", "City of Beverly Hills", "Unincorporated - Altadena"].map((LABEL) => ({ attributes: { LABEL } })) }));
+      if (/Silver[+ ]Lake/.test(u)) return r.fulfill(json(esriFC([esriPolygon({ LABEL: "Los Angeles - Silver Lake" }, box(-118.285, 34.155, -118.235, 34.175))])));
+      if (/Beverly[+ ]Hills/.test(u)) return r.fulfill(json(esriFC([esriPolygon({ LABEL: "City of Beverly Hills" }, box(-118.43, 34.06, -118.38, 34.10))])));
+      return r.fulfill(json(esriFC([])));
+    }
     if (/Political_Boundaries/.test(u)) {
       if (u.includes("/query")) return r.fulfill(json(esriFC([esriPolygon({ CITY_NAME: "Glendale" }, box(-118.30, 34.10, -118.20, 34.25))])));
-      return r.fulfill(json({ layers: [{ id: 0, name: "City Boundaries", geometryType: "esriGeometryPolygon" }] }));
+      return r.fulfill(json({ layers: [{ id: 0, name: "City Boundaries", geometryType: "esriGeometryPolygon" }, { id: 23, name: "Countywide Statistical Areas (CSA)", geometryType: "esriGeometryPolygon" }] }));
     }
     if (/Parcel\//.test(u)) {
       if (u.includes("/query")) {
@@ -196,7 +222,7 @@ async function main() {
   async function open(url, opts = {}) {
     const ctx = await browser.newContext({ viewport: opts.viewport || { width: 1400, height: 950 } });
     const page = await ctx.newPage();
-    const captured = { leads: [], geocodes: [], ors: [], parcel: [], index: 0, errors: [], leadDown: !!opts.leadDown };
+    const captured = { leads: [], geocodes: [], ors: [], parcel: [], index: 0, noise: 0, errors: [], leadDown: !!opts.leadDown };
     page.on("pageerror", (e) => captured.errors.push(e.message));
     page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|ERR_FAILED/.test(m.text())) captured.errors.push(m.text()); });
     await stub(page, captured);
@@ -209,6 +235,7 @@ async function main() {
 
   // ---------------------------------------------------------------- Landing
   const { page, captured } = await open("/brickline.html");
+  step("landing offers 'I have a place in mind'", /I have a place in mind/.test(await page.innerText("#view-home")));
   step("landing shows both journeys", (await page.locator(".choice").count()) === 2 && (await page.isVisible("#view-home")));
   step("workspace is hidden on the landing", !(await page.isVisible("#workspace")));
   step("personal mode on localhost", await page.evaluate(() => Brickline.forTest.state.PERSONAL));
@@ -217,7 +244,7 @@ async function main() {
   // ----------------------------------------------------------- Journey two
   await page.click("text=Start the questions");
   step("the questions open with the map", await waitFor(page, () => !document.querySelector("#workspace").hidden && document.querySelector("#map").offsetHeight > 200));
-  step("all three block groups load as dots", await waitFor(page, () => Brickline.forTest.state.dots === 3));
+  step("all three block groups load", await waitFor(page, () => Brickline.forTest.state.ready && Brickline.forTest.state.S && /of 3 areas/.test(document.querySelector("#map-overlay").innerText)));
   step("block group centres come from TIGERweb", captured.index >= 1, `${captured.index} index request(s)`);
   step("the counter starts at 3 of 3", await waitFor(page, () => /3\s*of 3 areas/.test(document.querySelector("#map-overlay").innerText)));
 
@@ -298,14 +325,90 @@ async function main() {
   await page.waitForTimeout(500);
   await shot(page, "4-area");
   step("the layer panel is on the map", await page.isVisible("#map-layers"));
+  step("opening an area turns no layer on by itself", (await page.evaluate(() => Brickline.forTest.state.shown.length)) === 0);
   await page.click("#aTabs button:has-text('Summary')");
+
+  // ---------------------------------------------- What a click on the map does
+  // Real mouse clicks at a lat/lon, so the canvas hit-testing is exercised.
+  const clickAt = async (lat, lon) => {
+    const pt = await page.evaluate(([la, lo]) => { const p = Brickline.forTest.map.latLngToContainerPoint([la, lo]); return [p.x, p.y]; }, [lat, lon]);
+    const mb = await page.locator("#map").boundingBox();
+    await page.mouse.click(mb.x + pt[0], mb.y + pt[1]);
+  };
+  const st = () => page.evaluate(() => { const s = Brickline.forTest.state; return { view: s.view, sel: s.sel, house: s.house && s.house.src && s.house.src.latlng ? 1 : 0 }; });
+  await page.click(".nav a[data-v='find']");
+  await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 10));
+  await page.waitForTimeout(600);
+  step("zoomed out, no neighbourhood outlines are drawn", (await page.evaluate(() => Brickline.forTest.state.drawn)) === 0);
+  step("...and the hint says to zoom in", /Zoom in/.test(await page.innerText("#map-hint")));
+  await clickAt(34.165, -118.26);
+  step("a click while zoomed out zooms in to where outlines show", await waitFor(page, () => Brickline.forTest.map.getZoom() >= 12));
+  await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14));
+  step("zoomed in, the outlines load and draw", await waitFor(page, () => Brickline.forTest.state.drawn >= 2));
+  await clickAt(34.165, -118.23);   // east of B: no block group there
+  step("a click outside every area clears the selection", await waitFor(page, () => Brickline.forTest.state.sel === null) && await page.isHidden("#map-preview"));
+
+  await clickAt(34.168, -118.275);
+  let s = await st();
+  await page.waitForTimeout(300);
+  await shot(page, "8-selected");
+  step("first click (mid-questions) selects that block group", s.sel === GEO.A && s.view === "find", JSON.stringify(s));
+  step("...the questions stay on screen", (await page.locator("#qpane, .results").count()) >= 1);
+  step("...and a preview names the area", await page.isVisible("#map-preview") && /Tract 3020, block group 1/.test(await page.innerText("#map-preview")));
+  await clickAt(34.168, -118.25);
+  s = await st();
+  step("a click in another area selects that one instead", s.sel === GEO.B && s.view === "find", JSON.stringify(s));
+  await clickAt(34.165, -118.23);
+  step("a click outside every area deselects", await waitFor(page, () => Brickline.forTest.state.sel === null));
+  await clickAt(34.168, -118.25);
+  await clickAt(34.163, -118.245);
+  step("a second click inside the selected area checks the house there", await waitFor(page, () => { const x = Brickline.forTest.state; return x.view === "house" && x.house && x.house.src && x.house.src.latlng; }));
+  step("...and its back link returns to the questions", await waitFor(page, () => /Back to the questions/.test(document.querySelector("#panel .crumb").textContent), null, 20000));
+  await waitFor(page, () => { const h = Brickline.forTest.state.house; return h && !h.loading && h.build; }, null, 20000);
+  step("...the house's block group stays selected", await waitFor(page, () => Brickline.forTest.state.sel === "060373020002", null, 20000));
+  await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14));
+  await page.waitForTimeout(500);
+  await clickAt(34.168, -118.275);
+  step("from a house, a click in another area opens that area's card", await waitFor(page, () => { const x = Brickline.forTest.state; return x.view === "area" && x.sel === "060373020001"; }));
+  await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14));
+  await page.waitForTimeout(500);
+  await clickAt(34.16515, -118.27025);
+  step("from an area card, a click inside it checks the house there", await waitFor(page, () => Brickline.forTest.state.view === "house"));
+  await waitFor(page, () => { const h = Brickline.forTest.state.house; return h && !h.loading && h.build; }, null, 20000);
+  await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14));
+  await page.waitForTimeout(500);
+  await clickAt(34.165, -118.23);
+  step("from a house, a click outside every area deselects and goes back to the questions", await waitFor(page, () => { const x = Brickline.forTest.state; return x.view === "find" && x.sel === null; }), JSON.stringify(await st()));
+
+  // ----------------------------------------------------------- Layer toggles
+  const layerRows = await page.locator("#map-layers .layer").count();
+  step("six map layers on the questions screen", layerRows === 6 && await page.isVisible("#map-layers"), `${layerRows} rows`);
+  step("...all off until you turn them on", (await page.locator('#map-layers .layer[aria-pressed="true"]').count()) === 0);
+  await page.click('#map-layers [data-l="pollution"]');
+  step("Air quality draws CalEnviroScreen tracts", await waitFor(page, () => Brickline.forTest.state.hazards >= 1 && Brickline.forTest.state.shown.includes("pollution")));
+  step("...with its legend", /percentile/i.test(await page.innerText("#map-layers")));
+  await page.click('#map-layers [data-l="pollution"]');
+  step("...and turns off again", await waitFor(page, () => Brickline.forTest.state.hazards === 0));
+  await page.click('#map-layers [data-l="wind"]');
+  step("Wind draws the local grid", await waitFor(page, () => Brickline.forTest.state.rasters === 1));
+  await page.click('#map-layers [data-l="wind"]');
+  step("...and turns off", await waitFor(page, () => Brickline.forTest.state.rasters === 0));
+  await page.click('#map-layers [data-l="noise"]');
+  step("Noise draws the DOT noise tiles", await waitFor(page, () => Brickline.forTest.state.rasters === 1) && captured.noise > 0, `${captured.noise} noise requests`);
+  await page.click('#map-layers [data-l="noise"]');
+  await page.click('#map-layers [data-l="fire"]');
+  step("Fire draws when switched on", await waitFor(page, () => Brickline.forTest.state.hazards >= 1));
+  await page.click('#map-layers [data-l="fire"]');
+  step("layers only change when you click them", await waitFor(page, () => Brickline.forTest.state.shown.length === 0));
 
   // -------------------------------------------------------------- Journey one
   await page.click(".nav a[data-v='home']");
   await page.fill("#home-q", "https://www.redfin.com/CA/Glendale/1745-Grandview-Ave-91201/home/123456");
   await page.click("#home-search button");
+  for (let i = 0; i < 50 && !captured.geocodes.some((u) => /1745/.test(u)); i++) await page.waitForTimeout(100);
   step("a Redfin link is read as its address", captured.geocodes.some((u) => /1745[+ ]Grandview[+ ]Ave[+ ]91201/i.test(u)), captured.geocodes.slice(-1)[0]);
   step("the house card opens", await waitFor(page, () => /GRANDVIEW/i.test((document.querySelector("#panel h2") || {}).textContent || ""), null, 20000));
+  await waitFor(page, () => { const h = Brickline.forTest.state.house; return h && !h.loading && h.build; }, null, 20000);
   const head = await page.innerText(".card-head");
   step("the header names the zone and the city", /Zone R1/.test(head) && /Glendale/.test(head), head.replace(/\s+/g, " ").slice(0, 120));
   step("tabs split 'This house' from 'The neighbourhood'", (await page.locator(".tabgroup").count()) === 2 && (await page.locator(".tabsep").count()) === 1);
@@ -329,16 +432,53 @@ async function main() {
   await page.click("#reserve");
   step("the report button logs a request and thanks the user", await waitFor(page, () => /on the list/.test(document.querySelector("#hPane").innerText)) && captured.leads.some((l) => l.kind === "report_request" && /GRANDVIEW/i.test(l.address)));
 
-  // Clicking a lot on the map checks that lot.
-  const mapBox = await page.locator("#map").boundingBox();
-  await page.mouse.click(mapBox.x + mapBox.width * 0.3, mapBox.y + mapBox.height * 0.5);
-  step("a real click on the map opens a house at that point", await waitFor(page, () => { const h = Brickline.forTest.state.house; return h && h.src && h.src.latlng; }));
+  // ------------------------------------------- One search box: place or house
+  const typeHome = async (text) => {
+    await page.click(".nav a[data-v='home']");
+    await page.fill("#home-q", "");
+    await page.type("#home-q", text, { delay: 20 });
+  };
+  step("place names load from the county", await waitFor(page, () => Brickline.forTest.places >= 3), String(await page.evaluate(() => Brickline.forTest.places)));
+  await typeHome("silv");
+  step("typing a neighbourhood suggests it", await waitFor(page, () => [...document.querySelectorAll(".suggest li")].some((li) => /Silver Lake/.test(li.textContent) && /neighbourhood/i.test(li.textContent))));
+  await page.click(".suggest li:has-text('Silver Lake')");
+  step("picking it highlights its block groups", await waitFor(page, () => { const p = Brickline.forTest.place; return p && p.n === 2; }), JSON.stringify(await page.evaluate(() => Brickline.forTest.place)));
+  step("...opens its card with the list", await waitFor(page, () => /Silver Lake/.test(document.querySelector("#panel h2").textContent) && document.querySelectorAll("#panel .res").length === 2));
+  step("...gives its block groups a blue edge", (await page.evaluate(() => Brickline.forTest.styleOf("060373020001").color)) === "#2f5f9e");
+  step("...and shows it as a chip on the map", await page.isVisible(".placechip"));
+  await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14));
+  await page.waitForTimeout(800);
+  await shot(page, "7-place");
+  await page.click("#plClear");
+  step("the chip's × clears the place", await waitFor(page, () => !Brickline.forTest.place));
+  await typeHome("Beverly Hills");
+  await page.keyboard.press("Enter");
+  step("a city typed in full and Enter goes straight to it", await waitFor(page, () => { const p = Brickline.forTest.place; return p && p.name === "Beverly Hills" && p.n === 0; }));
+  await typeHome("91201");
+  step("five digits are suggested as a zip code", await waitFor(page, () => /Zip code/.test((document.querySelector(".suggest") || {}).textContent || "")));
+  await page.keyboard.press("Enter");
+  step("a zip shows the block groups inside it", await waitFor(page, () => { const p = Brickline.forTest.place; return p && p.name === "Zip 91201" && p.n === 1; }), JSON.stringify(await page.evaluate(() => Brickline.forTest.place)));
+  await typeHome("1745 Grandview");
+  step("a street address gets address suggestions as you type", await waitFor(page, () => [...document.querySelectorAll(".suggest li")].some((li) => /Grandview/.test(li.textContent) && /Address/.test(li.textContent))));
+  await page.click(".suggest li:has-text('Grandview')");
+  step("picking one opens that house", await waitFor(page, () => Brickline.forTest.state.view === "house" && /GRANDVIEW/i.test(document.querySelector("#panel h2").textContent), null, 20000));
+  await waitFor(page, () => { const h = Brickline.forTest.state.house; return h && !h.loading && h.build; }, null, 20000);
+
+  // ---------------------------------------- Your matches stay on the map
+  step("your matches stay on the map on a house card", await page.isVisible("#mShow") && (await page.evaluate(() => Brickline.forTest.styleOf("060373020001").fillColor)) === "#f97316");
+  await page.click("#mShow");
+  step("'Hide matches' gives a clean map, answers kept", await waitFor(page, () => Brickline.forTest.styleOf("060373020001").fillColor !== "#f97316") && (await page.evaluate(() => Brickline.forTest.state.S.edu)) === 40);
+  await page.click("#mShow");
+  step("'Show matches' brings them back", await waitFor(page, () => Brickline.forTest.styleOf("060373020001").fillColor === "#f97316"));
+  await page.click("#mReset");
+  step("'Reset' clears the answers and the highlights", await waitFor(page, () => Brickline.forTest.state.S.edu === 0 && Brickline.forTest.styleOf("060373020001").fillColor !== "#f97316"));
+  step("a house found by address selects its block group", (await page.evaluate(() => Brickline.forTest.state.sel)) === GEO.A);
   step("no page errors in the whole run", captured.errors.length === 0, captured.errors.slice(0, 3).join(" | "));
 
   // -------------------------------------------------------------- Public mode
   {
     const { page: p, captured: c, ctx } = await open("/brickline.html?mode=public#find");
-    await waitFor(p, () => Brickline.forTest.state.dots === 3);
+    await waitFor(p, () => Brickline.forTest.state.ready);
     step("public mode is honoured", !(await p.evaluate(() => Brickline.forTest.state.PERSONAL)));
     for (let i = 0; i < 7; i++) await p.click("#skip");
     step("public mode hides school ratings", (await p.locator("#sE").count()) === 0 && /aren't available/.test(await p.innerText("#qpane")));
@@ -353,7 +493,7 @@ async function main() {
   // ------------------------------------------------- Lead server unreachable
   {
     const { page: p, captured: c, ctx } = await open("/brickline.html#find", { leadDown: true });
-    await waitFor(p, () => Brickline.forTest.state.dots === 3);
+    await waitFor(p, () => Brickline.forTest.state.ready);
     for (let i = 0; i < 8; i++) await p.click("#skip");
     await p.fill("#gEmail", "later@example.com");
     await p.click("#gateForm button[type=submit]");
@@ -371,7 +511,7 @@ async function main() {
     const wide = await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     step("phone: landing has no sideways scroll", !wide);
     await p.click("text=Start the questions");
-    await waitFor(p, () => Brickline.forTest.state.dots === 3);
+    await waitFor(p, () => Brickline.forTest.state.ready);
     step("phone: questions have no sideways scroll", !(await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)));
     await ctx.close();
   }

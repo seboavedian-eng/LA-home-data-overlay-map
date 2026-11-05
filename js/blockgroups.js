@@ -689,6 +689,26 @@ const BG_CONFIG = {
   // brickline.html's sign-up and click log - served by scripts/listing-server.py.
   LEAD_ENDPOINT: "api/lead",
 
+  // Named places for the pilot's search box: LA neighbourhoods, unincorporated
+  // communities and cities, each with a border. The county's Countywide
+  // Statistical Areas (CSA) cover all three in one layer ("Los Angeles -
+  // Silver Lake", "City of Beverly Hills", "Unincorporated - Altadena"); the
+  // city boundary layer is the fallback, cities only. Layers are found by
+  // name on each host, so a renumbered service still answers. NOT YET
+  // VERIFIED against the live services - the status log says which answered.
+  PLACES: {
+    sources: [
+      { kind: "csa", url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Political_Boundaries/MapServer", match: /statistical area|\bcsa\b/i },
+      { kind: "csa", url: "https://arcgis.gis.lacounty.gov/arcgis/rest/services/LACounty_Dynamic/Political_Boundaries/MapServer", match: /statistical area|\bcsa\b/i },
+      { kind: "city", url: "https://public.gis.lacounty.gov/public/rest/services/LACounty_Dynamic/Political_Boundaries/MapServer", match: /city boundar|cities|incorporated/i, exclude: /annex|island|sphere|statistical/i },
+      { kind: "city", url: "https://arcgis.gis.lacounty.gov/arcgis/rest/services/LACounty_Dynamic/Political_Boundaries/MapServer", match: /city boundar|cities|incorporated/i, exclude: /annex|island|sphere|statistical/i },
+    ],
+    nameFields: ["LABEL", "CSA_LABEL", "CITY_COMM_NAME", "COMMUNITY", "CITY_NAME", "CITY_LABEL", "NAME"],
+    // A zip's border is a Census ZCTA on TIGERweb. Its field names vary by
+    // vintage, and naming a missing field is a 400, so each is tried in turn.
+    zipWhere: ["BASENAME='{zip}'", "ZCTA5='{zip}'", "GEOID='{zip}'", "ZCTA5CE20='{zip}'", "NAME='ZCTA5 {zip}'"],
+  },
+
   // --- What you could build on it -----------------------------------------
   // Everything about developing a lot - fees, timing, what is allowed at all -
   // hangs off WHICH CITY you are in. LA County has 88 cities plus large
@@ -8579,6 +8599,34 @@ const BlockGroupApp = (() => {
         return { ...result, rule, env, adu, buildings: buildings.features, buildingSource: buildings.source, buildingError: buildings.error || null };
       },
       farAllowance: (far, lotSqft) => farAllowance(far, lotSqft),
+      zipLayerId: () => resolveLayerId("zip"),
+      suggestAddresses: (text) => suggestAddresses(text),
+      // Noise tiles for one mode ("aviation" or "surface"), built the way the
+      // explorer builds them but without its toggles: a dead service is
+      // skipped here instead of switching a checkbox the page doesn't have.
+      // The calling map needs a "rasterOverlay" pane.
+      async noiseLayer(modeKey) {
+        const mode = BG_CONFIG.NOISE.modes[modeKey];
+        const urls = mode.servers.concat(await discoverNoiseServices(modeKey));
+        const built = [];
+        const problems = [];
+        for (const url of urls) {
+          try {
+            built.push((await buildNoiseTileLayer(modeKey, url, null)).layer);
+            Utils.logStatus(modeKey, "ok", `${mode.label} from ${url.split("/services/")[1] || url}.`);
+            if (!mode.mergeAll) break;
+          } catch (err) {
+            problems.push(`${url}: ${err.message}`);
+          }
+        }
+        if (!built.length) throw new Error(problems.join(" | ") || "no matching noise service was found");
+        return built.length === 1 ? built[0] : L.layerGroup(built);
+      },
+      // The wind grid as one image overlay, or null when there is no grid file.
+      async windOverlay() {
+        await loadWindData();
+        return windGrid ? buildWindOverlay() : null;
+      },
       // An overlay's polygons inside a box, as GeoJSON with each feature's
       // sublayer name and hazard kind attached, for drawing on another map.
       async hazardShapes(key, bbox) {

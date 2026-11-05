@@ -57,14 +57,13 @@ const Brickline = (() => {
   const D = { census: null, index: new Map(), prices: null, sales: null, schools: [], listings: [], wind: null, county: null, orsKey: null, schoolGrid: null };
   const S = {
     commutes: [{ text: "", min: 35 }], rush: true, dens: new Set(), detMin: 0, edu: 0, inc: 0, hhMin: 1, hhMax: 6,
-    useMix: false, mix: [40, 42, 18], sE: 0, sM: 0, sH: 0, email: null, gateSeen: false, searchLogged: false,
+    useMix: false, mix: [40, 42, 18], sE: 0, sM: 0, sH: 0, email: null, gateSeen: false, searchLogged: false, showMatches: true,
   };
   const metricCache = new Map();
   const areaCache = new Map();
   let step = 0;
   const NQ = 8;
-  let map, canvasRenderer, dotLayer, isoLayer, focusLayer, hazardLayer, pinLayer;
-  const dots = new Map();
+  let map, canvasRenderer, isoLayer, focusLayer, hazardLayer, pinLayer;
   let view = "home";
   let area = null;       // { geoid }
   let house = null;      // resolved house context
@@ -279,7 +278,7 @@ const Brickline = (() => {
       c.area = await commuteArea(c);
     }
     drawIsos();
-    updateDots();
+    updateMatches();
   }
   async function geocodeDestination(i) {
     const c = S.commutes[i];
@@ -329,7 +328,25 @@ const Brickline = (() => {
 
   // =======================================================================
   // Map
+  //
+  // Neighbourhoods are drawn as block group outlines, shaded by street
+  // busyness, and only from zoom MINZ in: zoomed further out there are too
+  // many to read, so nothing is drawn. Areas that fail your answers fade to
+  // grey. Outlines are loaded per 0.05° square as you pan and kept.
+  //
+  // Every outline is interactive: false, so every click reaches the map and
+  // one rule decides what it means (onMapClick):
+  //   no area selected        -> select the area under the cursor
+  //   inside the selected one -> check the house / lot at that point
+  //   inside another area     -> select that area instead
+  //   outside every area      -> clear the selection
   // =======================================================================
+  const MINZ = (C.MIN_ZOOM && C.MIN_ZOOM.blockGroup) || 12;
+  const TILE = 0.05;
+  const bgPolys = new Map();   // geoid -> { feature, layer, bbox }
+  const bgTiles = new Map();   // "row,col" -> load promise
+  let bgLayer, selLayer, rasterLayer, ready = false, sel = null, totalAreas = 0;
+
   function initMap() {
     map = L.map("map", { preferCanvas: true, zoomControl: true, maxZoom: 19 }).setView(C.MAP_CENTER, 10);
     canvasRenderer = L.canvas({ padding: 0.3 });
@@ -345,36 +362,180 @@ const Brickline = (() => {
       L.tileLayer(C.FALLBACK_BASEMAP_URL, { attribution: C.FALLBACK_BASEMAP_ATTRIBUTION, maxNativeZoom: C.FALLBACK_MAX_NATIVE_ZOOM, maxZoom: 19 }).addTo(map);
       L.tileLayer(C.FALLBACK_BASEMAP_LABELS_URL, { maxNativeZoom: C.FALLBACK_MAX_NATIVE_ZOOM, maxZoom: 19 }).addTo(map);
     }
-    dotLayer = L.layerGroup().addTo(map);
-    isoLayer = L.layerGroup().addTo(map);
+    // Noise and wind are image tiles. They get their own pane UNDER the vector
+    // canvas, so they never cover it or catch clicks (a tile pane is fine; a
+    // vector pane would be a second canvas that swallows clicks).
+    map.createPane("rasterOverlay");
+    map.getPane("rasterOverlay").style.zIndex = 380;
+    map.getPane("rasterOverlay").style.pointerEvents = "none";
+    rasterLayer = L.layerGroup().addTo(map);
+    bgLayer = L.layerGroup();
     hazardLayer = L.layerGroup().addTo(map);
+    isoLayer = L.layerGroup().addTo(map);
+    placeLayer = L.layerGroup().addTo(map);
     focusLayer = L.layerGroup().addTo(map);
+    selLayer = L.layerGroup().addTo(map);
     pinLayer = L.layerGroup().addTo(map);
-    map.on("click", (e) => {
-      if (view === "area" || view === "house") openHouse({ latlng: e.latlng });
-    });
+    map.on("click", (e) => onMapClick(e.latlng));
+    let moveTimer = null;
+    map.on("moveend", () => { clearTimeout(moveTimer); moveTimer = setTimeout(onMove, 250); });
   }
-  function buildDots() {
-    dotLayer.clearLayers(); dots.clear();
-    allMetrics().forEach((m) => {
-      const d = L.circleMarker([m.lat, m.lon], { renderer: canvasRenderer, radius: 2.5, weight: 0, fillOpacity: 0.35, fillColor: "#9fb0ab" });
-      d.on("click", (e) => { L.DomEvent.stopPropagation(e); if (view === "find") openArea(m.geoid); });
-      d.addTo(dotLayer);
-      dots.set(m.geoid, d);
-    });
+
+  // Paint order on the one canvas: area shading < hazards < commute < lot < selected outline.
+  function restack() {
+    const front = (l) => (l.bringToFront && !l.eachLayer ? l.bringToFront() : l.eachLayer && l.eachLayer(front));
+    [hazardLayer, isoLayer, placeLayer, focusLayer, selLayer].forEach((g) => g.eachLayer(front));
   }
-  let dotFrame = null;
-  function updateDots() {
-    if (dotFrame) cancelAnimationFrame(dotFrame);
-    dotFrame = requestAnimationFrame(() => {
-      const upTo = Math.min(step, 7);
-      let n = 0;
-      dots.forEach((d, geoid) => {
-        const ok = passes(metrics(geoid), upTo);
-        if (ok) n++;
-        d.setStyle(ok ? { radius: 4, fillOpacity: 0.85, fillColor: "#0b6e66" } : { radius: 2.5, fillOpacity: 0.3, fillColor: "#9fb0ab" });
-      });
-      if (view === "find") renderCounter(n);
+
+  function onMove() {
+    if (view === "home") return;
+    const show = map.getZoom() >= MINZ;
+    if (show && !map.hasLayer(bgLayer)) map.addLayer(bgLayer);
+    if (!show && map.hasLayer(bgLayer)) map.removeLayer(bgLayer);
+    if (show) loadOutlines();
+    drawHazards();
+    renderLayerPanel();
+    updateHint();
+  }
+
+  async function loadOutlines() {
+    if (map.getZoom() < MINZ) return;
+    const b = map.getBounds();
+    const jobs = [];
+    let layerId = null;
+    for (let i = Math.floor(b.getSouth() / TILE); i <= Math.floor(b.getNorth() / TILE); i++) {
+      for (let j = Math.floor(b.getWest() / TILE); j <= Math.floor(b.getEast() / TILE); j++) {
+        const key = `${i},${j}`;
+        if (bgTiles.has(key)) { jobs.push(bgTiles.get(key)); continue; }
+        const job = (async () => {
+          layerId = layerId || (await E().blockGroupLayerId());
+          const url = Utils.arcgisQueryUrl(C.TIGERWEB, layerId, {
+            bbox: { xmin: j * TILE, ymin: i * TILE, xmax: (j + 1) * TILE, ymax: (i + 1) * TILE },
+            where: "STATE='06' AND COUNTY='037'",
+            outFields: "GEOID",
+            extraParams: { maxAllowableOffset: String((C.SIMPLIFY_DEGREES && C.SIMPLIFY_DEGREES.blockGroup) || 0.0002) },
+          });
+          const gj = await Utils.fetchEsriAsGeoJSON(url, { timeoutMs: 30000 });
+          (gj.features || []).forEach(addOutline);
+        })().catch((err) => {
+          bgTiles.delete(key);
+          log("areas", "warn", `Neighbourhood outlines failed for part of the map: ${err.message}`);
+        });
+        bgTiles.set(key, job);
+        jobs.push(job);
+      }
+    }
+    await Promise.all(jobs);
+    styleOutlines();
+    drawSel();
+    restack();
+  }
+  function addOutline(f) {
+    const geoid = f.properties && f.properties.GEOID ? String(f.properties.GEOID) : null;
+    if (!geoid || bgPolys.has(geoid)) return;
+    const layer = L.geoJSON(f, { interactive: false, style: outlineStyle(geoid) }).addTo(bgLayer);
+    bgPolys.set(geoid, { feature: f, layer, bbox: turf.bbox(f) });
+  }
+  // Base: shaded by street busyness. Your matches, when shown, in orange on
+  // top of that. A searched place's block groups get a blue edge.
+  const MATCH = { color: "#9a3412", weight: 1.3, fillColor: "#f97316", fillOpacity: 0.55 };
+  function outlineStyle(geoid) {
+    const m = metrics(geoid);
+    const edge = place && place.geoids && place.geoids.has(geoid) ? { color: "#2f5f9e", weight: 2 } : null;
+    if (!m) return { color: "#9aa3ad", weight: 0.5, fillColor: "#c8ced4", fillOpacity: 0.06, ...edge };
+    const band = densBand(m.density);
+    const dc = band >= 0 ? DENS[band].color : "#c8ced4";
+    if (resultsOn()) return passes(m, 7) ? { ...MATCH, ...edge } : { color: "#9aa3ad", weight: 0.4, fillColor: dc, fillOpacity: 0.18, ...edge };
+    return { color: "#4b5b57", weight: 0.6, fillColor: dc, fillOpacity: 0.4, ...edge };
+  }
+  const anyAnswer = () => !!(S.commutes.some((c) => c.area) || S.dens.size || S.detMin || S.edu || S.inc || S.hhMin > 1 || S.hhMax < 6 || S.useMix || (ratingsAvailable() && (S.sE || S.sM || S.sH)));
+  const resultsOn = () => S.showMatches && anyAnswer();
+  function resetAnswers() {
+    Object.assign(S, { commutes: [{ text: "", min: 35 }], rush: true, dens: new Set(), detMin: 0, edu: 0, inc: 0, hhMin: 1, hhMax: 6, useMix: false, mix: [40, 42, 18], sE: 0, sM: 0, sH: 0, showMatches: true, searchLogged: false });
+    step = 0;
+    drawIsos();
+    if (view === "find") renderQ();
+    updateMatches();
+  }
+  function styleOutlines() { bgPolys.forEach((p, geoid) => p.layer.setStyle(outlineStyle(geoid))); }
+  function outlineAt(latlng) {
+    const pt = [latlng.lng, latlng.lat];
+    for (const [geoid, p] of bgPolys) {
+      const [w, s, e, n] = p.bbox;
+      if (pt[0] < w || pt[0] > e || pt[1] < s || pt[1] > n) continue;
+      if (turf.booleanPointInPolygon(pt, p.feature)) return geoid;
+    }
+    return null;
+  }
+
+  async function onMapClick(latlng) {
+    if (view === "home") return;
+    if (map.getZoom() < MINZ) { map.setView(latlng, MINZ); return; }   // nothing is drawn out there yet
+    await loadOutlines();
+    const geoid = outlineAt(latlng);
+    if (!geoid) { deselect(); return; }
+    if (geoid === sel) { openHouse({ latlng }); return; }
+    selectArea(geoid);
+  }
+  function selectArea(geoid) {
+    if (view === "find") {
+      sel = geoid;
+      drawSel();
+      areaDetails(geoid).promise.then(() => { if (sel === geoid) { renderPreview(); renderLayerPanel(); } });
+      renderPreview();
+      renderLayerPanel();
+      updateHint();
+    } else openArea(geoid);
+  }
+  function deselect() {
+    sel = null;
+    selLayer.clearLayers();
+    renderPreview();
+    if (view === "area" || view === "house") { location.hash = "find"; return; }
+    renderLayerPanel();
+    updateHint();
+  }
+  function drawSel() {
+    selLayer.clearLayers();
+    if (!sel) return;
+    const p = bgPolys.get(sel);
+    const det = areaCache.get(sel);
+    const shape = (p && p.feature) || (det && det.outline);
+    if (shape) L.geoJSON(shape, { interactive: false, style: { color: "#0b6e66", weight: 3.5, fill: false } }).addTo(selLayer);
+  }
+  function renderPreview() {
+    const box = $("#map-preview");
+    if (view !== "find" || !sel) { box.hidden = true; return; }
+    const m = metrics(sel);
+    const band = m ? densBand(m.density) : -1;
+    const fits = m && passes(m, 7);
+    box.hidden = false;
+    box.innerHTML = `<button type="button" class="x" id="pvClose" aria-label="Clear the selection">×</button><b>${esc(areaName(sel))}</b>
+      <span>${m ? `${band >= 0 ? DENS[band].label + " · " : ""}${pct(m.det)} houses · ${fmtK(m.inc)} income` : "No Census data here"}</span>
+      ${m && anyAnswer() ? `<span class="tag ${fits ? "hot" : ""}">${fits ? "Fits your answers" : "Doesn't fit every answer"}</span>` : ""}
+      <button type="button" class="btn" id="pvOpen">Open the area card</button>
+      <small>Click inside the outline to check a house</small>`;
+    $("#pvClose").onclick = () => deselect();
+    $("#pvOpen").onclick = () => openArea(sel);
+  }
+  function updateHint() {
+    const hint = $("#map-hint");
+    if (view === "home") return;
+    let t;
+    if (map.getZoom() < MINZ) t = view === "place" ? "Zoom in to see its block groups" : "Zoom in to see neighbourhood outlines";
+    else if (!sel) t = "Click a neighbourhood to select it";
+    else t = `${view === "area" && PERSONAL && listingsIn(sel).length ? "Red pins are for sale · " : ""}Click inside the outline to check a house · outside to pick another area`;
+    hint.textContent = t;
+    hint.hidden = false;
+  }
+
+  let matchFrame = null;
+  function updateMatches() {
+    if (matchFrame) cancelAnimationFrame(matchFrame);
+    matchFrame = requestAnimationFrame(() => {
+      styleOutlines();
+      renderOverlay();
+      if (view === "find") renderPreview();
     });
   }
   function drawIsos() {
@@ -382,17 +543,33 @@ const Brickline = (() => {
     if (view !== "find") return;
     S.commutes.forEach((c, k) => {
       if (!c.area) return;
-      L.geoJSON(c.area.poly, { interactive: false, style: { color: "#2f5f9e", weight: 1.6, dashArray: "6 5", fillColor: "#2f5f9e", fillOpacity: 0.08 } }).addTo(isoLayer);
+      L.geoJSON(c.area.poly, { interactive: false, style: { color: "#2f5f9e", weight: 1.6, dashArray: "6 5", fillColor: "#2f5f9e", fillOpacity: 0.05 } }).addTo(isoLayer);
       L.circleMarker([c.lat, c.lon], { interactive: false, radius: 7, color: "#fff", weight: 2, fillColor: "#2f5f9e", fillOpacity: 1 }).bindTooltip(k ? `Commute ${k + 1}` : "Work", { permanent: true, direction: "right", className: "" }).addTo(isoLayer);
     });
+    restack();
   }
-  function renderCounter(n) {
-    const total = dots.size;
+  // The card top-left: how many areas fit your answers, with Hide / Edit /
+  // Reset, and the searched place. Shown on every map screen, so your
+  // results stay with you while you click around.
+  function renderOverlay() {
+    const box = $("#map-overlay");
+    if (view === "home") return;
+    const answered = anyAnswer();
+    const showCount = ready && (answered || view === "find");
+    box.hidden = !showCount && !place;
+    if (box.hidden) return;
+    const n = showCount ? allMetrics().filter((m) => passes(m, 7)).length : 0;
     const applied = appliedChips();
-    $("#map-overlay").innerHTML = `<div class="count"><b>${n.toLocaleString()}</b><span>of ${total.toLocaleString()} areas match</span></div><div class="applied">${applied.map((a) => `<span>${esc(a)}</span>`).join("")}</div>`;
+    box.innerHTML = (showCount ? `<div class="count"><b>${n.toLocaleString()}</b><span>of ${totalAreas.toLocaleString()} areas fit your answers</span></div>
+      <div class="applied">${applied.map((a) => `<span>${esc(a)}</span>`).join("")}</div>
+      ${answered ? `<div class="mctl"><button type="button" id="mShow" aria-pressed="${S.showMatches}"><i class="sw"></i>${S.showMatches ? "Hide" : "Show"} matches</button>${view !== "find" ? `<a href="#find">Edit answers</a>` : ""}<button type="button" id="mReset">Reset</button></div>` : ""}` : "")
+      + (place ? `<div class="placechip"><i></i><span>${esc(place.name)}</span><button type="button" id="plClear" aria-label="Clear ${esc(place.name)}">×</button></div>` : "");
+    const sh = $("#mShow"); if (sh) sh.onclick = () => { S.showMatches = !S.showMatches; updateMatches(); };
+    const rs = $("#mReset"); if (rs) rs.onclick = () => resetAnswers();
+    const pc = $("#plClear"); if (pc) pc.onclick = () => clearPlace();
   }
   function appliedChips() {
-    const a = [], u = Math.min(step, 7);
+    const a = [], u = 7;
     const set = S.commutes.filter((c) => c.area);
     if (set.length) a.push(set.map((c, k) => `${c.min} min to ${k ? "commute " + (k + 1) : "work"}`).join(" + ") + (S.rush ? " · rush hour" : ""));
     if (u >= 1 && S.dens.size) a.push([...S.dens].sort().map((i) => DENS[i].label).join(", "));
@@ -404,7 +581,7 @@ const Brickline = (() => {
     if (u >= 7 && (S.sE || S.sM || S.sH)) a.push("Schools " + [S.sE && "E" + S.sE, S.sM && "M" + S.sM, S.sH && "H" + S.sH].filter(Boolean).join(" "));
     return a;
   }
-  function clearFocus() { focusLayer.clearLayers(); hazardLayer.clearLayers(); pinLayer.clearLayers(); $("#map-layers").hidden = true; $("#map-hint").hidden = true; }
+  function clearFocus() { focusLayer.clearLayers(); pinLayer.clearLayers(); }
 
   // =======================================================================
   // Formatting and small builders
@@ -444,7 +621,7 @@ const Brickline = (() => {
   function bindRange(id, fmt, set, after) {
     const el = document.getElementById(id);
     if (!el) return;
-    el.oninput = () => { set(+el.value); document.getElementById(id + "-o").textContent = fmt(+el.value); if (after) after(); updateDots(); };
+    el.oninput = () => { set(+el.value); document.getElementById(id + "-o").textContent = fmt(+el.value); if (after) after(); updateMatches(); };
   }
   function setMix(i, v) {
     v = clamp(v, 0, 100);
@@ -457,7 +634,7 @@ const Brickline = (() => {
   }
   function renderFind() {
     const P = $("#panel");
-    if (!D.census || !dots.size) {
+    if (!D.census || !ready) {
       P.innerHTML = `<div class="pad"><div class="qhead"><h2>Loading LA County…</h2><p>Block group data and centres. If this stays, open Data status (top right).</p></div></div>`;
       return;
     }
@@ -475,7 +652,7 @@ const Brickline = (() => {
     const foot = $("#qfoot");
     if (step === NQ) {
       if (!S.gateSeen) { renderGate(pane); foot.hidden = true; } else { renderResults(pane); foot.hidden = false; $("#next").textContent = "Edit answers"; $("#skip").hidden = true; $("#back").disabled = false; }
-      updateDots();
+      updateMatches();
       return;
     }
     foot.hidden = false; $("#next").textContent = step === NQ - 1 ? "See results" : "Next"; $("#skip").hidden = false; $("#back").disabled = step === 0;
@@ -516,7 +693,7 @@ const Brickline = (() => {
       const add = $("#addC"); if (add) add.onclick = () => { S.commutes.push({ text: "", min: 35 }); renderQ(); };
       $("#rush").onchange = (e) => { S.rush = e.target.checked; refreshCommutes(); };
     }
-    if (step === 1) pane.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => { const i = +b.dataset.d; S.dens.has(i) ? S.dens.delete(i) : S.dens.add(i); b.setAttribute("aria-pressed", S.dens.has(i)); updateDots(); }));
+    if (step === 1) pane.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => { const i = +b.dataset.d; S.dens.has(i) ? S.dens.delete(i) : S.dens.add(i); b.setAttribute("aria-pressed", S.dens.has(i)); updateMatches(); }));
     if (step === 2) bindRange("det", (v) => (v ? `${v}%+ houses` : "Any mix"), (v) => (S.detMin = v));
     if (step === 3) bindRange("edu", (v) => (v ? v + "%" : "Any"), (v) => (S.edu = v));
     if (step === 4) bindRange("inc", (v) => (v ? fmtK(v) : "Any"), (v) => (S.inc = v));
@@ -527,10 +704,10 @@ const Brickline = (() => {
     }
     if (step === 6) {
       $("#useMix").onchange = (e) => { S.useMix = e.target.checked; renderQ(); };
-      if (S.useMix) [0, 1, 2].forEach((i) => { const el = document.getElementById("mix" + i); el.oninput = () => { setMix(i, +el.value); updateDots(); }; });
+      if (S.useMix) [0, 1, 2].forEach((i) => { const el = document.getElementById("mix" + i); el.oninput = () => { setMix(i, +el.value); updateMatches(); }; });
     }
     if (step === 7 && ratingsAvailable()) { bindRange("sE", (v) => (v ? v + "/10" : "Any"), (v) => (S.sE = v)); bindRange("sM", (v) => (v ? v + "/10" : "Any"), (v) => (S.sM = v)); bindRange("sH", (v) => (v ? v + "/10" : "Any"), (v) => (S.sH = v)); }
-    updateDots();
+    updateMatches();
   }
   let commuteTimer = null;
   function debounceCommutes() { clearTimeout(commuteTimer); commuteTimer = setTimeout(refreshCommutes, 700); }
@@ -544,7 +721,7 @@ const Brickline = (() => {
   }
   function renderGate(pane) {
     const n = allMetrics().filter((m) => passes(m, 7)).length;
-    pane.innerHTML = `<div class="qhead"><span class="qnum">Almost there</span><h2>${n.toLocaleString()} areas fit what you asked for</h2><p>Where should we send your shortlist? We may also ask what you thought of the tool.</p></div>
+    pane.innerHTML = `<div class="qhead"><span class="qnum">Almost there</span><h2>${n.toLocaleString()} ${n === 1 ? "area fits" : "areas fit"} what you asked for</h2><p>Where should we send your shortlist? We may also ask what you thought of the tool.</p></div>
       <form class="gate" id="gateForm" novalidate><label class="lbl" for="gEmail">Email</label><div class="row"><input id="gEmail" type="email" placeholder="you@example.com" autocomplete="email"><button class="btn" type="submit">Show my results</button></div><span class="err" id="gErr" hidden></span><p class="note">Used only to send your shortlist and ask for feedback. No spam.</p></form>
       <button type="button" class="linkbtn" id="gSkip" style="color:var(--muted)">Skip for now and show results</button>`;
     $("#gateForm").onsubmit = async (e) => {
@@ -582,7 +759,7 @@ const Brickline = (() => {
       return SORT.dir === "asc" ? a.v - b.v : b.v - a.v;
     });
     const shown = hits.slice(0, 25);
-    pane.innerHTML = `<div class="qhead"><span class="qnum">Results${S.email ? ` · ${S.savedWhere === "device" ? "saved on this device" : "we'll email " + esc(S.email)}` : ""}</span><h2>${hits.length.toLocaleString()} areas fit what you asked for</h2><p>Each is a Census block group (a few city blocks). Open one to see what it's like${PERSONAL ? " and the homes for sale in it" : ""}.</p></div>` +
+    pane.innerHTML = `<div class="qhead"><span class="qnum">Results${S.email ? ` · ${S.savedWhere === "device" ? "saved on this device" : "we'll email " + esc(S.email)}` : ""}</span><h2>${hits.length.toLocaleString()} ${hits.length === 1 ? "area fits" : "areas fit"} what you asked for</h2><p>Each is a Census block group (a few city blocks). Open one to see what it's like${PERSONAL ? " and the homes for sale in it" : ""}.</p></div>` +
       (hits.length ? `<div class="sortbar"><span class="note">Showing ${shown.length} of ${hits.length.toLocaleString()}</span><div class="ctl"><label for="sortK" class="note">Sort by</label><select id="sortK">${keys.map((k) => `<option value="${k}" ${k === SORT.k ? "selected" : ""}>${SORTS[k].l}</option>`).join("")}</select><button type="button" id="sortDir">${SORT.dir === "asc" ? "↑ Low to high" : "↓ High to low"}</button></div></div>
         <div class="results">${shown.map(({ m, v }) => resultCard(m, M.f(v))).join("")}</div>` : `<div class="empty">Nothing matches every answer. Try a longer commute, or loosen income or the other filters.</div>`);
     const sk = $("#sortK"); if (sk) sk.onchange = () => { SORT.k = sk.value; SORT.dir = SORTS[SORT.k].d; renderResults(pane); };
@@ -648,7 +825,6 @@ const Brickline = (() => {
       const b = (C.WIND_BUCKETS || []).find((x) => w < x.max);
       h.wind = { cls: w > 7 ? "watch" : "good", text: `${w.toFixed(1)} m/s${b && b.label ? ` · ${b.label}` : ""}` };
     }
-    h.present = { fire: h.fire.cls === "bad" || h.fire.cls === "watch", flood: h.flood.cls === "bad" || h.flood.cls === "watch", seismic: h.liquefaction.cls === "watch" || h.landslide.cls === "watch" };
     return h;
   }
   function windAt(lat, lon) {
@@ -666,10 +842,15 @@ const Brickline = (() => {
     const m = metrics(geoid);
     const det = { outline: null, hazards: null, loading: true };
     areaCache.set(geoid, det);
+    // The point to ask about: the Census centre, or the drawn outline's if
+    // this block group has no Census row.
+    const drawn = bgPolys.get(geoid);
+    const c = m && m.lat != null ? [m.lat, m.lon] : drawn ? turf.pointOnFeature(drawn.feature).geometry.coordinates.slice().reverse() : null;
+    if (!c) { det.loading = false; det.promise = Promise.resolve(det); return det; }
     det.promise = (async () => {
       const [bg, hz] = await Promise.all([
-        E().blockGroupAt(m.lat, m.lon).catch((err) => { log("area", "warn", `Block group outline failed: ${err.message}`); return null; }),
-        hazardsAt(m.lat, m.lon),
+        E().blockGroupAt(c[0], c[1]).catch((err) => { log("area", "warn", `Block group outline failed: ${err.message}`); return null; }),
+        hazardsAt(c[0], c[1]),
       ]);
       det.outline = bg && bg.geometry ? bg : null;
       det.hazards = hz;
@@ -805,14 +986,11 @@ const Brickline = (() => {
   // =======================================================================
   const ATABS = [{ cls: "grow", tabs: ["Summary", "People", "Money & work", "Safety & environment", "Schools", "Sales & prices", "Data"] }];
   function openArea(geoid) {
-    area = { geoid }; atab = 0;
+    area = { geoid, from: view === "area" || view === "house" ? (area && area.from) || "find" : view }; atab = 0; sel = geoid;
     const det = areaDetails(geoid);
-    shownLayers = new Set();
     if (location.hash !== `#area-${geoid}`) location.hash = `area-${geoid}`; else route();
     det.promise.then(() => {
       if (!area || area.geoid !== geoid) return;
-      const h = det.hazards;
-      shownLayers = new Set(Object.entries(h.present).filter(([, v]) => v).map(([k]) => k));
       if (view === "area") { renderArea(); drawAreaMap(); }
     });
   }
@@ -833,8 +1011,8 @@ const Brickline = (() => {
       : L.length ? `<div class="sec"><h3>Homes for sale here</h3><div class="listings">${L.slice(0, 20).map((l, i) => `<button type="button" class="lst" data-l="${i}"><i aria-hidden="true"></i><b>${esc(l.address || "")}</b><span class="p">${fmtM(l.price)}</span><small>${l.beds ?? "–"} bd · ${l.baths ?? "–"} ba · ${num(l.sqft)} sq ft${l.yearBuilt ? " · built " + l.yearBuilt : ""}</small></button>`).join("")}</div><p class="note">From your Redfin exports. Or click any lot on the map to check it.</p></div>`
       : `<div class="empty"><b>No homes for sale here ${det.outline ? "right now" : "found yet"}.</b> Click any lot on the map to check it, or <button type="button" class="linkbtn" id="alertMe">get an email when one lists</button>.<div id="alertSlot"></div></div>`;
     const band = densBand(m.density);
-    P.innerHTML = `<div class="card-head"><div class="crumb"><a href="#find" id="toResults">← Back to results</a></div><h2>${esc(areaName(geoid))}</h2><p>${band >= 0 ? DENS[band].label + " · " : ""}${pct(m.det)} houses${PERSONAL ? ` · ${L.length} for sale` : ""}</p></div><div class="tabs" id="aTabs">${tabsHTML(ATABS, atab)}</div><div class="tabpane" id="aPane"></div>`;
-    $("#toResults").onclick = () => { step = NQ; S.gateSeen = true; };
+    P.innerHTML = `<div class="card-head"><div class="crumb">${area.from === "place" && place ? `<a href="#place">← Back to ${esc(place.name)}</a>` : `<a href="#find" id="toResults">← Back to ${S.gateSeen ? "results" : "the questions"}</a>`}</div><h2>${esc(areaName(geoid))}</h2><p>${band >= 0 ? DENS[band].label + " · " : ""}${pct(m.det)} houses${PERSONAL ? ` · ${L.length} for sale` : ""}</p></div><div class="tabs" id="aTabs">${tabsHTML(ATABS, atab)}</div><div class="tabpane" id="aPane"></div>`;
+    const tr = $("#toResults"); if (tr) tr.onclick = () => { if (S.gateSeen) step = NQ; };
     $("#aTabs").querySelectorAll("button").forEach((b) => (b.onclick = () => { atab = +b.dataset.t; renderArea(); }));
     const panes = [
       () => `<div class="signals">${commute}${hazardTile(h)}${airTile(h)}${streetTile()}${schoolTile(m)}${peopleTile(m)}${moneyTile(m)}${salesTile(geoid)}</div>${autoSummary(m, h)}${fits.length ? `<div class="fit"><h3>Why it matched</h3><ul>${fits.map((f) => `<li>${esc(f)}</li>`).join("")}</ul></div>` : ""}${forSale}`,
@@ -861,56 +1039,344 @@ const Brickline = (() => {
   function drawAreaMap() {
     clearFocus();
     const det = areaDetails(area.geoid), m = metrics(area.geoid);
-    if (det.outline) {
-      const lay = L.geoJSON(det.outline, { interactive: false, style: { color: "#0b6e66", weight: 3, fillColor: "#0b6e66", fillOpacity: 0.08 } }).addTo(focusLayer);
-      map.fitBounds(lay.getBounds(), { padding: [40, 40], maxZoom: 17 });
-    } else if (m) map.setView([m.lat, m.lon], 16);
+    sel = area.geoid;
+    drawSel();
+    const shape = (bgPolys.get(sel) || {}).feature || det.outline;
+    // Move the map only when the area is off screen or too far out to see.
+    if (shape) {
+      const bounds = L.geoJSON(shape).getBounds();
+      if (map.getZoom() < MINZ || !map.getBounds().contains(bounds)) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+    } else if (m && (map.getZoom() < MINZ || !map.getBounds().contains([m.lat, m.lon]))) map.setView([m.lat, m.lon], 15);
     if (PERSONAL) listingsIn(area.geoid).forEach((l) => {
       L.marker([l.lat, l.lon], { icon: L.divIcon({ className: "", html: `<span class="price-pin">${fmtM(l.price)}</span>`, iconSize: null }) })
         .on("click", (e) => { L.DomEvent.stopPropagation(e); openHouse({ listing: l }); }).addTo(pinLayer);
     });
-    renderLayerPanel(det.hazards, det.outline ? L.geoJSON(det.outline).getBounds() : map.getBounds());
-    $("#map-hint").textContent = PERSONAL ? "Red pins are for sale · click any lot to check it" : "Click any lot to check it";
-    $("#map-hint").hidden = false;
+    renderLayerPanel();
+    updateHint();
+    restack();
   }
 
-  // --- Hazard layers on the map ------------------------------------------
+  // --- Map layers (upper right) ------------------------------------------
+  // All off until you switch them on. Each row also says what was found at
+  // the selected spot, whether or not its layer is drawn.
   const LAYERS = [
-    { k: "fire", label: "Fire", color: "#d7301f", from: (h) => h.fire },
-    { k: "flood", label: "Flood", color: "#2b7bd0", from: (h) => h.flood },
-    { k: "seismic", label: "Landslide & liquefaction", color: "#a16207", from: (h) => (h.landslide.cls === "watch" ? h.landslide : h.liquefaction) },
+    { k: "fire", label: "Fire", color: "#d7301f", vector: true, from: (h) => h.fire },
+    { k: "flood", label: "Flood", color: "#2b7bd0", vector: true, from: (h) => h.flood },
+    { k: "seismic", label: "Landslide & liquefaction", color: "#a16207", vector: true, from: (h) => (h.landslide.cls === "watch" ? h.landslide : h.liquefaction) },
+    { k: "noise", label: "Noise (air, road, rail)", color: "#c51b8a", from: () => null },
+    { k: "pollution", label: "Air quality", color: "#e08214", vector: true, from: (h) => h.pollution },
+    { k: "wind", label: "Wind", color: "#43a2ca", from: (h) => h.wind },
   ];
-  const shapeCache = new Map();
-  function renderLayerPanel(h, bounds) {
-    const box = $("#map-layers");
-    box.hidden = false;
-    box.innerHTML = `<h3>Show on map</h3>` + LAYERS.map((l) => { const v = h ? l.from(h) : null; return `<button type="button" class="layer" data-l="${l.k}" aria-pressed="${shownLayers.has(l.k)}"><i style="background:${l.color}"></i><b>${l.label}</b><span style="color:var(--${v && v.cls !== "na" ? (v.cls === "good" ? "good" : v.cls) : "muted"})">${v ? (v.cls === "good" ? "None here" : esc(v.text)) : "…"}</span></button>`; }).join("");
-    box.querySelectorAll("[data-l]").forEach((b) => (b.onclick = () => { const k = b.dataset.l; shownLayers.has(k) ? shownLayers.delete(k) : shownLayers.add(k); renderLayerPanel(h, bounds); drawHazards(bounds); }));
-    drawHazards(bounds);
+  const vecState = new Map();   // key -> { box, layer }
+  const rasters = new Map();    // key -> Leaflet layer (or a promise of one)
+  const layerNote = new Map();  // key -> a message shown in place of the spot's answer
+  function spotHazards() {
+    if (view === "house") return house && house.hazards;
+    const g = view === "area" ? area && area.geoid : view === "find" ? sel : null;
+    const det = g ? areaCache.get(g) : null;
+    return det && det.hazards;
   }
-  async function drawHazards(bounds) {
-    hazardLayer.clearLayers();
-    const pad = 0.01;
-    const bbox = { xmin: bounds.getWest() - pad, ymin: bounds.getSouth() - pad, xmax: bounds.getEast() + pad, ymax: bounds.getNorth() + pad };
-    for (const k of shownLayers) {
-      const key = `${k}|${bbox.xmin.toFixed(3)},${bbox.ymin.toFixed(3)}`;
+  function legendFor(k) {
+    const sw = (list) => `<div class="lgd">${list.map(([c, t]) => `<span><i style="background:${c}"></i>${esc(t)}</span>`).join("")}</div>`;
+    if (k === "fire") return sw(Object.entries(C.FIRE_CLASS_COLORS).map(([t, c]) => [c, t]));
+    if (k === "pollution") return sw((C.POLLUTION_BUCKETS || []).map((b) => [b.color, b.label.replace(/ \(.*\)/, "")])) + `<small>CalEnviroScreen percentile, by census tract</small>`;
+    if (k === "wind") return sw((C.WIND_BUCKETS || []).map((b) => [b.color, b.label.replace(/ \(.*\)/, "")]));
+    if (k === "noise") return `<small>US DOT noise map, aircraft plus road and rail</small>`;
+    return "";
+  }
+  function renderLayerPanel() {
+    const box = $("#map-layers");
+    if (view === "home") { box.hidden = true; return; }
+    const h = spotHazards();
+    box.hidden = false;
+    box.innerHTML = `<h3>Show on map</h3>` + LAYERS.map((l) => {
+      const on = shownLayers.has(l.k);
+      const minZ = l.vector && C.OVERLAYS[l.k] ? C.OVERLAYS[l.k].minZoom : 0;
+      const note = layerNote.get(l.k) || (on && minZ && map.getZoom() < minZ ? "Zoom in to see it" : null);
+      const v = h ? l.from(h) : null;
+      const answer = note ? `<span style="color:var(--muted)">${esc(note)}</span>` : v ? `<span style="color:var(--${v.cls === "na" ? "muted" : v.cls})">${v.cls === "good" && l.k !== "wind" && l.k !== "pollution" ? "None here" : esc(v.text)}</span>` : "<span></span>";
+      return `<button type="button" class="layer" data-l="${l.k}" aria-pressed="${on}"><i style="background:${l.color}"></i><b>${l.label}</b>${answer}</button>${on ? legendFor(l.k) : ""}`;
+    }).join("");
+    box.querySelectorAll("[data-l]").forEach((b) => (b.onclick = () => toggleLayer(b.dataset.l)));
+  }
+  async function toggleLayer(k) {
+    const on = !shownLayers.has(k);
+    on ? shownLayers.add(k) : shownLayers.delete(k);
+    layerNote.delete(k);
+    renderLayerPanel();
+    const spec = LAYERS.find((l) => l.k === k);
+    if (spec.vector) { drawHazards(); return; }
+    if (!on) { const r = rasters.get(k); if (r && r.remove) rasterLayer.removeLayer(r); rasters.delete(k); return; }
+    try {
+      let lay;
+      if (k === "noise") {
+        const got = await Promise.allSettled([E().noiseLayer("aviation"), E().noiseLayer("surface")]);
+        const ok = got.filter((g) => g.status === "fulfilled").map((g) => g.value);
+        got.filter((g) => g.status === "rejected").forEach((g) => log("noise", "warn", `A noise service failed: ${g.reason && g.reason.message}`));
+        if (!ok.length) throw new Error("no noise service answered");
+        lay = L.layerGroup(ok);
+      } else {
+        lay = await E().windOverlay();
+        if (!lay) throw new Error("no wind file");
+      }
+      if (!shownLayers.has(k)) return;      // switched off while loading
+      rasters.set(k, lay);
+      rasterLayer.addLayer(lay);
+    } catch (err) {
+      shownLayers.delete(k);
+      layerNote.set(k, k === "wind" ? "No wind file on this machine" : "Couldn't load");
+      log(k, "warn", `${spec.label} layer failed: ${err.message}`);
+      renderLayerPanel();
+    }
+  }
+  // Vector hazards for what's on screen, re-fetched only when you pan past
+  // what was loaded. Each overlay has its own minimum zoom in BG_CONFIG.
+  async function drawHazards() {
+    for (const l of LAYERS.filter((x) => x.vector)) {
+      const k = l.k, st = vecState.get(k);
+      const minZ = (C.OVERLAYS[k] && C.OVERLAYS[k].minZoom) || 0;
+      if (!shownLayers.has(k) || map.getZoom() < minZ) {
+        if (st) { hazardLayer.removeLayer(st.layer); vecState.delete(k); }
+        continue;
+      }
+      if (st && st.box.contains(map.getBounds())) continue;
+      const box = map.getBounds().pad(0.4);
+      const bbox = { xmin: box.getWest(), ymin: box.getSouth(), xmax: box.getEast(), ymax: box.getNorth() };
       try {
-        if (!shapeCache.has(key)) shapeCache.set(key, E().hazardShapes(k, bbox));
-        const gj = await shapeCache.get(key);
+        const gj = await E().hazardShapes(k, bbox);
         if (!shownLayers.has(k)) continue;
-        L.geoJSON(gj, {
-          interactive: false,
-          style: (f) => {
-            const p = f.properties || {};
-            const color = k === "fire" ? (C.FIRE_CLASS_COLORS[E().fireClass(p)] || "#fc8d59") : k === "flood" ? ((E().floodClass(p) || {}).color || "#93c5fd") : (C.SEISMIC_COLORS[p.__hazard] || "#a16207");
-            return { color, weight: 0.6, fillColor: color, fillOpacity: k === "flood" && /minimal/i.test((E().floodClass(p) || {}).label || "") ? 0 : 0.3 };
-          },
-        }).addTo(hazardLayer);
+        const layer = L.geoJSON(gj, { interactive: false, style: (f) => hazardStyle(k, f.properties || {}) });
+        const old = vecState.get(k);
+        if (old) hazardLayer.removeLayer(old.layer);
+        hazardLayer.addLayer(layer);
+        vecState.set(k, { box, layer });
+        restack();
       } catch (err) {
-        shapeCache.delete(key);
-        log(k, "warn", `${k} shapes failed: ${err.message}`);
+        log(k, "warn", `${l.label} shapes failed: ${err.message}`);
       }
     }
+  }
+  function hazardStyle(k, p) {
+    if (k === "pollution") {
+      const score = Number(Utils.pickField(p, C.CES_FIELDS.score));
+      const b = Number.isFinite(score) ? (C.POLLUTION_BUCKETS || []).find((x) => score <= x.max) : null;
+      return { color: "#8a5a00", weight: 0.4, fillColor: b ? b.color : "#ccc", fillOpacity: b ? 0.45 : 0 };
+    }
+    const color = k === "fire" ? (C.FIRE_CLASS_COLORS[E().fireClass(p)] || "#fc8d59") : k === "flood" ? ((E().floodClass(p) || {}).color || "#93c5fd") : (C.SEISMIC_COLORS[p.__hazard] || "#a16207");
+    return { color, weight: 0.6, fillColor: color, fillOpacity: k === "flood" && /minimal/i.test((E().floodClass(p) || {}).label || "") ? 0 : 0.35 };
+  }
+
+  // =======================================================================
+  // Places: one search box for an address, a neighbourhood or a zip
+  //
+  // Neighbourhood and city names (with their borders) come from the county,
+  // zip borders from Census TIGERweb; both lists of candidates live in
+  // BG_CONFIG.PLACES. A place's block groups are the ones whose Census
+  // interior point falls inside its border.
+  // =======================================================================
+  const PL = C.PLACES || { sources: [], nameFields: [], zipWhere: [] };
+  const places = [];
+  let place = null;     // { name, sub, shape, geoids:Set } once loaded
+  let placeLayer;
+
+  async function findLayer(src) {
+    const data = await Utils.fetchJSON(`${src.url}?f=json`, { timeoutMs: 20000 });
+    if (data && data.error) throw new Error(data.error.message || "service error");
+    const lay = (data.layers || []).find((l) => src.match.test(l.name || "") && !(src.exclude && src.exclude.test(l.name || "")) && (!l.geometryType || /polygon/i.test(l.geometryType)));
+    if (!lay) throw new Error(`no layer matching ${src.match}`);
+    return lay;
+  }
+  function placeName(raw, kind) {
+    const t = String(raw).trim();
+    let m;
+    if ((m = t.match(/^City of (.+)$/i))) return { name: m[1], sub: "City" };
+    if ((m = t.match(/^Los Angeles\s*-\s*(.+)$/i))) return { name: m[1], sub: "Los Angeles neighbourhood" };
+    if ((m = t.match(/^Unincorporated\s*-\s*(.+)$/i))) return { name: m[1], sub: "Unincorporated community" };
+    return { name: t, sub: kind === "city" ? "City" : "Neighbourhood" };
+  }
+  async function loadPlaces() {
+    const seen = new Set(), done = new Set();
+    for (const src of PL.sources) {
+      if (done.has(src.kind)) continue;
+      try {
+        const lay = await findLayer(src);
+        const params = new URLSearchParams({ where: "1=1", outFields: "*", returnGeometry: "false", resultRecordCount: "2000", f: "json" });
+        const data = await Utils.fetchJSON(`${src.url}/${lay.id}/query?${params}`, { timeoutMs: 30000 });
+        if (data && data.error) throw new Error(data.error.message || "query error");
+        const feats = data.features || [];
+        const field = PL.nameFields.find((f) => feats.some((x) => x.attributes && x.attributes[f]));
+        if (!field) throw new Error(`no name field among ${PL.nameFields.join(", ")}`);
+        let n = 0;
+        feats.forEach((x) => {
+          const raw = x.attributes[field];
+          if (!raw) return;
+          const pn = placeName(raw, src.kind);
+          if (seen.has(pn.name.toLowerCase())) return;
+          seen.add(pn.name.toLowerCase());
+          places.push({ ...pn, raw: String(raw), src: { url: src.url, layerId: lay.id, field } });
+          n++;
+        });
+        done.add(src.kind);
+        log("places", "ok", `Place names: ${n} from "${lay.name}" (field ${field}) at ${src.url}.`);
+      } catch (err) {
+        log("places", "warn", `Place names (${src.kind}) from ${src.url} failed: ${err.message}`);
+      }
+    }
+    places.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  async function placeShape(pl) {
+    const where = `${pl.src.field}='${pl.raw.replace(/'/g, "''")}'`;
+    const gj = await Utils.fetchEsriAsGeoJSON(Utils.arcgisQueryUrl(pl.src.url, pl.src.layerId, { where, outFields: pl.src.field, extraParams: { maxAllowableOffset: "0.0003" } }), { timeoutMs: 30000 });
+    if (!gj.features.length) throw new Error("no border returned");
+    return { type: "FeatureCollection", features: gj.features };
+  }
+  async function zipShape(zip) {
+    const layerId = await E().zipLayerId();
+    for (const w of PL.zipWhere) {
+      try {
+        const gj = await Utils.fetchEsriAsGeoJSON(Utils.arcgisQueryUrl(C.TIGERWEB, layerId, { where: w.replace("{zip}", zip), outFields: "*", extraParams: { maxAllowableOffset: "0.0003" } }), { timeoutMs: 30000 });
+        if (gj.features.length) { log("places", "ok", `Zip ${zip} border from TIGERweb layer ${layerId} (${w.split("=")[0]}).`); return { type: "FeatureCollection", features: gj.features }; }
+      } catch (err) { /* that field isn't on this vintage: try the next */ }
+    }
+    throw new Error(`zip ${zip} not found on TIGERweb`);
+  }
+  const inShape = (shape, lon, lat) => shape.features.some((f) => f.geometry && turf.booleanPointInPolygon([lon, lat], f));
+
+  async function openPlace(pl) {
+    place = { loading: true, name: pl.zip ? `Zip ${pl.zip}` : pl.name, sub: pl.zip ? "Zip code" : pl.sub };
+    const mine = place;
+    if (location.hash !== "#place") location.hash = "place"; else route();
+    try {
+      const shape = pl.zip ? await zipShape(pl.zip) : await placeShape(pl);
+      const geoids = new Set();
+      D.index.forEach((v, g) => { if (inShape(shape, v.lon, v.lat)) geoids.add(g); });
+      Object.assign(mine, { loading: false, shape, geoids });
+    } catch (err) {
+      Object.assign(mine, { loading: false, error: `Couldn't load the border of ${mine.name} (${err.message}).` });
+      log("places", "warn", mine.error);
+    }
+    if (place !== mine) return;
+    styleOutlines();
+    renderOverlay();
+    if (view === "place") { renderPlace(); drawPlaceMap(true); }
+  }
+  function clearPlace() {
+    place = null;
+    placeLayer.clearLayers();
+    styleOutlines();
+    renderOverlay();
+    if (view === "place") location.hash = "home";
+  }
+  function drawPlaceMap(fit) {
+    placeLayer.clearLayers();
+    if (!place || !place.shape) return;
+    const lay = L.geoJSON(place.shape, { interactive: false, style: { color: "#2f5f9e", weight: 2.5, dashArray: "7 5", fill: false } }).addTo(placeLayer);
+    if (fit) map.fitBounds(lay.getBounds(), { padding: [30, 30], maxZoom: 15 });
+    restack();
+  }
+  function renderPlace() {
+    const P = $("#panel");
+    const head = (extra) => `<div class="card-head"><div class="crumb"><a href="#home">← New search</a></div><h2>${esc(place.name)}</h2><p>${esc(place.sub)}${extra || ""}</p></div>`;
+    if (!place) { P.innerHTML = `<div class="pad"><div class="empty">Search for a neighbourhood, a city or a zip code.</div></div>`; return; }
+    if (place.loading) { P.innerHTML = head() + `<div class="pad"><p class="loading">Finding its border and block groups…</p></div>`; return; }
+    if (place.error) { P.innerHTML = head() + `<div class="pad"><div class="empty">${esc(place.error)}</div></div>`; return; }
+    const ms = [...place.geoids].map(metrics).filter(Boolean);
+    const sum = (f) => ms.reduce((a, m) => a + (f(m) || 0), 0);
+    const pop = sum((m) => m.rec.totalPopulation);
+    const det = share(sum((m) => m.rec.structureUnits && m.rec.structureUnits["1, detached"]), sum((m) => m.rec.structureTotal));
+    const edu = share(sum((m) => m.rec.eduBachelorsPlus), sum((m) => m.rec.eduTotal25plus));
+    const hh = sum((m) => (m.inc > 0 ? m.rec.householdCount : 0));
+    const inc = hh ? sum((m) => (m.inc > 0 ? m.inc * m.rec.householdCount : 0)) / hh : null;
+    const pr = ms.map((m) => D.prices && D.prices[m.geoid]).filter((p) => p && p.medianSalePrice);
+    const sales = pr.reduce((a, p) => a + p.saleCount, 0);
+    const price = sales ? pr.reduce((a, p) => a + p.medianSalePrice * p.saleCount, 0) / sales : null;
+    const fit = resultsOn() ? ms.filter((m) => passes(m, 7)).length : null;
+    const list = ms.slice().sort((a, b) => (b.inc || 0) - (a.inc || 0));
+    P.innerHTML = head(` · ${place.geoids.size} block group${place.geoids.size === 1 ? "" : "s"}`) + `<div class="tabpane">
+      <div class="signals">
+        <div class="sig neutral"><small>People</small><b>${num(pop)} residents</b><em>Census B01001, summed</em></div>
+        <div class="sig neutral"><small>Money & work</small><b>${fmtK(inc)} typical income</b><em>Household-weighted median, B19013</em></div>
+        <div class="sig neutral"><small>Homes</small><b>${pct(det)} detached houses</b><em>B25024</em></div>
+        <div class="sig neutral"><small>Education</small><b>${pct(edu)} bachelor's+</b><em>Adults 25+, B15003</em></div>
+        <div class="sig neutral"><small>Sales & prices</small><b>${price ? fmtM(price) + " typical" : "No sales on file"}</b><em>${sales ? sales + " single-family sales · assessor roll" : "Assessor roll"}</em></div>
+        ${fit != null ? `<div class="sig ${fit ? "good" : "watch"}"><small>Your answers</small><b>${fit} of ${ms.length} fit</b><em>Highlighted in orange on the map</em></div>` : ""}
+      </div>
+      <div class="sec"><h3>Block groups in ${esc(place.name)}</h3><p class="note">Each is a few city blocks. Open one for its full card, or click it on the map.</p></div>
+      <div class="results">${list.slice(0, 60).map((m) => resultCard(m, fmtK(m.inc) + " income")).join("")}</div>
+      ${list.length > 60 ? `<p class="note">Showing the first 60 of ${list.length}. Zoom the map to see the rest.</p>` : ""}
+    </div>`;
+    P.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => openArea(b.dataset.open)));
+  }
+
+  // --- The search box, with suggestions as you type ----------------------
+  const shortAddr = (s) => String(s).split(",").slice(0, 3).join(",");
+  function localSuggestions(q) {
+    const t = q.trim();
+    if (/^\d{5}$/.test(t)) return [{ type: "zip", label: t, sub: "Zip code · its block groups" }];
+    if (t.length < 2 || /^\d/.test(t)) return [];
+    const n = t.toLowerCase();
+    const starts = places.filter((p) => p.name.toLowerCase().startsWith(n));
+    const has = places.filter((p) => !p.name.toLowerCase().startsWith(n) && p.name.toLowerCase().includes(n));
+    return starts.concat(has).slice(0, 6).map((p) => ({ type: "place", label: p.name, sub: p.sub, place: p }));
+  }
+  function classify(text) {
+    const t = text.trim();
+    const z = t.match(/^(\d{5})(-\d{4})?$/);
+    if (z) return { type: "zip", label: z[1] };
+    if (!/^https?:/i.test(t) && !/^\d/.test(t)) {
+      const n = t.replace(/,.*$/, "").trim().toLowerCase();
+      const hit = places.find((p) => p.name.toLowerCase() === n || p.raw.toLowerCase() === n);
+      if (hit) return { type: "place", label: hit.name, place: hit };
+    }
+    return { type: "text", label: t };
+  }
+  function lookUp(it) {
+    if (typeof it === "string") it = classify(it);
+    if (!it.label) return;
+    if (it.type === "zip") openPlace({ zip: it.label });
+    else if (it.type === "place") openPlace(it.place);
+    else if (it.type === "address") openHouse({ text: it.hit.matchedAddress, hit: it.hit });
+    else openHouse({ text: it.label });
+  }
+  function attachSuggest(input, onPick) {
+    const ul = document.createElement("ul");
+    ul.className = "suggest";
+    ul.hidden = true;
+    ul.setAttribute("role", "listbox");
+    input.parentElement.classList.add("has-suggest");
+    input.parentElement.appendChild(ul);
+    input.setAttribute("autocomplete", "off");
+    let items = [], cur = -1, timer = null, seq = 0;
+    const draw = () => {
+      ul.hidden = !items.length;
+      ul.innerHTML = items.map((it, i) => `<li role="option" data-i="${i}" aria-selected="${i === cur}"><b>${esc(it.label)}</b><span>${esc(it.sub)}</span></li>`).join("");
+      ul.querySelectorAll("li").forEach((li) => (li.onmousedown = (e) => { e.preventDefault(); pick(items[+li.dataset.i]); }));
+    };
+    const pick = (it) => { items = []; draw(); input.value = it.label; onPick(it); };
+    input.addEventListener("input", () => {
+      const q = input.value.trim(), my = ++seq;
+      items = localSuggestions(q); cur = -1; draw();
+      clearTimeout(timer);
+      // Street addresses (a number and a word) also ask the address service.
+      if (q.length >= 4 && /\d/.test(q) && /[a-z]/i.test(q) && !/^https?:/i.test(q)) {
+        timer = setTimeout(async () => {
+          try {
+            const hits = await E().suggestAddresses(q);
+            if (my !== seq) return;
+            items = localSuggestions(q).concat(hits.slice(0, 5).map((h) => ({ type: "address", label: shortAddr(h.matchedAddress), sub: "Address", hit: h })));
+            draw();
+          } catch (err) { log("search", "info", `Address suggestions unavailable (${err.message}).`); }
+        }, C.SEARCH_DEBOUNCE_MS || 700);
+      }
+    });
+    input.addEventListener("keydown", (e) => {
+      if (ul.hidden) return;
+      if (e.key === "ArrowDown") { cur = Math.min(items.length - 1, cur + 1); draw(); e.preventDefault(); }
+      else if (e.key === "ArrowUp") { cur = Math.max(-1, cur - 1); draw(); e.preventDefault(); }
+      else if (e.key === "Enter" && cur >= 0) { e.preventDefault(); e.stopPropagation(); pick(items[cur]); }
+      else if (e.key === "Escape") { items = []; draw(); }
+    });
+    input.addEventListener("blur", () => setTimeout(() => { items = []; draw(); }, 150));
   }
 
   // =======================================================================
@@ -922,7 +1388,8 @@ const Brickline = (() => {
   }
   const normAddr = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
   async function openHouse(src) {
-    house = { loading: true, src, from: view === "area" || src.listing ? "area" : "home", areaGeoid: area && area.geoid };
+    const from = src.listing ? "area" : view === "house" && house ? house.from : view;
+    house = { loading: true, src, from, areaGeoid: sel || (area && area.geoid) };
     htab = 0;
     if (location.hash !== "#house") location.hash = "house"; else route();
     try {
@@ -931,7 +1398,7 @@ const Brickline = (() => {
       else if (src.latlng) { lat = src.latlng.lat; lon = src.latlng.lng; }
       else {
         text = addressFromLink(src.text.trim());
-        const hits = await E().geocode(text);
+        const hits = src.hit ? [src.hit] : await E().geocode(text);
         if (!hits.length) throw new Error(`Couldn't find "${text}". Try the full street address with the city.`);
         lat = hits[0].coordinates.y; lon = hits[0].coordinates.x; details = hits[0].details; text = text || hits[0].matchedAddress;
         house.matched = hits[0].matchedAddress;
@@ -947,6 +1414,8 @@ const Brickline = (() => {
       ]);
       house.ctx = ctx;
       house.geoid = bg && bg.properties && bg.properties.GEOID ? String(bg.properties.GEOID) : null;
+      if (bg && bg.geometry) addOutline(bg);
+      if (house.geoid) { sel = house.geoid; house.areaGeoid = house.areaGeoid || house.geoid; if (view === "house") drawSel(); }
       const parcel = ctx.parcel && ctx.parcel.value;
       house.address = (listing && listing.address) || (parcel && parcel.address) || house.matched || text || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
       if (!listing && PERSONAL && D.listings.length) {
@@ -973,11 +1442,12 @@ const Brickline = (() => {
   function renderHouse() {
     const P = $("#panel");
     if (!house) {
-      P.innerHTML = `<div class="pad"><div class="qhead"><h2>Check a house</h2><p>Paste an address or a Redfin / Zillow link, or click any lot on the map.</p></div><form class="gate" id="houseForm" autocomplete="off"><div class="row"><input id="houseQ" type="text" aria-label="Address or listing link" placeholder="Address or listing link"><button class="btn" type="submit">Check it</button></div></form></div>`;
-      $("#houseForm").onsubmit = (e) => { e.preventDefault(); const v = $("#houseQ").value.trim(); if (v) openHouse({ text: v }); };
+      P.innerHTML = `<div class="pad"><div class="qhead"><h2>Look up a place</h2><p>An address, a neighbourhood, a city or a zip code. Or click the map.</p></div><form class="gate" id="houseForm" autocomplete="off"><div class="row"><input id="houseQ" type="text" aria-label="Address, neighbourhood or zip" placeholder="Address, neighbourhood or zip"><button class="btn" type="submit">Look it up</button></div></form></div>`;
+      attachSuggest($("#houseQ"), lookUp);
+      $("#houseForm").onsubmit = (e) => { e.preventDefault(); const v = $("#houseQ").value.trim(); if (v) lookUp(v); };
       return;
     }
-    const back = house.from === "area" && house.areaGeoid ? `<a href="#area-${house.areaGeoid}">← Back to the area</a>` : `<a href="#home">← New search</a>`;
+    const back = house.from === "place" && place ? `<a href="#place">← Back to ${esc(place.name)}</a>` : house.from === "find" ? `<a href="#find">← Back to the questions</a>` : house.from === "area" && house.areaGeoid ? `<a href="#area-${house.areaGeoid}">← Back to the area</a>` : `<a href="#home">← New search</a>`;
     if (house.error) { P.innerHTML = `<div class="card-head"><div class="crumb">${back}</div></div><div class="pad"><div class="empty">${esc(house.error)}</div></div>`; return; }
     if (house.loading) { P.innerHTML = `<div class="card-head"><div class="crumb">${back}</div><h2>Looking it up…</h2><p>Lot, zoning, hazards and the neighbourhood.</p></div>`; return; }
     const ctx = house.ctx, parcel = ctx.parcel && ctx.parcel.value, zoning = ctx.zoning && ctx.zoning.value, jur = ctx.jurisdiction && ctx.jurisdiction.value;
@@ -1074,8 +1544,8 @@ const Brickline = (() => {
     const parcel = house.ctx.parcel && house.ctx.parcel.value;
     if (parcel && parcel.feature) {
       const lay = L.geoJSON(parcel.feature, { interactive: false, style: { color: "#0b6e66", weight: 3, fillColor: "#0b6e66", fillOpacity: 0.06 } }).addTo(focusLayer);
-      map.fitBounds(lay.getBounds(), { padding: [80, 80], maxZoom: 20 });
-    } else map.setView([house.lat, house.lon], 18);
+      if (map.getZoom() < 17 || !map.getBounds().contains(lay.getBounds())) map.fitBounds(lay.getBounds(), { padding: [80, 80], maxZoom: 19 });
+    } else if (map.getZoom() < 17) map.setView([house.lat, house.lon], 18);
     const b = house.build;
     if (b && !b.unavailable) {
       (b.buildings || []).forEach((f) => L.geoJSON(f, { interactive: false, style: { color: "#6b7a76", weight: 1, fillColor: "#6b7a76", fillOpacity: 0.45 } }).addTo(focusLayer));
@@ -1083,9 +1553,10 @@ const Brickline = (() => {
       if (b.largest && b.largest.ring) L.polygon(b.largest.ring.map(([x, y]) => [y, x]), { interactive: false, color: "#1f8a4c", weight: 1.5, fillColor: "#1f8a4c", fillOpacity: 0.3 }).bindTooltip(`ADU space ~${b.largest.wFt}×${b.largest.hFt} ft`, { permanent: true, direction: "center" }).addTo(focusLayer);
     }
     L.circleMarker([house.lat, house.lon], { interactive: false, radius: 7, color: "#fff", weight: 2, fillColor: "#0b6e66", fillOpacity: 1 }).addTo(pinLayer);
-    renderLayerPanel(house.hazards, map.getBounds());
-    $("#map-hint").textContent = "Click another lot to check it";
-    $("#map-hint").hidden = false;
+    drawSel();
+    renderLayerPanel();
+    updateHint();
+    restack();
   }
 
   // =======================================================================
@@ -1114,17 +1585,21 @@ const Brickline = (() => {
   function route() {
     const h = (location.hash || "#home").slice(1);
     const m = h.match(/^area-(\d{12})$/);
-    view = m ? "area" : ["home", "find", "house"].includes(h) ? h : "home";
-    if (m && (!area || area.geoid !== m[1])) { area = { geoid: m[1] }; atab = 0; areaDetails(m[1]).promise.then(() => { if (view === "area" && area.geoid === m[1]) { const hz = areaDetails(m[1]).hazards; shownLayers = new Set(Object.entries(hz.present).filter(([, v]) => v).map(([k]) => k)); renderArea(); drawAreaMap(); } }); }
+    view = m ? "area" : ["home", "find", "house", "place"].includes(h) ? h : "home";
+    if (m && (!area || area.geoid !== m[1])) { area = { geoid: m[1] }; atab = 0; areaDetails(m[1]).promise.then(() => { if (view === "area" && area.geoid === m[1]) { renderArea(); drawAreaMap(); } }); }
     $("#view-home").hidden = view !== "home";
     $("#workspace").hidden = view === "home";
-    const nav = view === "area" ? "find" : view;
+    const nav = view === "area" ? "find" : view === "place" ? "house" : view;
     document.querySelectorAll(".nav a").forEach((a) => (a.dataset.v === nav ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
     if (view === "home") return;
-    setTimeout(() => map.invalidateSize(), 0);
-    dotLayer.eachLayer((d) => d.setStyle({ opacity: view === "find" ? 1 : 0 }));
-    if (view === "find") { clearFocus(); $("#map-overlay").hidden = false; renderFind(); drawIsos(); if (map.getZoom() > 13) map.setView(C.MAP_CENTER, 10); }
-    else { $("#map-overlay").hidden = true; isoLayer.clearLayers(); }
+    setTimeout(() => { map.invalidateSize(); onMove(); }, 0);
+    if (view === "find") { clearFocus(); renderFind(); drawIsos(); drawSel(); }
+    else isoLayer.clearLayers();
+    if (view === "place") { clearFocus(); renderPlace(); drawPlaceMap(false); }
+    renderOverlay();
+    renderPreview();
+    renderLayerPanel();
+    updateHint();
     if (view === "area") { if (D.census) { renderArea(); drawAreaMap(); } else $("#panel").innerHTML = `<div class="pad"><p class="loading">Loading…</p></div>`; }
     if (view === "house") { renderHouse(); drawHouseMap(); }
   }
@@ -1148,19 +1623,22 @@ const Brickline = (() => {
   async function init() {
     initStatus();
     initMap();
-    $("#home-search").onsubmit = (e) => { e.preventDefault(); const v = $("#home-q").value.trim(); if (v) openHouse({ text: v }); else $("#home-q").focus(); };
+    attachSuggest($("#home-q"), lookUp);
+    $("#home-search").onsubmit = (e) => { e.preventDefault(); const v = $("#home-q").value.trim(); if (v) lookUp(v); else $("#home-q").focus(); };
     window.addEventListener("hashchange", route);
     route();
+    loadPlaces();
     await loadAll();
-    buildDots();
-    if (view === "find") { renderFind(); updateDots(); }
+    totalAreas = allMetrics().length;
+    ready = true;
+    if (view === "find") { renderFind(); updateMatches(); }
     else route();
   }
 
   return {
     init,
     // For tests: the pieces a browser test checks without clicking through.
-    forTest: { get state() { return { S, D, view, area, house, step, dots: dots.size, PERSONAL }; }, metrics, passes, postLead, openArea, openHouse, densBand },
+    forTest: { styleOf: (g) => outlineStyle(g), get place() { return place && { name: place.name, n: place.geoids ? place.geoids.size : null, error: place.error || null }; }, get places() { return places.length; }, get state() { return { S, D, view, area, house, step, ready, sel, PERSONAL, outlines: bgPolys.size, drawn: map.hasLayer(bgLayer) ? bgPolys.size : 0, shown: [...shownLayers], hazards: hazardLayer.getLayers().length, rasters: rasterLayer.getLayers().length }; }, get map() { return map; }, metrics, passes, postLead, openArea, openHouse, densBand },
   };
 })();
 
