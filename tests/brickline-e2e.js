@@ -291,6 +291,8 @@ async function main() {
   await page.click("#next"); // household
   await page.$eval("#hhMax", (el) => { el.value = "2"; el.dispatchEvent(new Event("input")); });
   await page.$eval("#hhMin", (el) => { el.value = "3"; el.dispatchEvent(new Event("input")); });
+  await shot(page, "10-household");
+  step("household size is one bar with two knobs", (await page.locator(".mslider #hhMin").count()) === 1 && (await page.locator(".mslider #hhMax").count()) === 1 && /2\.0–3\.0 people|3\.0–3\.0 people/.test(await page.innerText("#hh-o")));
   step("household from/to can't cross", await page.evaluate(() => { const s = Brickline.forTest.state.S; return s.hhMin <= s.hhMax && s.hhMax === 3; }));
   await page.$eval("#hhMin", (el) => { el.value = "1"; el.dispatchEvent(new Event("input")); });
   await page.$eval("#hhMax", (el) => { el.value = "6"; el.dispatchEvent(new Event("input")); });
@@ -298,8 +300,12 @@ async function main() {
   await page.click("#next"); // age mix
   step("age mix is off by default", !(await page.isChecked("#useMix")));
   await page.click("#useMix");
-  await page.$eval("#mix0", (el) => { el.value = "70"; el.dispatchEvent(new Event("input")); });
-  step("the three age shares always add to 100", await page.evaluate(() => Brickline.forTest.state.S.mix.reduce((a, b) => a + b, 0) === 100));
+  step("age mix is one bar with a knob at each boundary", (await page.locator(".mix .mslider input[type=range]").count()) === 2 && (await page.locator(".mix .rail i").count()) === 3);
+  await page.$eval("#mixA", (el) => { el.value = "70"; el.dispatchEvent(new Event("input")); });
+  step("the three age shares always add to 100", await page.evaluate(() => { const m = Brickline.forTest.state.S.mix; return m.reduce((a, b) => a + b, 0) === 100 && m[0] === 70; }));
+  await shot(page, "11-age");
+  await page.$eval("#mixA", (el) => { el.value = "99"; el.dispatchEvent(new Event("input")); });
+  step("...and the knobs can't cross", await page.evaluate(() => Brickline.forTest.state.S.mix.every((x) => x >= 0)));
   await page.click("#useMix");
 
   await page.click("#next"); // schools

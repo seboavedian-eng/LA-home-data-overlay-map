@@ -332,3 +332,28 @@ table.comps { width: 100%; border-collapse: collapse; font-size: 13px; }
 }
 .wcount { padding: 8px 22px 0; font-size: 13.5px; color: var(--muted); }
 .wcount b { color: var(--accent); font-size: 15px; }
+
+/* Headlines in a serif, like Claude's. System fonts only: no download, and
+   no fallback to a squeezed "narrow" font on computers that lack one. */
+:root { --f-display: ui-serif, "Iowan Old Style", "Charter", "Palatino Linotype", Palatino, Georgia, Cambria, "Times New Roman", serif; }
+.hero h1 { font-weight: 500; letter-spacing: -.015em; line-height: 1.05; }
+.brand { font-weight: 600; letter-spacing: -.01em; }
+.choice b, .qhead h2, .card-head h2, .ehead h2, .res .t b, .summary h3, .cta b, .doc h1, .filter-pop .fhead b { font-weight: 500; }
+.count b, .ecount b { font-weight: 600; }
+
+/* One bar, several knobs: stacked range inputs over a shared rail. The rail
+   is inset by half a knob so its ends line up with the knob centres. */
+.mslider { position: relative; height: 30px; }
+.mslider .rail { position: absolute; left: 10px; right: 10px; top: 12px; height: 6px; border-radius: 3px; background: var(--surface-2); border: 1px solid var(--line); display: flex; overflow: hidden; }
+.mslider .rail .seg { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+.mslider.tall .rail { height: 12px; top: 9px; border-radius: 6px; }
+.mslider input { position: absolute; left: 0; top: 0; width: 100%; height: 30px; margin: 0; background: none; pointer-events: none; -webkit-appearance: none; appearance: none; z-index: 2; }
+.mslider input::-webkit-slider-runnable-track { background: transparent; height: 30px; border: 0; }
+.mslider input::-moz-range-track { background: transparent; border: 0; }
+.mslider input::-webkit-slider-thumb { -webkit-appearance: none; pointer-events: auto; width: 20px; height: 20px; margin-top: 5px; border-radius: 50%; background: #fff; border: 2px solid var(--accent); box-shadow: 0 1px 3px rgba(0, 0, 0, .25); cursor: grab; }
+.mslider input::-moz-range-thumb { pointer-events: auto; width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 2px solid var(--accent); box-shadow: 0 1px 3px rgba(0, 0, 0, .25); cursor: grab; }
+.mslider input:focus-visible::-webkit-slider-thumb { outline: 3px solid var(--accent-soft); }
+.mixlegend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
+.mixlegend span { display: inline-flex; align-items: center; gap: 6px; }
+.mixlegend i { width: 10px; height: 10px; border-radius: 3px; }
+.mixlegend b { font-family: var(--f-mono); font-weight: 500; }

@@ -672,6 +672,21 @@ const Brickline = (() => {
     if (!el) return;
     el.oninput = () => { set(+el.value); document.getElementById(id + "-o").textContent = fmt(+el.value); if (after) after(); updateMatches(); };
   }
+  const pctOf = (v, min, max) => ((v - min) / (max - min)) * 100;
+  function paintHousehold() {
+    const seg = $("#hhSeg");
+    if (seg) { seg.style.left = pctOf(S.hhMin, 1, 6) + "%"; seg.style.width = pctOf(S.hhMax, 1, 6) - pctOf(S.hhMin, 1, 6) + "%"; }
+    const o = $("#hh-o"); if (o) o.textContent = `${S.hhMin.toFixed(1)}–${S.hhMax.toFixed(1)} people`;
+    // Both knobs at the top: lift the lower one so it can still be dragged back.
+    const a = $("#hhMin"); if (a) a.style.zIndex = S.hhMin >= 5.5 ? 4 : 2;
+  }
+  function paintMix() {
+    [0, 1, 2].forEach((k) => {
+      const seg = $("#mixSeg" + k); if (seg) seg.style.width = S.mix[k] + "%";
+      const l = $("#mixL" + k); if (l) l.textContent = S.mix[k] + "%";
+    });
+    const a = $("#mixA"); if (a) a.style.zIndex = S.mix[0] >= 90 ? 4 : 2;
+  }
   function setMix(i, v) {
     v = clamp(v, 0, 100);
     const o = [0, 1, 2].filter((k) => k !== i), rest = 100 - v, cur = S.mix[o[0]] + S.mix[o[1]];
@@ -743,10 +758,16 @@ const Brickline = (() => {
     if (i === 2) return rangeField("det", "Detached houses on the block, at least", 0, 90, 5, S.detMin, (v) => (v ? `${v}%+ houses` : "Any mix")) + `<div class="ends"><span>More apartments</span><span>More houses</span></div>`;
     if (i === 3) return rangeField("edu", "At least", 0, 80, 5, S.edu, (v) => (v ? v + "%" : "Any"), cty.edu, `LA County ≈ ${cty.edu}%`);
     if (i === 4) return rangeField("inc", "At least", 0, 200000, 10000, S.inc, (v) => (v ? fmtK(v) : "Any"), cty.inc, `LA County ≈ ${fmtK(cty.inc)}`);
-    if (i === 5) { const hf = (v) => (+v).toFixed(1) + " people"; return rangeField("hhMin", "From", 1, 6, 0.1, S.hhMin, hf, cty.hh, `LA County ≈ ${cty.hh}`) + rangeField("hhMax", "To", 1, 6, 0.1, S.hhMax, hf); }
+    if (i === 5) {
+      const avg = cty.hh != null ? `<div class="avg"><span style="left:${clamp(pctOf(cty.hh, 1, 6), 8, 92)}%">LA County ≈ ${cty.hh}</span></div>` : "";
+      return `<div class="field"><label for="hhMin">People per home, from and to</label><div class="range"><div class="track"><div class="mslider"><div class="rail"><i class="seg" id="hhSeg"></i></div><input id="hhMin" type="range" min="1" max="6" step="0.1" value="${S.hhMin}" aria-label="From"><input id="hhMax" type="range" min="1" max="6" step="0.1" value="${S.hhMax}" aria-label="To"></div>${avg}</div><output id="hh-o"></output></div></div>`;
+    }
     if (i === 6) {
       return `<label class="toggle"><input type="checkbox" id="useMix" ${S.useMix ? "checked" : ""}> Use age mix in my search</label>` +
-        (S.useMix ? `<div class="mix"><div class="mixbar" aria-hidden="true">${S.mix.map((v, k) => `<i style="width:${v}%;background:${AGE_COL[k]}"></i>`).join("")}</div>${S.mix.map((v, k) => rangeField("mix" + k, `<span style="color:${AGE_COL[k]}">●</span> ${AGE_L[k]}`, 0, 100, 1, v, (x) => x + "%", cty.mix && cty.mix[k], cty.mix ? `County ≈ ${cty.mix[k]}%` : "")).join("")}<p class="note">The three always add up to 100%. Areas within about 12 points of your mix stay on the map.</p></div>` : `<p class="note">Off by default. Turn it on only if the age mix matters to you.</p>`);
+        (S.useMix ? `<div class="mix"><div class="mslider tall"><div class="rail">${[0, 1, 2].map((k) => `<i id="mixSeg${k}" style="background:${AGE_COL[k]}"></i>`).join("")}</div><input id="mixA" type="range" min="0" max="100" step="1" value="${S.mix[0]}" aria-label="Where under 35 ends"><input id="mixB" type="range" min="0" max="100" step="1" value="${S.mix[0] + S.mix[1]}" aria-label="Where 65 and over starts"></div>
+          <div class="mixlegend">${[0, 1, 2].map((k) => `<span><i style="background:${AGE_COL[k]}"></i>${AGE_L[k]} <b id="mixL${k}"></b></span>`).join("")}</div>
+          ${cty.mix ? `<p class="note">LA County: ${AGE_L.map((l, k) => `${l.toLowerCase()} ≈ ${cty.mix[k]}%`).join(" · ")}</p>` : ""}
+          <p class="note">Drag the two knobs to split the bar; the three parts always add up to 100%. Areas within about 12 points of your mix stay on the map.</p></div>` : `<p class="note">Off by default. Turn it on only if the age mix matters to you.</p>`);
     }
     return ratingsAvailable()
       ? rangeField("sE", "Elementary", 0, 10, 1, S.sE, (v) => (v ? v + "/10" : "Any")) + rangeField("sM", "Middle", 0, 10, 1, S.sM, (v) => (v ? v + "/10" : "Any")) + rangeField("sH", "High", 0, 10, 1, S.sH, (v) => (v ? v + "/10" : "Any"))
@@ -779,13 +800,22 @@ const Brickline = (() => {
     if (i === 3) bindRange("edu", (v) => (v ? v + "%" : "Any"), (v) => (S.edu = v));
     if (i === 4) bindRange("inc", (v) => (v ? fmtK(v) : "Any"), (v) => (S.inc = v));
     if (i === 5) {
-      const hf = (v) => (+v).toFixed(1) + " people";
-      bindRange("hhMin", hf, (v) => { S.hhMin = v; if (S.hhMax < v) { S.hhMax = v; $("#hhMax").value = v; $("#hhMax-o").textContent = hf(v); } });
-      bindRange("hhMax", hf, (v) => { S.hhMax = v; if (S.hhMin > v) { S.hhMin = v; $("#hhMin").value = v; $("#hhMin-o").textContent = hf(v); } });
+      // Two knobs on one bar; dragging one past the other pushes it along.
+      const a = $("#hhMin"), b = $("#hhMax");
+      a.oninput = () => { S.hhMin = +a.value; if (S.hhMax < S.hhMin) { S.hhMax = S.hhMin; b.value = S.hhMax; } paintHousehold(); updateMatches(); };
+      b.oninput = () => { S.hhMax = +b.value; if (S.hhMin > S.hhMax) { S.hhMin = S.hhMax; a.value = S.hhMin; } paintHousehold(); updateMatches(); };
+      paintHousehold();
     }
     if (i === 6) {
       $("#useMix").onchange = (e) => { S.useMix = e.target.checked; again(); updateMatches(); };
-      if (S.useMix) [0, 1, 2].forEach((k) => { const el = document.getElementById("mix" + k); el.oninput = () => { setMix(k, +el.value); updateMatches(); }; });
+      if (S.useMix) {
+        // Knob A ends "under 35", knob B starts "65 and over"; they can't cross.
+        const a = $("#mixA"), b = $("#mixB");
+        const set = () => { const x = +a.value, y = +b.value; S.mix = [x, y - x, 100 - y]; paintMix(); updateMatches(); };
+        a.oninput = () => { if (+a.value > +b.value) a.value = b.value; set(); };
+        b.oninput = () => { if (+b.value < +a.value) b.value = a.value; set(); };
+        paintMix();
+      }
     }
     if (i === 7 && ratingsAvailable()) { bindRange("sE", (v) => (v ? v + "/10" : "Any"), (v) => (S.sE = v)); bindRange("sM", (v) => (v ? v + "/10" : "Any"), (v) => (S.sM = v)); bindRange("sH", (v) => (v ? v + "/10" : "Any"), (v) => (S.sH = v)); }
   }
