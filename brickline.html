@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css" />
 <!-- ?v= is bumped with every release, for the same reason as blockgroups.html:
      a cached old script under a new page shows controls that do nothing. -->
-<link rel="stylesheet" href="css/brickline.css?v=2026-11-06" />
+<link rel="stylesheet" href="css/brickline.css?v=2026-11-07" />
 </head>
 <body>
   <header class="top">
@@ -16,7 +16,7 @@
     <nav class="nav" aria-label="Views">
       <a href="#home" data-v="home">Home</a>
       <a href="#find" data-v="find"><span class="lg">Find a neighbourhood</span><span class="sm">Areas</span></a>
-      <a href="#house" data-v="house"><span class="lg">Look up a place</span><span class="sm">Look up</span></a>
+      <a href="#lookup" data-v="lookup"><span class="lg">Look up a place</span><span class="sm">Look up</span></a>
     </nav>
     <span class="pilot" id="pilot-tag">Pilot</span>
     <button type="button" class="status-btn" id="status-btn" aria-expanded="false" title="Which data sources answered"><span class="lg">Data status</span><span class="sm">Data</span></button>
@@ -44,6 +44,7 @@
         </div>
       </div>
       <div class="trust"><span>Census, county and city sources</span><span>Built for LA County</span><span>Free during the pilot</span></div>
+      <p class="legal"><a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a> · Estimates for research, not an appraisal or advice.</p>
     </div>
   </section>
 
@@ -68,13 +69,13 @@
 <script src="vendor/maplibre/maplibre-gl.js"></script>
 <script src="vendor/maplibre/leaflet-maplibre-gl.js"></script>
 <script src="vendor/turf/turf.min.js"></script>
-<script src="js/utils.js?v=2026-11-06"></script>
-<script src="js/core/layers.js?v=2026-11-06"></script>
-<script src="js/core/envelope.js?v=2026-11-06"></script>
+<script src="js/utils.js?v=2026-11-07"></script>
+<script src="js/core/layers.js?v=2026-11-07"></script>
+<script src="js/core/envelope.js?v=2026-11-07"></script>
 <!-- The explorer's script supplies BG_CONFIG and its lookup engine; this flag
      stops it building its own map and panels into this page. -->
-<script>window.BLOCKGROUPS_HEADLESS = true;</script>
-<script src="js/blockgroups.js?v=2026-11-06"></script>
-<script src="js/brickline/app.js?v=2026-11-06"></script>
+<script src="js/brickline/headless.js?v=2026-11-07"></script>
+<script src="js/blockgroups.js?v=2026-11-07"></script>
+<script src="js/brickline/app.js?v=2026-11-07"></script>
 </body>
 </html>

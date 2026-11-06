@@ -109,7 +109,24 @@ const Brickline = (() => {
     try { localStorage.setItem(BG_INDEX_KEY, JSON.stringify({ at: new Date().toISOString().slice(0, 10), rows })); } catch (err) { /* fine */ }
   }
 
+  // On the public server (server/brickline_server.py), /api/config says
+  // which lookups it proxies; keys never reach the browser there. On your
+  // own machine it 404s and the page reads the key file as before.
+  async function loadConfig() {
+    try {
+      const res = await fetch("api/config", { cache: "no-store" });
+      D.cfg = res.ok ? await res.json() : {};
+    } catch (err) { D.cfg = {}; }
+    if (!D.cfg || typeof D.cfg !== "object") D.cfg = {};
+  }
+  const routing = () => !!(D.orsKey || D.orsProxy);
   async function loadOrsKey() {
+    if (D.cfg && D.cfg.ors) {
+      D.orsProxy = true;
+      log("commute", "ok", "Commute areas follow the road network (through the Brickline server).");
+      return;
+    }
+    if (!PERSONAL) { log("commute", "info", "Commute areas are straight-line estimates on this site."); return; }
     try {
       const res = await fetch(C.ORS_KEY_FILE, { cache: "no-cache" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -251,16 +268,19 @@ const Brickline = (() => {
   const isoCache = new Map();
   async function commuteArea(c) {
     const eff = Math.max(5, Math.round(c.min / (S.rush ? RUSH_FACTOR : 1)));
-    const key = `${c.lat.toFixed(4)},${c.lon.toFixed(4)},${eff},${D.orsKey ? "ors" : "line"}`;
+    const key = `${c.lat.toFixed(4)},${c.lon.toFixed(4)},${eff},${routing() ? "ors" : "line"}`;
     if (isoCache.has(key)) return isoCache.get(key);
     let result;
-    if (D.orsKey) {
+    if (routing()) {
       try {
-        const res = await fetch(C.ORS_ISOCHRONES, {
-          method: "POST",
-          headers: { Authorization: D.orsKey, "Content-Type": "application/json" },
-          body: JSON.stringify({ locations: [[c.lon, c.lat]], range: [Math.min(3600, eff * 60)], range_type: "time" }),
-        });
+        const seconds = Math.min(3600, eff * 60);
+        const res = D.orsProxy
+          ? await fetch("api/isochrone", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lon: c.lon, lat: c.lat, seconds }) })
+          : await fetch(C.ORS_ISOCHRONES, {
+            method: "POST",
+            headers: { Authorization: D.orsKey, "Content-Type": "application/json" },
+            body: JSON.stringify({ locations: [[c.lon, c.lat]], range: [seconds], range_type: "time" }),
+          });
         const data = await res.json();
         if (!res.ok || !data.features || !data.features.length) throw new Error((data.error && (data.error.message || data.error)) || `HTTP ${res.status}`);
         result = { poly: data.features[0], how: "road network (OpenRouteService)" };
@@ -285,7 +305,7 @@ const Brickline = (() => {
     if (!c.text.trim()) { c.lat = c.lon = null; c.area = null; c.found = ""; renderQ(); refreshCommutes(); return; }
     c.found = "Finding…"; renderFound(i);
     try {
-      const hits = await E().geocode(c.text.trim());
+      const hits = await geocodeText(c.text.trim());
       if (!hits.length) throw new Error("no match");
       c.lat = hits[0].coordinates.y; c.lon = hits[0].coordinates.x;
       c.found = hits[0].matchedAddress; c.err = false;
@@ -367,7 +387,7 @@ const Brickline = (() => {
     // canvas, so they never cover it or catch clicks (a tile pane is fine; a
     // vector pane would be a second canvas that swallows clicks).
     map.createPane("rasterOverlay");
-    map.getPane("rasterOverlay").style.zIndex = 380;
+    map.getPane("rasterOverlay").style.zIndex = 350;   // under the vector canvas (400): air quality etc. draw over noise
     map.getPane("rasterOverlay").style.pointerEvents = "none";
     rasterLayer = L.layerGroup().addTo(map);
     bgLayer = L.layerGroup();
@@ -685,7 +705,7 @@ const Brickline = (() => {
     if (step === 0) {
       body = S.commutes.map((c, k) => `<div class="commute"><form class="row" data-geo="${k}"><input type="text" id="c-addr-${k}" placeholder="${k ? "Partner's work address" : "Work address"}" value="${esc(c.text)}" aria-label="Commute destination ${k + 1}"><button class="btn ghost" type="submit">Set</button>${k ? `<button class="x" type="button" data-rm="${k}" aria-label="Remove this commute">×</button>` : ""}</form><span class="found" id="c-found-${k}"></span>${rangeField("c-min-" + k, "Up to", 10, 90, 5, c.min, (v) => v + " min")}</div>`).join("") +
         (S.commutes.length < 3 ? `<button class="add" id="addC" type="button">+ Add another commute</button>` : "") +
-        `<label class="toggle"><input type="checkbox" id="rush" ${S.rush ? "checked" : ""}> Rush-hour traffic (about ${RUSH_FACTOR}× free-flow time)</label><p class="note">${D.orsKey ? "Areas follow the road network (OpenRouteService, no live traffic; rush hour is an estimate)." : `No routing key, so areas are straight-line estimates at ${FALLBACK_MPH} mph.`}</p>`;
+        `<label class="toggle"><input type="checkbox" id="rush" ${S.rush ? "checked" : ""}> Rush-hour traffic (about ${RUSH_FACTOR}× free-flow time)</label><p class="note">${routing() ? "Areas follow the road network (OpenRouteService, no live traffic; rush hour is an estimate)." : `No routing key, so areas are straight-line estimates at ${FALLBACK_MPH} mph.`}</p>`;
     }
     if (step === 1) {
       body = `<div class="sub">People around you</div><div class="opts">${DENS.map((b, i) => `<button type="button" class="opt" data-d="${i}" aria-pressed="${S.dens.has(i)}"><i style="background:${b.color}"></i><div><b>${b.label}</b><span>${b.sub}</span></div><span class="n">${b.num}</span></button>`).join("")}</div>` +
@@ -752,17 +772,50 @@ const Brickline = (() => {
       household: [S.hhMin, S.hhMax], ageMix: S.useMix ? S.mix : null, schools: ratingsAvailable() ? { e: S.sE, m: S.sM, h: S.sH } : null,
     };
   }
+  // The answers in one short code, for the "open your results" link.
+  function answersCode() {
+    const o = { c: S.commutes.filter((c) => c.lat != null).map((c) => [String(c.found || c.text).slice(0, 80), c.min, +c.lat.toFixed(5), +c.lon.toFixed(5)]), r: S.rush ? 1 : 0, d: [...S.dens], h: S.detMin, e: S.edu, i: S.inc, s: [S.hhMin, S.hhMax], m: S.useMix ? S.mix : 0, k: [S.sE, S.sM, S.sH] };
+    return btoa(unescape(encodeURIComponent(JSON.stringify(o)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function restoreAnswers(code) {
+    try {
+      const o = JSON.parse(decodeURIComponent(escape(atob(code.replace(/-/g, "+").replace(/_/g, "/")))));
+      const n = (v, a, b, d) => (Number.isFinite(+v) ? clamp(+v, a, b) : d);
+      S.commutes = (Array.isArray(o.c) ? o.c : []).slice(0, 3).map((c) => ({ text: String(c[0] || "").slice(0, 120), found: String(c[0] || "").slice(0, 120), min: n(c[1], 10, 90, 35), lat: n(c[2], 32, 36, null), lon: n(c[3], -120, -116, null) })).filter((c) => c.lat != null && c.lon != null);
+      if (!S.commutes.length) S.commutes = [{ text: "", min: 35 }];
+      S.rush = !!o.r;
+      S.dens = new Set((Array.isArray(o.d) ? o.d : []).map(Number).filter((i) => i >= 0 && i < DENS.length));
+      S.detMin = n(o.h, 0, 90, 0); S.edu = n(o.e, 0, 80, 0); S.inc = n(o.i, 0, 200000, 0);
+      S.hhMin = n(o.s && o.s[0], 1, 6, 1); S.hhMax = n(o.s && o.s[1], 1, 6, 6);
+      S.useMix = Array.isArray(o.m) && o.m.length === 3; if (S.useMix) S.mix = o.m.map((x) => n(x, 0, 100, 33));
+      [S.sE, S.sM, S.sH] = (Array.isArray(o.k) ? o.k : [0, 0, 0]).map((x) => n(x, 0, 10, 0));
+      S.gateSeen = true; S.searchLogged = true; step = NQ;
+      return true;
+    } catch (err) {
+      log("results", "warn", "That results link couldn't be read; start the questions again.");
+      return false;
+    }
+  }
+  function shortlist() {
+    const M = SORTS[SORT.k] || SORTS.edu;
+    return allMetrics().filter((m) => passes(m, 7)).map((m) => ({ m, v: M.v(m) })).sort((a, b) => (a.v == null ? 1 : b.v == null ? -1 : SORT.dir === "asc" ? a.v - b.v : b.v - a.v)).map((x) => x.m);
+  }
+  function emailResults(list) {
+    return list.slice(0, 10).map((m) => ({ geoid: m.geoid, name: areaName(m.geoid), busy: densBand(m.density) >= 0 ? DENS[densBand(m.density)].label : "", houses: m.det, income: m.inc, price: D.prices && D.prices[m.geoid] ? D.prices[m.geoid].medianSalePrice : null }));
+  }
   function renderGate(pane) {
     const n = allMetrics().filter((m) => passes(m, 7)).length;
+    const shownAt = Date.now();
     pane.innerHTML = `<div class="qhead"><span class="qnum">Almost there</span><h2>${n.toLocaleString()} ${n === 1 ? "area fits" : "areas fit"} what you asked for</h2><p>Where should we send your shortlist? We may also ask what you thought of the tool.</p></div>
-      <form class="gate" id="gateForm" novalidate><label class="lbl" for="gEmail">Email</label><div class="row"><input id="gEmail" type="email" placeholder="you@example.com" autocomplete="email"><button class="btn" type="submit">Show my results</button></div><span class="err" id="gErr" hidden></span><p class="note">Used only to send your shortlist and ask for feedback. No spam.</p></form>
+      <form class="gate" id="gateForm" novalidate><label class="lbl" for="gEmail">Email</label><div class="row"><input id="gEmail" type="email" placeholder="you@example.com" autocomplete="email"><button class="btn" type="submit">Show my results</button></div><input type="text" id="gWeb" name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true"><span class="err" id="gErr" hidden></span><p class="note">Used only to send your shortlist and ask for feedback. No spam. <a href="privacy.html">Privacy</a></p></form>
       <button type="button" class="linkbtn" id="gSkip" style="color:var(--muted)">Skip for now and show results</button>`;
     $("#gateForm").onsubmit = async (e) => {
       e.preventDefault();
       const v = $("#gEmail").value.trim();
       if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(v)) { $("#gErr").textContent = "That doesn't look like an email address."; $("#gErr").hidden = false; return; }
-      const r = await postLead("lead", { email: v, journey: "neighbourhood", answers: answersSummary() });
-      S.email = v; S.gateSeen = true; S.savedWhere = r.where; renderQ();
+      const list = shortlist();
+      const r = await postLead("lead", { email: v, journey: "neighbourhood", answers: answersSummary(), answerLines: appliedChips(), count: list.length, results: emailResults(list), r: answersCode(), website: $("#gWeb").value, t: Date.now() - shownAt });
+      S.email = v; S.gateSeen = true; S.savedWhere = r.where; S.emailed = !!r.emailed; renderQ();
     };
     $("#gSkip").onclick = () => { S.gateSeen = true; renderQ(); };
   }
@@ -792,7 +845,7 @@ const Brickline = (() => {
       return SORT.dir === "asc" ? a.v - b.v : b.v - a.v;
     });
     const shown = hits.slice(0, 25);
-    pane.innerHTML = `<div class="qhead"><span class="qnum">Results${S.email ? ` · ${S.savedWhere === "device" ? "saved on this device" : "we'll email " + esc(S.email)}` : ""}</span><h2>${hits.length.toLocaleString()} ${hits.length === 1 ? "area fits" : "areas fit"} what you asked for</h2><p>Each is a Census block group (a few city blocks). Open one to see what it's like${PERSONAL ? " and the homes for sale in it" : ""}.</p></div>` +
+    pane.innerHTML = `<div class="qhead"><span class="qnum">Results${S.email ? ` · ${S.savedWhere === "device" ? "saved on this device" : S.emailed ? "sent to " + esc(S.email) + ", check your inbox" : "saved for " + esc(S.email)}` : ""}</span><h2>${hits.length.toLocaleString()} ${hits.length === 1 ? "area fits" : "areas fit"} what you asked for</h2><p>Each is a Census block group (a few city blocks). Open one to see what it's like${PERSONAL ? " and the homes for sale in it" : ""}.</p></div>` +
       (hits.length ? `<div class="sortbar"><span class="note">Showing ${shown.length} of ${hits.length.toLocaleString()}</span><div class="ctl"><label for="sortK" class="note">Sort by</label><select id="sortK">${keys.map((k) => `<option value="${k}" ${k === SORT.k ? "selected" : ""}>${SORTS[k].l}</option>`).join("")}</select><button type="button" id="sortDir">${SORT.dir === "asc" ? "↑ Low to high" : "↓ High to low"}</button></div></div>
         <div class="results">${shown.map(({ m, v }) => resultCard(m, M.f(v))).join("")}</div>` : `<div class="empty">Nothing matches every answer. Try a longer commute, or loosen income or the other filters.</div>`);
     const sk = $("#sortK"); if (sk) sk.onchange = () => { SORT.k = sk.value; SORT.dir = SORTS[SORT.k].d; renderResults(pane); };
@@ -1117,20 +1170,20 @@ const Brickline = (() => {
     return "";
   }
   // What each drawn line means, listed under the layers whenever it is on the map.
-  const KEY = { lot: "#0b6e66", building: "#6b7a76", envelope: "#334155", adu: "#1f8a4c", sel: "#0b6e66", place: "#2f5f9e", commute: "#2f5f9e" };
+  const KEY = { lot: "#d6336c", building: "#6b7a76", envelope: "#334155", adu: "#1f8a4c", sel: "#0b6e66", place: "#2f5f9e", commute: "#2f5f9e" };
   function mapKey() {
     const k = [];
     const line = (c, dash, t, fill) => `<span><i class="k" style="border-color:${c};border-style:${dash ? "dashed" : "solid"};${fill ? `background:${fill}` : ""}"></i>${esc(t)}</span>`;
-    if (map.hasLayer(bgLayer) && bgPolys.size) k.push(`<span><i class="k sw" style="background:linear-gradient(90deg,${DENS.map((d) => d.color).join(",")})"></i>Area shading: street busyness, quiet → busy</span>`);
+    if (map.hasLayer(bgLayer) && bgPolys.size) k.push(`<span><i class="k sw" style="background:linear-gradient(90deg,${DENS.map((d) => d.color).join(",")})"></i>Shading: darker green = quieter street</span>`);
     if (view === "find" && S.commutes.some((c) => c.area)) k.push(line(KEY.commute, true, "Reachable within your commute", "rgba(47,95,158,.08)"));
-    if (place && place.shape) k.push(line(KEY.place, true, `Border of ${place.name}`));
-    if (sel && view !== "house") k.push(line(KEY.sel, false, "Selected area: click inside it to check a house"));
+    if (place && place.shape) k.push(line(KEY.place, true, `${/zip/i.test(place.sub) ? "Zip code" : /city/i.test(place.sub) ? "City" : "Neighbourhood"} border`));
+    if (sel && view !== "house") k.push(line(KEY.sel, false, "Selected area: click inside for a house"));
     if (view === "house" && house && !house.loading && !house.error) {
-      k.push(line(KEY.lot, false, "This lot"));
+      k.push(line(KEY.lot, false, "Selected lot"));
       const b = house.build;
       if (b && !b.unavailable) {
         if ((b.buildings || []).length) k.push(line(KEY.building, false, "Existing buildings", "rgba(107,122,118,.45)"));
-        if (b.mainEnvelope) k.push(line(KEY.envelope, true, "Where the main house may go (zone setbacks)"));
+        if (b.mainEnvelope) k.push(line(KEY.envelope, true, "Where the main house may go"));
         if (b.largest) k.push(line(KEY.adu, false, "Largest open spot for a backyard ADU", "rgba(31,138,76,.3)"));
       }
     }
@@ -1167,6 +1220,9 @@ const Brickline = (() => {
         got.filter((g) => g.status === "rejected").forEach((g) => log("noise", "warn", `A noise service failed: ${g.reason && g.reason.message}`));
         if (!ok.length) throw new Error("no noise service answered");
         lay = L.layerGroup(ok);
+        // Fainter than the explorer's, so vector layers on top stay readable.
+        const fade = (l) => (l.setOpacity ? l.setOpacity(0.4) : l.eachLayer && l.eachLayer(fade));
+        fade(lay);
       } else {
         lay = await E().windOverlay();
         if (!lay) throw new Error("no wind file");
@@ -1212,7 +1268,7 @@ const Brickline = (() => {
     if (k === "pollution") {
       const score = Number(Utils.pickField(p, C.CES_FIELDS.score));
       const b = Number.isFinite(score) ? (C.POLLUTION_BUCKETS || []).find((x) => score <= x.max) : null;
-      return { color: "#8a5a00", weight: 0.4, fillColor: b ? b.color : "#ccc", fillOpacity: b ? 0.45 : 0 };
+      return { color: "#8a5a00", weight: 0.4, fillColor: b ? b.color : "#ccc", fillOpacity: b ? 0.55 : 0 };
     }
     const color = k === "fire" ? (C.FIRE_CLASS_COLORS[E().fireClass(p)] || "#fc8d59") : k === "flood" ? ((E().floodClass(p) || {}).color || "#93c5fd") : (C.SEISMIC_COLORS[p.__hazard] || "#a16207");
     return { color, weight: 0.6, fillColor: color, fillOpacity: k === "flood" && /minimal/i.test((E().floodClass(p) || {}).label || "") ? 0 : 0.35 };
@@ -1317,7 +1373,7 @@ const Brickline = (() => {
     placeLayer.clearLayers();
     styleOutlines();
     renderOverlay();
-    if (view === "place") location.hash = "home";
+    if (view === "place") location.hash = "lookup";
   }
   function drawPlaceMap(fit) {
     placeLayer.clearLayers();
@@ -1329,7 +1385,7 @@ const Brickline = (() => {
   function renderPlace() {
     const P = $("#panel");
     const head = (extra) => `<div class="card-head"><div class="crumb"><a href="#home">← New search</a></div><h2>${esc(place.name)}</h2><p>${esc(place.sub)}${extra || ""}</p></div>`;
-    if (!place) { P.innerHTML = `<div class="pad"><div class="empty">Search for a neighbourhood, a city or a zip code.</div></div>`; return; }
+    if (!place) { renderLookup(); return; }
     if (place.loading) { P.innerHTML = head() + `<div class="pad"><p class="loading">Finding its border and block groups…</p></div>`; return; }
     if (place.error) { P.innerHTML = head() + `<div class="pad"><div class="empty">${esc(place.error)}</div></div>`; return; }
     const ms = [...place.geoids].map(metrics).filter(Boolean);
@@ -1358,6 +1414,24 @@ const Brickline = (() => {
       ${list.length > 60 ? `<p class="note">Showing the first 60 of ${list.length}. Zoom the map to see the rest.</p>` : ""}
     </div>`;
     P.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => openArea(b.dataset.open)));
+  }
+
+  // --- Address search ----------------------------------------------------
+  async function proxyGeo(q, mode) {
+    const res = await fetch(`api/geocode?${new URLSearchParams({ q, mode })}`);
+    if (!res.ok) throw new Error(`address service HTTP ${res.status}`);
+    const rows = await res.json();
+    return (Array.isArray(rows) ? rows : []).map((r) => ({ matchedAddress: r.display_name, coordinates: { x: Number(r.lon), y: Number(r.lat) }, details: r.address || null }));
+  }
+  const geoProxy = () => D.cfg && D.cfg.geocode === "proxy";
+  async function geocodeText(text) {
+    if (geoProxy()) { const hits = await proxyGeo(text, "search").catch(() => []); if (hits.length) return hits; }
+    return E().geocode(text);
+  }
+  async function suggestAddr(q) {
+    if (geoProxy()) return proxyGeo(q, "suggest");
+    if (!PERSONAL) return [];
+    return E().suggestAddresses(q);
   }
 
   // --- The search box, with suggestions as you type ----------------------
@@ -1402,8 +1476,10 @@ const Brickline = (() => {
     let items = [], cur = -1, timer = null, seq = 0;
     const draw = () => {
       ul.hidden = !items.length;
-      ul.innerHTML = items.map((it, i) => `<li role="option" data-i="${i}" aria-selected="${i === cur}"><b>${esc(it.label)}</b><span>${esc(it.sub)}</span></li>`).join("");
-      ul.querySelectorAll("li").forEach((li) => (li.onmousedown = (e) => { e.preventDefault(); pick(items[+li.dataset.i]); }));
+      ul.innerHTML = items.map((it, i) => `<li role="option" data-i="${i}" aria-selected="${i === cur}"><b>${esc(it.label)}</b><span>${esc(it.sub)}</span></li>`).join("")
+        // LocationIQ's free plan asks for a visible credit where its results show.
+        + (geoProxy() && items.some((it) => it.type === "address") ? `<li class="credit" aria-hidden="true">Address search by <a href="https://locationiq.com" target="_blank" rel="noopener">LocationIQ</a></li>` : "");
+      ul.querySelectorAll("li[data-i]").forEach((li) => (li.onmousedown = (e) => { e.preventDefault(); pick(items[+li.dataset.i]); }));
     };
     const pick = (it) => { items = []; draw(); input.value = it.label; onPick(it); };
     input.addEventListener("input", () => {
@@ -1414,7 +1490,7 @@ const Brickline = (() => {
       if (q.length >= 4 && /\d/.test(q) && /[a-z]/i.test(q) && !/^https?:/i.test(q)) {
         timer = setTimeout(async () => {
           try {
-            const hits = await E().suggestAddresses(q);
+            const hits = await suggestAddr(q);
             if (my !== seq) return;
             items = local(q).concat(hits.slice(0, 5).map((h) => ({ type: "address", label: shortAddr(h.matchedAddress), sub: "Address", hit: h })));
             draw();
@@ -1451,7 +1527,7 @@ const Brickline = (() => {
       else if (src.latlng) { lat = src.latlng.lat; lon = src.latlng.lng; }
       else {
         text = addressFromLink(src.text.trim());
-        const hits = src.hit ? [src.hit] : await E().geocode(text);
+        const hits = src.hit ? [src.hit] : await geocodeText(text);
         if (!hits.length) throw new Error(`Couldn't find "${text}". Try the full street address with the city.`);
         lat = hits[0].coordinates.y; lon = hits[0].coordinates.x; details = hits[0].details; text = text || hits[0].matchedAddress;
         house.matched = hits[0].matchedAddress;
@@ -1492,14 +1568,21 @@ const Brickline = (() => {
     }
   }
   const HGROUPS = [{ label: "This house", tabs: ["Summary", "Lot & building"] }, { label: "The neighbourhood", cls: "grow", tabs: ["People", "Money & work", "Safety & environment", "Schools", "Sales & prices", "Data"] }];
+  function renderLookup() {
+    const P = $("#panel");
+    const recent = [
+      place && place.geoids ? `<a href="#place">${esc(place.name)}</a>` : "",
+      house && house.address ? `<a href="#house">${esc(house.address)}</a>` : "",
+    ].filter(Boolean);
+    P.innerHTML = `<div class="pad"><div class="qhead"><h2>Look up a place</h2><p>An address, a neighbourhood, a city or a zip code. Or click the map.</p></div>
+      <form class="gate" id="houseForm" autocomplete="off"><div class="row"><input id="houseQ" type="text" aria-label="Address, neighbourhood or zip" placeholder="Address, neighbourhood or zip"><button class="btn" type="submit">Look it up</button></div></form>
+      ${recent.length ? `<p class="note recent">Back to: ${recent.join(" · ")}</p>` : ""}</div>`;
+    attachSuggest($("#houseQ"), lookUp);
+    $("#houseForm").onsubmit = (e) => { e.preventDefault(); const v = $("#houseQ").value.trim(); if (v) lookUp(v); };
+  }
   function renderHouse() {
     const P = $("#panel");
-    if (!house) {
-      P.innerHTML = `<div class="pad"><div class="qhead"><h2>Look up a place</h2><p>An address, a neighbourhood, a city or a zip code. Or click the map.</p></div><form class="gate" id="houseForm" autocomplete="off"><div class="row"><input id="houseQ" type="text" aria-label="Address, neighbourhood or zip" placeholder="Address, neighbourhood or zip"><button class="btn" type="submit">Look it up</button></div></form></div>`;
-      attachSuggest($("#houseQ"), lookUp);
-      $("#houseForm").onsubmit = (e) => { e.preventDefault(); const v = $("#houseQ").value.trim(); if (v) lookUp(v); };
-      return;
-    }
+    if (!house) { renderLookup(); return; }
     const back = house.from === "place" && place ? `<a href="#place">← Back to ${esc(place.name)}</a>` : house.from === "find" ? `<a href="#find">← Back to the questions</a>` : house.from === "area" && house.areaGeoid ? `<a href="#area-${house.areaGeoid}">← Back to the area</a>` : `<a href="#home">← New search</a>`;
     if (house.error) { P.innerHTML = `<div class="card-head"><div class="crumb">${back}</div></div><div class="pad"><div class="empty">${esc(house.error)}</div></div>`; return; }
     if (house.loading) { P.innerHTML = `<div class="card-head"><div class="crumb">${back}</div><h2>Looking it up…</h2><p>Lot, zoning, hazards and the neighbourhood.</p></div>`; return; }
@@ -1527,11 +1610,13 @@ const Brickline = (() => {
   }
   async function driveTime(text) {
     try {
-      const hits = await E().geocode(text);
+      const hits = await geocodeText(text);
       if (!hits.length) return { error: "Couldn't find that address." };
       const to = hits[0].coordinates;
-      if (D.orsKey) {
-        const url = `${C.ORS_DIRECTIONS}?${new URLSearchParams({ api_key: D.orsKey, start: `${house.lon},${house.lat}`, end: `${to.x},${to.y}` })}`;
+      if (routing()) {
+        const url = D.orsProxy
+          ? `api/directions?${new URLSearchParams({ start: `${house.lon},${house.lat}`, end: `${to.x},${to.y}` })}`
+          : `${C.ORS_DIRECTIONS}?${new URLSearchParams({ api_key: D.orsKey, start: `${house.lon},${house.lat}`, end: `${to.x},${to.y}` })}`;
         const data = await Utils.fetchJSON(url, { timeoutMs: 20000 });
         const sec = data.features && data.features[0] && data.features[0].properties.summary.duration;
         if (sec) return { label: text, min: Math.round(sec / 60), rush: Math.round((sec / 60) * RUSH_FACTOR), how: "OpenRouteService, free-flow; rush hour estimated" };
@@ -1605,7 +1690,7 @@ const Brickline = (() => {
     if (!house || house.loading || house.error) return;
     const parcel = house.ctx.parcel && house.ctx.parcel.value;
     if (parcel && parcel.feature) {
-      const lay = L.geoJSON(parcel.feature, { interactive: false, style: { color: "#0b6e66", weight: 3, fillColor: "#0b6e66", fillOpacity: 0.06 } }).addTo(focusLayer);
+      const lay = L.geoJSON(parcel.feature, { interactive: false, style: { color: KEY.lot, weight: 3, fillColor: KEY.lot, fillOpacity: 0.06 } }).addTo(focusLayer);
       if (map.getZoom() < 17 || !map.getBounds().contains(lay.getBounds())) map.fitBounds(lay.getBounds(), { padding: [80, 80], maxZoom: 19 });
     } else if (map.getZoom() < 17) map.setView([house.lat, house.lon], 18);
     const b = house.build;
@@ -1614,7 +1699,7 @@ const Brickline = (() => {
       if (b.mainEnvelope) L.polygon(b.mainEnvelope.map(([x, y]) => [y, x]), { interactive: false, color: KEY.envelope, weight: 1.6, dashArray: "5 4", fill: false }).addTo(focusLayer);
       if (b.largest && b.largest.ring) L.polygon(b.largest.ring.map(([x, y]) => [y, x]), { interactive: false, color: KEY.adu, weight: 1.5, fillColor: KEY.adu, fillOpacity: 0.3 }).addTo(focusLayer);
     }
-    L.circleMarker([house.lat, house.lon], { interactive: false, radius: 7, color: "#fff", weight: 2, fillColor: "#0b6e66", fillOpacity: 1 }).addTo(pinLayer);
+    L.circleMarker([house.lat, house.lon], { interactive: false, radius: 7, color: "#fff", weight: 2, fillColor: KEY.lot, fillOpacity: 1 }).addTo(pinLayer);
     drawSel();
     renderLayerPanel();
     updateHint();
@@ -1629,7 +1714,8 @@ const Brickline = (() => {
     try {
       const res = await fetch(C.LEAD_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return { ok: true, where: "server" };
+      const j = await res.json().catch(() => ({}));
+      return { ok: true, where: "server", emailed: !!(j && j.emailed) };
     } catch (err) {
       try {
         const list = JSON.parse(localStorage.getItem(LOCAL_LEADS_KEY) || "[]");
@@ -1647,11 +1733,11 @@ const Brickline = (() => {
   function route() {
     const h = (location.hash || "#home").slice(1);
     const m = h.match(/^area-(\d{12})$/);
-    view = m ? "area" : ["home", "find", "house", "place"].includes(h) ? h : "home";
+    view = m ? "area" : ["home", "find", "house", "place", "lookup"].includes(h) ? h : "home";
     if (m && (!area || area.geoid !== m[1])) { area = { geoid: m[1] }; atab = 0; areaDetails(m[1]).promise.then(() => { if (view === "area" && area.geoid === m[1]) { renderArea(); drawAreaMap(); } }); }
     $("#view-home").hidden = view !== "home";
     $("#workspace").hidden = view === "home";
-    const nav = view === "area" ? "find" : view === "place" ? "house" : view;
+    const nav = view === "area" ? "find" : view === "place" || view === "house" ? "lookup" : view;
     document.querySelectorAll(".nav a").forEach((a) => (a.dataset.v === nav ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
     if (view === "home") return;
     setTimeout(() => { map.invalidateSize(); onMove(); }, 0);
@@ -1664,6 +1750,7 @@ const Brickline = (() => {
     updateHint();
     if (view === "area") { if (D.census) { renderArea(); drawAreaMap(); } else $("#panel").innerHTML = `<div class="pad"><p class="loading">Loading…</p></div>`; }
     if (view === "house") { renderHouse(); drawHouseMap(); }
+    if (view === "lookup") { clearFocus(); renderLookup(); }
   }
   function initStatus() {
     const list = $("#status-list"), btn = $("#status-btn");
@@ -1690,9 +1777,14 @@ const Brickline = (() => {
     window.addEventListener("hashchange", route);
     route();
     loadPlaces();
+    await loadConfig();
+    const code = new URLSearchParams(location.search).get("r");
+    const restored = code ? restoreAnswers(code) : false;
+    if (restored && location.hash !== "#find") location.hash = "find";
     await loadAll();
     totalAreas = allMetrics().length;
     ready = true;
+    if (restored) refreshCommutes();
     if (view === "find") { renderFind(); updateMatches(); }
     else route();
   }

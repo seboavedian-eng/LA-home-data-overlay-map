@@ -271,3 +271,17 @@ table.comps { width: 100%; border-collapse: collapse; font-size: 13px; }
 .key .k { flex: none; width: 18px; height: 12px; border-width: 2px; border-radius: 2px; box-sizing: border-box; }
 .key .k.sw { border: 1px solid rgba(0,0,0,.2); }
 @media (max-width: 860px) { .map-layers .keyh, .key { display: none; } }
+
+/* Honeypot: hidden from people, filled by bots */
+.hp { position: absolute !important; left: -9999px !important; width: 1px; height: 1px; opacity: 0; }
+.legal { margin-top: 18px; font-size: 12.5px; color: var(--muted); }
+.legal a, .recent a { color: var(--accent); }
+.key span { white-space: nowrap; }
+.map-layers { min-width: 250px; }
+/* Privacy and terms pages */
+.doc { max-width: 720px; margin: 0 auto; padding: 32px 16px 60px; line-height: 1.6; }
+.doc h1 { font-family: var(--f-display); font-size: 30px; margin: 0 0 4px; }
+.doc h2 { font-size: 18px; margin: 26px 0 6px; }
+.doc .muted { color: var(--muted); }
+.suggest li.credit { cursor: default; justify-content: flex-end; font-size: 11px; color: var(--muted); padding: 4px 10px; }
+.suggest li.credit:hover { background: none; }

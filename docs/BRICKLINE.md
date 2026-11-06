@@ -82,6 +82,10 @@ The email step comes before results and has "Skip for now".
   - "The neighbourhood" group: the same tabs as the area card.
 - Clicking anywhere on the map from an area or a house checks the lot at that point.
 
+## Going online
+
+See `docs/DEPLOY.md`: build the package with `scripts/build-public-site.py`, run it with `server/brickline_server.py` on Render. On the public site the email step really sends the visitor their shortlist (top 10 areas and a link that reopens their answers) and sends you a copy.
+
 ## Personal vs public mode
 
 | Data | Shown when |
@@ -114,7 +118,7 @@ The email step comes before results and has "Skip for now".
   - That stops the explorer from building its own map into this page.
 - Block group centres and land areas come from TIGERweb, one query of about 6,500 rows.
   - They're cached in localStorage (`brickline.bgIndex.v1`).
-- Test: `node tests/brickline-e2e.js` (123 checks, stubbed network, real clicks).
+- Test: `node tests/brickline-e2e.js` (130 checks, stubbed network, real clicks).
 
 ## Known limits
 

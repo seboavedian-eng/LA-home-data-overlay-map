@@ -446,9 +446,11 @@ async function main() {
   await shot(page, "5-house-lot");
   step("the assessor record matched the house (1,400 sq ft)", /1,400 sq ft/.test(lot));
   step("rules carry verified / not-yet-verified tags", /verified/.test(lot));
+  step("the selected lot is drawn in its own colour, not the area green", await page.evaluate(() => { let c = null; Brickline.forTest.map.eachLayer((l) => { if (l.feature && l.feature.properties && l.feature.properties.AIN === "5634012003" && l.options && l.options.weight === 3) c = l.options.color; }); return c && c !== "#0b6e66"; }));
+  step("every map-key entry fits on one line", await page.evaluate(() => [...document.querySelectorAll(".key span")].every((s) => s.getBoundingClientRect().height < 22)));
   step("no ADU label sits on the map itself", await page.evaluate(() => ![...document.querySelectorAll(".leaflet-tooltip")].some((t) => /ADU/.test(t.textContent))));
   const key = await page.innerText("#map-layers .key");
-  step("the map key explains the dashed line and the green box", /main house may go/.test(key) && /open spot for a backyard ADU/.test(key) && /Existing buildings/.test(key) && /This lot/.test(key), key.replace(/\s+/g, " ").slice(0, 160));
+  step("the map key explains the dashed line and the green box", /main house may go/.test(key) && /open spot for a backyard ADU/.test(key) && /Existing buildings/.test(key) && /Selected lot/.test(key) && !/zone setbacks/.test(key), key.replace(/\s+/g, " ").slice(0, 160));
   step("the ADU row is plain text, not a coloured pill", await page.evaluate(() => { const r = [...document.querySelectorAll("#hPane .rowv")].find((x) => /Largest open spot/.test(x.textContent)); return r && !r.querySelector(".pillv"); }));
   step("...and says the open spot already leaves out the buildings", /leaves out every existing building/.test(lot));
   step("the card gives the footprint you could likely build", /ADU footprint you could likely build/.test(lot) && /guarantees an ADU up to 800 sq ft/.test(lot));
@@ -478,8 +480,14 @@ async function main() {
   await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14));
   await page.waitForTimeout(800);
   await shot(page, "7-place");
+  step("the key names the border by kind", /Neighbourhood border/.test(await page.innerText("#map-layers .key")));
   await page.click("#plClear");
   step("the chip's × clears the place", await waitFor(page, () => !Brickline.forTest.place));
+  step("...and keeps you on the map, not the home page", await waitFor(page, () => Brickline.forTest.state.view === "lookup" && !document.querySelector("#workspace").hidden));
+  // C is outside Silver Lake and also fails your answers: show all areas to see the place filter is really gone.
+  await page.click("#mShow");
+  step("...with the areas outside it back on the map", await waitFor(page, () => Brickline.forTest.styleOf("060379100001").fillOpacity > 0));
+  await page.click("#mShow");
   await typeHome("Beverly Hills");
   await page.keyboard.press("Enter");
   step("a city typed in full and Enter goes straight to it", await waitFor(page, () => { const p = Brickline.forTest.place; return p && p.name === "Beverly Hills" && p.n === 0; }));
@@ -505,6 +513,10 @@ async function main() {
   step("on the map card, Reset sits next to Edit answers", /Edit answers\s*Reset/.test(await page.innerText(".mctl")));
   await page.click("#mReset");
   step("'Reset' clears the answers and shows every area", await waitFor(page, () => Brickline.forTest.state.S.edu === 0 && Brickline.forTest.styleOf("060379100001").fillOpacity > 0));
+  await page.click(".nav a[data-v='lookup']");
+  step("'Look up a place' always opens the search box, even with a house open", await waitFor(page, () => !!document.querySelector("#houseQ") && Brickline.forTest.state.view === "lookup"));
+  step("...and offers a way back to the last house", /Back to:.*GRANDVIEW/i.test(await page.innerText("#panel")));
+  await page.click("#panel .recent a");
   step("a house found by address selects its block group", (await page.evaluate(() => Brickline.forTest.state.sel)) === GEO.A);
   step("no page errors in the whole run", captured.errors.length === 0, captured.errors.slice(0, 3).join(" | "));
 

@@ -5,6 +5,10 @@ Personal LA County house-hunting tool. One user, runs locally, no backend.
 `brickline.html` (+ `js/brickline/app.js`, `css/brickline.css`) is the pilot for
 other people: two journeys on the explorer's data, read through
 `BlockGroupApp.engine`. See `docs/BRICKLINE.md`. Never break the explorer for it.
+It goes online through `scripts/build-public-site.py` (allowlist → `dist/`) and
+`server/brickline_server.py` (the public server: keys stay server-side). See
+`docs/DEPLOY.md`. **Never put `scripts/listing-server.py` online** - it serves the
+whole folder, keys and `raw-data/` included.
 `js/core/layers.js` holds the layer classes (see below); `js/zone-rules/*.json`
 holds what each zone lets you build, per jurisdiction; `js/core/envelope.js`
 works out room to build on one lot (setbacks, built footprint, ADU space).
@@ -30,7 +34,8 @@ suites one at a time: blockgroups-e2e and mock-e2e both write `js/data/`.
 ```
 node tests/blockgroups-e2e.js     # ~368 checks, real Chromium
 node tests/mock-e2e.js            # ~24 checks
-node tests/brickline-e2e.js       # ~123 checks, the pilot page
+node tests/brickline-e2e.js       # ~130 checks, the pilot page
+node tests/public-site-e2e.js     # ~14 checks, the deploy package under its CSP
 python3 tests/test_fetch_urls.py
 python3 tests/test_parcel_data.py
 python3 tests/test_wind_grid.py
@@ -39,6 +44,7 @@ python3 tests/test_compaction.py
 python3 tests/test_listing_server.py
 python3 tests/test_school_data.py
 python3 tests/test_webmap_convert.py
+python3 tests/test_public_server.py   # build allowlist + public server
 ```
 
 Tests stub every network call, so green means the code is right — not that a
@@ -128,7 +134,12 @@ stale by comparing against it.
 - Don't commit `.env` (the API key) or anything in `js/data/` or `raw-data/`
   (that includes `raw-data/leads.jsonl`, the pilot's sign-ups).
 - Don't show GreatSchools ratings or Redfin data on `brickline.html` outside
-  personal mode - both are licensed for personal use only.
+  personal mode - both are licensed for personal use only. The public build
+  strips ratings from the schools file and never copies `raw-data/`.
+- Don't add a file to the public build by loosening the allowlist in
+  `build-public-site.py` to a folder that can hold keys or data.
+- Don't use Nominatim for autocomplete on a public host (its usage policy
+  forbids it); the public site goes through `/api/geocode` (LocationIQ).
 - Don't claim a live layer works from a test run — the sandbox can't reach the
   GIS hosts, so only the user can confirm.
 

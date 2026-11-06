@@ -17,3 +17,7 @@ js/data/*.json
 
 # The API key for scripts/listing-server.py. Never commit this.
 .env
+
+# The public deploy package (scripts/build-public-site.py). It holds data
+# files, so it is pushed to its own private repo, never this one.
+dist/

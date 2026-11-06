@@ -109,3 +109,22 @@ public host gets the page without them, automatically.
 **The pilot's summary describes the place, never the people.** It is written from
 housing, commute, schools and hazards only. Demographic facts stay as plain
 numbers in the People tab, and the age-mix question is opt-in (fair housing).
+
+**The public site is a separate, allowlisted package with its own server.** The
+local listing server serves the whole project folder, which is fine on your
+machine and fatal online (keys, `raw-data/`, sign-ups). `build-public-site.py`
+copies named files only and fails the build if anything private gets in;
+`server/brickline_server.py` serves only that package, holds every key, and
+proxies routing and address search. The package holds data files, so it lives
+in its own private repo, never this one.
+
+**The content policy allows `'unsafe-eval'`, for Turf only.** The vendored Turf
+bundle builds functions with `new Function()` when it loads; a stricter policy
+kills the page (found by `tests/public-site-e2e.js`). Scripts still load only
+from the site and nothing inline runs.
+
+**Results emails are sent by the server, from what the page sends, escaped.**
+At most three per address per day, never to an unsubscribed address, and every
+sign-up is also emailed to the owner because Render's free disk is wiped on
+restart.
+
