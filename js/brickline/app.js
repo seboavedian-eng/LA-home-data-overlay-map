@@ -348,7 +348,8 @@ const Brickline = (() => {
   let bgLayer, selLayer, rasterLayer, ready = false, sel = null, totalAreas = 0;
 
   function initMap() {
-    map = L.map("map", { preferCanvas: true, zoomControl: true, maxZoom: 19 }).setView(C.MAP_CENTER, 10);
+    // Fractional zoom, so a selected area can be sized to a share of the map.
+    map = L.map("map", { preferCanvas: true, zoomControl: true, maxZoom: 19, zoomSnap: 0.25 }).setView(C.MAP_CENTER, 10);
     canvasRenderer = L.canvas({ padding: 0.3 });
     let vector = false;
     try {
@@ -436,17 +437,23 @@ const Brickline = (() => {
     const layer = L.geoJSON(f, { interactive: false, style: outlineStyle(geoid) }).addTo(bgLayer);
     bgPolys.set(geoid, { feature: f, layer, bbox: turf.bbox(f) });
   }
-  // Base: shaded by street busyness. Your matches, when shown, in orange on
-  // top of that. A searched place's block groups get a blue edge.
-  const MATCH = { color: "#9a3412", weight: 1.3, fillColor: "#f97316", fillOpacity: 0.55 };
+  // Every drawn area is shaded by street busyness. When you've searched a
+  // place, or your answers are shown, only those areas are drawn at all: the
+  // rest are left off the map (and can't be clicked) until you clear the
+  // place or choose "Show all areas". The selected area always shows.
+  const HIDDEN = { opacity: 0, fillOpacity: 0, weight: 0 };
+  function inFocus(geoid) {
+    if (geoid === sel) return true;
+    if (place && place.geoids && !place.geoids.has(geoid)) return false;
+    if (resultsOn()) { const m = metrics(geoid); if (!m || !passes(m, 7)) return false; }
+    return true;
+  }
   function outlineStyle(geoid) {
+    if (!inFocus(geoid)) return HIDDEN;
     const m = metrics(geoid);
-    const edge = place && place.geoids && place.geoids.has(geoid) ? { color: "#2f5f9e", weight: 2 } : null;
-    if (!m) return { color: "#9aa3ad", weight: 0.5, fillColor: "#c8ced4", fillOpacity: 0.06, ...edge };
+    if (!m) return { opacity: 1, color: "#9aa3ad", weight: 0.5, fillColor: "#c8ced4", fillOpacity: 0.08 };
     const band = densBand(m.density);
-    const dc = band >= 0 ? DENS[band].color : "#c8ced4";
-    if (resultsOn()) return passes(m, 7) ? { ...MATCH, ...edge } : { color: "#9aa3ad", weight: 0.4, fillColor: dc, fillOpacity: 0.18, ...edge };
-    return { color: "#4b5b57", weight: 0.6, fillColor: dc, fillOpacity: 0.4, ...edge };
+    return { opacity: 1, color: "#4b5b57", weight: 0.7, fillColor: band >= 0 ? DENS[band].color : "#c8ced4", fillOpacity: 0.5 };
   }
   const anyAnswer = () => !!(S.commutes.some((c) => c.area) || S.dens.size || S.detMin || S.edu || S.inc || S.hhMin > 1 || S.hhMax < 6 || S.useMix || (ratingsAvailable() && (S.sE || S.sM || S.sH)));
   const resultsOn = () => S.showMatches && anyAnswer();
@@ -463,6 +470,7 @@ const Brickline = (() => {
     for (const [geoid, p] of bgPolys) {
       const [w, s, e, n] = p.bbox;
       if (pt[0] < w || pt[0] > e || pt[1] < s || pt[1] > n) continue;
+      if (!inFocus(geoid)) continue;   // left off the map, so not clickable
       if (turf.booleanPointInPolygon(pt, p.feature)) return geoid;
     }
     return null;
@@ -477,9 +485,24 @@ const Brickline = (() => {
     if (geoid === sel) { openHouse({ latlng }); return; }
     selectArea(geoid);
   }
+  // Zoom so the area takes roughly 20-30% of the map: its box fills half
+  // the width or half the height, whichever comes first.
+  const AREA_SHARE = 0.25;   // the area's box takes about a quarter of the map
+  function fitArea(shape) {
+    const bounds = L.geoJSON(shape).getBounds();
+    const size = map.getSize();
+    const z = map.getZoom();
+    const nw = map.project(bounds.getNorthWest(), z), se = map.project(bounds.getSouthEast(), z);
+    const bw = Math.max(1, se.x - nw.x), bh = Math.max(1, se.y - nw.y);
+    // Scale so box area = AREA_SHARE of the map, but never wider or taller than 90% of it.
+    const f = Math.min(Math.sqrt((AREA_SHARE * size.x * size.y) / (bw * bh)), (0.9 * size.x) / bw, (0.9 * size.y) / bh);
+    map.setView(bounds.getCenter(), Math.min(18, z + Math.log2(f)));
+  }
   function selectArea(geoid) {
     if (view === "find") {
       sel = geoid;
+      const p = bgPolys.get(geoid);
+      if (p) fitArea(p.feature);
       drawSel();
       areaDetails(geoid).promise.then(() => { if (sel === geoid) { renderPreview(); renderLayerPanel(); } });
       renderPreview();
@@ -562,7 +585,7 @@ const Brickline = (() => {
     const applied = appliedChips();
     box.innerHTML = (showCount ? `<div class="count"><b>${n.toLocaleString()}</b><span>of ${totalAreas.toLocaleString()} areas fit your answers</span></div>
       <div class="applied">${applied.map((a) => `<span>${esc(a)}</span>`).join("")}</div>
-      ${answered ? `<div class="mctl"><button type="button" id="mShow" aria-pressed="${S.showMatches}"><i class="sw"></i>${S.showMatches ? "Hide" : "Show"} matches</button>${view !== "find" ? `<a href="#find">Edit answers</a>` : ""}<button type="button" id="mReset">Reset</button></div>` : ""}` : "")
+      ${answered ? `<div class="mctl"><button type="button" id="mShow" aria-pressed="${S.showMatches}">${S.showMatches ? "Show all areas" : "Show only my matches"}</button>${view !== "find" ? `<a href="#find">Edit answers</a><button type="button" id="mReset">Reset</button>` : ""}</div>` : ""}` : "")
       + (place ? `<div class="placechip"><i></i><span>${esc(place.name)}</span><button type="button" id="plClear" aria-label="Clear ${esc(place.name)}">×</button></div>` : "");
     const sh = $("#mShow"); if (sh) sh.onclick = () => { S.showMatches = !S.showMatches; updateMatches(); };
     const rs = $("#mReset"); if (rs) rs.onclick = () => resetAnswers();
@@ -638,7 +661,8 @@ const Brickline = (() => {
       P.innerHTML = `<div class="pad"><div class="qhead"><h2>Loading LA County…</h2><p>Block group data and centres. If this stays, open Data status (top right).</p></div></div>`;
       return;
     }
-    P.innerHTML = `<div class="steps" id="steps"></div><div class="pad" id="qpane"></div><div class="qfoot" id="qfoot"><button class="btn ghost" id="back" type="button">Back</button><span class="spacer"></span><button class="btn" id="next" type="button">Next</button><button class="btn ghost" id="skip" type="button">Skip</button></div>`;
+    P.innerHTML = `<div class="steps" id="steps"></div><div class="pad" id="qpane"></div><div class="qfoot" id="qfoot"><button class="btn ghost" id="back" type="button">Back</button><span class="spacer"></span><button class="btn ghost" id="resetQ" type="button" hidden>Reset</button><button class="btn" id="next" type="button">Next</button><button class="btn ghost" id="skip" type="button">Skip</button></div>`;
+    $("#resetQ").onclick = () => resetAnswers();
     $("#back").onclick = () => { if (step > 0) { step--; renderQ(); } };
     $("#next").onclick = () => { step = step === NQ ? 0 : step + 1; renderQ(); };
     $("#skip").onclick = () => { step = Math.min(NQ, step + 1); renderQ(); };
@@ -651,11 +675,11 @@ const Brickline = (() => {
     $("#steps").querySelectorAll("button").forEach((b) => (b.onclick = () => { step = +b.dataset.s; renderQ(); }));
     const foot = $("#qfoot");
     if (step === NQ) {
-      if (!S.gateSeen) { renderGate(pane); foot.hidden = true; } else { renderResults(pane); foot.hidden = false; $("#next").textContent = "Edit answers"; $("#skip").hidden = true; $("#back").disabled = false; }
+      if (!S.gateSeen) { renderGate(pane); foot.hidden = true; } else { renderResults(pane); foot.hidden = false; $("#next").textContent = "Edit answers"; $("#skip").hidden = true; $("#resetQ").hidden = false; $("#back").disabled = false; }
       updateMatches();
       return;
     }
-    foot.hidden = false; $("#next").textContent = step === NQ - 1 ? "See results" : "Next"; $("#skip").hidden = false; $("#back").disabled = step === 0;
+    foot.hidden = false; $("#next").textContent = step === NQ - 1 ? "See results" : "Next"; $("#skip").hidden = false; $("#resetQ").hidden = true; $("#back").disabled = step === 0;
     const cty = D.county || {};
     let body = "";
     if (step === 0) {
@@ -686,7 +710,16 @@ const Brickline = (() => {
       S.commutes.forEach((c, k) => {
         renderFound(k);
         bindRange("c-min-" + k, (v) => v + " min", (v) => { c.min = v; }, () => debounceCommutes());
-        document.getElementById(`c-addr-${k}`).oninput = (e) => { c.text = e.target.value.slice(0, 120); };
+        const inp = document.getElementById(`c-addr-${k}`);
+        inp.oninput = (e) => { c.text = e.target.value.slice(0, 120); };
+        attachSuggest(inp, (it) => {
+          c.text = it.label;
+          if (it.type === "address" && it.hit) {
+            c.lat = it.hit.coordinates.y; c.lon = it.hit.coordinates.x; c.found = it.hit.matchedAddress; c.err = false;
+            renderFound(k);
+            refreshCommutes();
+          } else geocodeDestination(k);
+        }, { places: false });
       });
       pane.querySelectorAll("form[data-geo]").forEach((f) => (f.onsubmit = (e) => { e.preventDefault(); geocodeDestination(+f.dataset.geo); }));
       pane.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => { S.commutes.splice(+b.dataset.rm, 1); renderQ(); refreshCommutes(); }));
@@ -1042,11 +1075,10 @@ const Brickline = (() => {
     sel = area.geoid;
     drawSel();
     const shape = (bgPolys.get(sel) || {}).feature || det.outline;
-    // Move the map only when the area is off screen or too far out to see.
-    if (shape) {
-      const bounds = L.geoJSON(shape).getBounds();
-      if (map.getZoom() < MINZ || !map.getBounds().contains(bounds)) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
-    } else if (m && (map.getZoom() < MINZ || !map.getBounds().contains([m.lat, m.lon]))) map.setView([m.lat, m.lon], 15);
+    // Centre the area once, when it is opened - not on every redraw, so a
+    // pan or zoom of yours isn't undone a second later.
+    if (shape && !area.fitted) { fitArea(shape); area.fitted = true; }
+    else if (!shape && m && (map.getZoom() < MINZ || !map.getBounds().contains([m.lat, m.lon]))) map.setView([m.lat, m.lon], 15);
     if (PERSONAL) listingsIn(area.geoid).forEach((l) => {
       L.marker([l.lat, l.lon], { icon: L.divIcon({ className: "", html: `<span class="price-pin">${fmtM(l.price)}</span>`, iconSize: null }) })
         .on("click", (e) => { L.DomEvent.stopPropagation(e); openHouse({ listing: l }); }).addTo(pinLayer);
@@ -1084,6 +1116,26 @@ const Brickline = (() => {
     if (k === "noise") return `<small>US DOT noise map, aircraft plus road and rail</small>`;
     return "";
   }
+  // What each drawn line means, listed under the layers whenever it is on the map.
+  const KEY = { lot: "#0b6e66", building: "#6b7a76", envelope: "#334155", adu: "#1f8a4c", sel: "#0b6e66", place: "#2f5f9e", commute: "#2f5f9e" };
+  function mapKey() {
+    const k = [];
+    const line = (c, dash, t, fill) => `<span><i class="k" style="border-color:${c};border-style:${dash ? "dashed" : "solid"};${fill ? `background:${fill}` : ""}"></i>${esc(t)}</span>`;
+    if (map.hasLayer(bgLayer) && bgPolys.size) k.push(`<span><i class="k sw" style="background:linear-gradient(90deg,${DENS.map((d) => d.color).join(",")})"></i>Area shading: street busyness, quiet → busy</span>`);
+    if (view === "find" && S.commutes.some((c) => c.area)) k.push(line(KEY.commute, true, "Reachable within your commute", "rgba(47,95,158,.08)"));
+    if (place && place.shape) k.push(line(KEY.place, true, `Border of ${place.name}`));
+    if (sel && view !== "house") k.push(line(KEY.sel, false, "Selected area: click inside it to check a house"));
+    if (view === "house" && house && !house.loading && !house.error) {
+      k.push(line(KEY.lot, false, "This lot"));
+      const b = house.build;
+      if (b && !b.unavailable) {
+        if ((b.buildings || []).length) k.push(line(KEY.building, false, "Existing buildings", "rgba(107,122,118,.45)"));
+        if (b.mainEnvelope) k.push(line(KEY.envelope, true, "Where the main house may go (zone setbacks)"));
+        if (b.largest) k.push(line(KEY.adu, false, "Largest open spot for a backyard ADU", "rgba(31,138,76,.3)"));
+      }
+    }
+    return k.length ? `<h3 class="keyh">On this map</h3><div class="key">${k.join("")}</div>` : "";
+  }
   function renderLayerPanel() {
     const box = $("#map-layers");
     if (view === "home") { box.hidden = true; return; }
@@ -1096,7 +1148,7 @@ const Brickline = (() => {
       const v = h ? l.from(h) : null;
       const answer = note ? `<span style="color:var(--muted)">${esc(note)}</span>` : v ? `<span style="color:var(--${v.cls === "na" ? "muted" : v.cls})">${v.cls === "good" && l.k !== "wind" && l.k !== "pollution" ? "None here" : esc(v.text)}</span>` : "<span></span>";
       return `<button type="button" class="layer" data-l="${l.k}" aria-pressed="${on}"><i style="background:${l.color}"></i><b>${l.label}</b>${answer}</button>${on ? legendFor(l.k) : ""}`;
-    }).join("");
+    }).join("") + mapKey();
     box.querySelectorAll("[data-l]").forEach((b) => (b.onclick = () => toggleLayer(b.dataset.l)));
   }
   async function toggleLayer(k) {
@@ -1299,7 +1351,7 @@ const Brickline = (() => {
         <div class="sig neutral"><small>Homes</small><b>${pct(det)} detached houses</b><em>B25024</em></div>
         <div class="sig neutral"><small>Education</small><b>${pct(edu)} bachelor's+</b><em>Adults 25+, B15003</em></div>
         <div class="sig neutral"><small>Sales & prices</small><b>${price ? fmtM(price) + " typical" : "No sales on file"}</b><em>${sales ? sales + " single-family sales · assessor roll" : "Assessor roll"}</em></div>
-        ${fit != null ? `<div class="sig ${fit ? "good" : "watch"}"><small>Your answers</small><b>${fit} of ${ms.length} fit</b><em>Highlighted in orange on the map</em></div>` : ""}
+        ${fit != null ? `<div class="sig ${fit ? "good" : "watch"}"><small>Your answers</small><b>${fit} of ${ms.length} fit</b><em>Only those are shaded on the map</em></div>` : ""}
       </div>
       <div class="sec"><h3>Block groups in ${esc(place.name)}</h3><p class="note">Each is a few city blocks. Open one for its full card, or click it on the map.</p></div>
       <div class="results">${list.slice(0, 60).map((m) => resultCard(m, fmtK(m.inc) + " income")).join("")}</div>
@@ -1338,7 +1390,8 @@ const Brickline = (() => {
     else if (it.type === "address") openHouse({ text: it.hit.matchedAddress, hit: it.hit });
     else openHouse({ text: it.label });
   }
-  function attachSuggest(input, onPick) {
+  function attachSuggest(input, onPick, opts = {}) {
+    const local = (q) => (opts.places === false ? [] : localSuggestions(q));
     const ul = document.createElement("ul");
     ul.className = "suggest";
     ul.hidden = true;
@@ -1355,7 +1408,7 @@ const Brickline = (() => {
     const pick = (it) => { items = []; draw(); input.value = it.label; onPick(it); };
     input.addEventListener("input", () => {
       const q = input.value.trim(), my = ++seq;
-      items = localSuggestions(q); cur = -1; draw();
+      items = local(q); cur = -1; draw();
       clearTimeout(timer);
       // Street addresses (a number and a word) also ask the address service.
       if (q.length >= 4 && /\d/.test(q) && /[a-z]/i.test(q) && !/^https?:/i.test(q)) {
@@ -1363,7 +1416,7 @@ const Brickline = (() => {
           try {
             const hits = await E().suggestAddresses(q);
             if (my !== seq) return;
-            items = localSuggestions(q).concat(hits.slice(0, 5).map((h) => ({ type: "address", label: shortAddr(h.matchedAddress), sub: "Address", hit: h })));
+            items = local(q).concat(hits.slice(0, 5).map((h) => ({ type: "address", label: shortAddr(h.matchedAddress), sub: "Address", hit: h })));
             draw();
           } catch (err) { log("search", "info", `Address suggestions unavailable (${err.message}).`); }
         }, C.SEARCH_DEBOUNCE_MS || 700);
@@ -1523,8 +1576,17 @@ const Brickline = (() => {
       const farAll = env && env.far && lotSqft ? E().farAllowance(env.far, lotSqft) : null;
       const sb9 = (rule.state || []).find((r) => /SB 9/i.test(r.topic));
       const aduState = (rule.state || []).find((r) => /ADU/i.test(r.topic));
+      // The open spot is an upper bound. What you can likely build is the
+      // smaller of: the spot, and (beyond the size state law guarantees) the
+      // lot coverage still left. Easements, slope and utilities are unknown.
+      const aduSet = rule.set.adu || { side: 4, rear: 4 };
+      const guaranteed = Number(aduSet.guaranteedSqft) || 800;
+      const covLeft = env && env.coverage && b.lotSqft ? Math.max(0, Math.round(env.coverage * b.lotSqft - b.builtSqft)) : null;
+      const usable = fits ? Math.min(b.largest.sqft, Math.max(Math.min(guaranteed, b.largest.sqft), covLeft == null ? b.largest.sqft : covLeft)) : 0;
+      const usableWhy = fits ? `State law guarantees an ADU up to ${num(guaranteed)} sq ft whatever the lot coverage. ${covLeft != null ? `Beyond that, this lot has about ${num(covLeft)} sq ft of coverage left (zone limit ${Math.round(env.coverage * 100)}%).` : ""} The open spot caps it at ${num(b.largest.sqft)} sq ft. Easements, slope, trees and sewer aren't known here.` : "";
       out.push(`<div class="sec"><h3>Room to build</h3>
-        ${row("Backyard ADU", pill(fits ? "good" : "watch", fits ? `Open ground about ${b.largest.wFt} × ${b.largest.hFt} ft` : "Little open ground"), `Setbacks from ${esc(rule.set.code || "the city code")} · ADU limits ${vt(false)}`, null, `Shown in green on the map. ${num(b.freeSqft)} sq ft of open ground meets the ADU setbacks${b.streetUnknown ? "; the street side couldn't be told, so all edges use the interior setback" : ""}.`)}
+        ${row("Largest open spot for a backyard ADU", fits ? `About ${b.largest.wFt} × ${b.largest.hFt} ft (${num(b.largest.sqft)} sq ft)` : "Little open ground", `Setbacks from ${esc(rule.set.code || "the city code")} · ADU limits ${vt(false)}`, null, `The green box on the map. It already leaves out every existing building, and keeps ${aduSet.side} ft from the side and ${aduSet.rear} ft from the rear lot lines. ${num(b.freeSqft)} sq ft of open ground meets those setbacks in all${b.streetUnknown ? "; the street side couldn't be told, so every edge uses the interior setback" : ""}.`)}
+        ${fits ? row("ADU footprint you could likely build", `Up to about ${num(usable)} sq ft`, `State ADU law ${vt(false)}`, null, usableWhy) : ""}
         ${aduState ? row("ADU rules (state law)", "By right", `${esc(aduState.source || "")} ${vt(aduState.verified)}`, null, esc(aduState.value)) : ""}
         ${row("Junior ADU", "Up to 500 sq ft", `State ADU law ${vt(false)}`, null, "Inside the existing house, with its own entrance.")}
         ${sb9 ? row("SB 9", histIn ? pill("watch", "Not in a historic district") : "2 homes or a lot split", `${esc(sb9.source || "")} ${vt(sb9.verified)}`, null, esc(sb9.value)) : ""}
@@ -1549,8 +1611,8 @@ const Brickline = (() => {
     const b = house.build;
     if (b && !b.unavailable) {
       (b.buildings || []).forEach((f) => L.geoJSON(f, { interactive: false, style: { color: "#6b7a76", weight: 1, fillColor: "#6b7a76", fillOpacity: 0.45 } }).addTo(focusLayer));
-      if (b.mainEnvelope) L.polygon(b.mainEnvelope.map(([x, y]) => [y, x]), { interactive: false, color: "#2f5f9e", weight: 1.5, dashArray: "5 4", fill: false }).addTo(focusLayer);
-      if (b.largest && b.largest.ring) L.polygon(b.largest.ring.map(([x, y]) => [y, x]), { interactive: false, color: "#1f8a4c", weight: 1.5, fillColor: "#1f8a4c", fillOpacity: 0.3 }).bindTooltip(`ADU space ~${b.largest.wFt}×${b.largest.hFt} ft`, { permanent: true, direction: "center" }).addTo(focusLayer);
+      if (b.mainEnvelope) L.polygon(b.mainEnvelope.map(([x, y]) => [y, x]), { interactive: false, color: KEY.envelope, weight: 1.6, dashArray: "5 4", fill: false }).addTo(focusLayer);
+      if (b.largest && b.largest.ring) L.polygon(b.largest.ring.map(([x, y]) => [y, x]), { interactive: false, color: KEY.adu, weight: 1.5, fillColor: KEY.adu, fillOpacity: 0.3 }).addTo(focusLayer);
     }
     L.circleMarker([house.lat, house.lon], { interactive: false, radius: 7, color: "#fff", weight: 2, fillColor: "#0b6e66", fillOpacity: 1 }).addTo(pinLayer);
     drawSel();

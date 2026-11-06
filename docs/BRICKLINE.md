@@ -17,8 +17,11 @@ Data status says so.
 ## The map, and what a click does
 
 - Neighbourhoods are block group outlines, shaded by street busyness, drawn only from zoom 12 in (`BG_CONFIG.MIN_ZOOM.blockGroup`). Zoomed out, nothing; a click there zooms in.
-- Your answers to the questions show as **orange** areas on every screen. The card top-left has "Hide matches" (clean map, answers kept), "Edit answers" and "Reset".
-- A searched neighbourhood, city or zip has a dashed blue border, and its block groups a blue edge. The × on its chip clears it.
+- Once you've answered, only the areas that fit are drawn, on every screen; the rest are left off the map and can't be clicked. "Show all areas" brings them back (answers kept). Reset sits next to Edit answers.
+- A searched neighbourhood, city or zip: only its block groups are drawn, inside a dashed blue border. The × on its chip clears it.
+- Selecting an area zooms the map so it fills about a quarter of it (`AREA_SHARE` in app.js).
+- "On this map" in the layer panel says what each line and box is: lot, buildings, main-house setback line (dashed), ADU open spot (green).
+- The ADU open spot already excludes existing buildings. The card also gives a likely footprint: the open spot, capped by remaining lot coverage beyond the 800 sq ft state law guarantees (unverified for Glendale).
 
 | You click | What happens |
 |---|---|
@@ -111,7 +114,7 @@ The email step comes before results and has "Skip for now".
   - That stops the explorer from building its own map into this page.
 - Block group centres and land areas come from TIGERweb, one query of about 6,500 rows.
   - They're cached in localStorage (`brickline.bgIndex.v1`).
-- Test: `node tests/brickline-e2e.js` (110 checks, stubbed network, real clicks).
+- Test: `node tests/brickline-e2e.js` (123 checks, stubbed network, real clicks).
 
 ## Known limits
 

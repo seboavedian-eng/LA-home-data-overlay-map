@@ -259,6 +259,11 @@ async function main() {
   step("a second commute can be added", (await page.locator(".commute").count()) === 2);
   await page.click("[data-rm='1']");
   step("...and removed", (await page.locator(".commute").count()) === 1);
+  await page.fill("#c-addr-0", "");
+  await page.type("#c-addr-0", "100 N Brand Blvd", { delay: 15 });
+  step("the commute box suggests addresses as you type", await waitFor(page, () => [...document.querySelectorAll(".commute .suggest li")].some((li) => /Brand/.test(li.textContent) && /Address/.test(li.textContent))));
+  await page.click(".commute .suggest li:has-text('Brand')");
+  step("...and picking one sets the commute", await waitFor(page, () => /Brand/.test(document.querySelector("#c-found-0").textContent) && /2\s*of 3 areas/.test(document.querySelector("#map-overlay").innerText)));
 
   await page.click("#next");
   step("question 2 is street busyness, in plain words", /busy/i.test(await page.innerText(".qhead h2")) && (await page.locator(".opt").count()) === 5);
@@ -309,6 +314,7 @@ async function main() {
   await page.selectOption("#sortK", "inc");
   await page.click("#sortDir");
   step("sorting by income and flipping direction works", /Low to high/.test(await page.innerText("#sortDir")));
+  step("Reset sits next to Edit answers on the results screen", await page.isVisible("#resetQ") && /Edit answers/.test(await page.innerText("#qfoot")) && (await page.locator("#map-overlay #mReset").count()) === 0);
 
   // --------------------------------------------------------------- Area card
   await page.click(".res");
@@ -330,10 +336,14 @@ async function main() {
 
   // ---------------------------------------------- What a click on the map does
   // Real mouse clicks at a lat/lon, so the canvas hit-testing is exercised.
-  const clickAt = async (lat, lon) => {
+  // home: first put the map back on the test area at zoom 14, since
+  // selecting an area zooms the map to it.
+  const clickAt = async (lat, lon, home = true) => {
+    if (home) { await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14, { animate: false })); await page.waitForTimeout(400); }
     const pt = await page.evaluate(([la, lo]) => { const p = Brickline.forTest.map.latLngToContainerPoint([la, lo]); return [p.x, p.y]; }, [lat, lon]);
     const mb = await page.locator("#map").boundingBox();
     await page.mouse.click(mb.x + pt[0], mb.y + pt[1]);
+    await page.waitForTimeout(700);
   };
   const st = () => page.evaluate(() => { const s = Brickline.forTest.state; return { view: s.view, sel: s.sel, house: s.house && s.house.src && s.house.src.latlng ? 1 : 0 }; });
   await page.click(".nav a[data-v='find']");
@@ -341,10 +351,14 @@ async function main() {
   await page.waitForTimeout(600);
   step("zoomed out, no neighbourhood outlines are drawn", (await page.evaluate(() => Brickline.forTest.state.drawn)) === 0);
   step("...and the hint says to zoom in", /Zoom in/.test(await page.innerText("#map-hint")));
-  await clickAt(34.165, -118.26);
+  await clickAt(34.165, -118.26, false);
   step("a click while zoomed out zooms in to where outlines show", await waitFor(page, () => Brickline.forTest.map.getZoom() >= 12));
   await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14));
   step("zoomed in, the outlines load and draw", await waitFor(page, () => Brickline.forTest.state.drawn >= 2));
+  // Your answers leave only A on the map; show every area to click around.
+  step("with answers set, areas that don't fit are left off the map", (await page.evaluate(() => Brickline.forTest.styleOf("060373020002").fillOpacity)) === 0);
+  await page.click("#mShow");
+  step("'Show all areas' puts them back", await waitFor(page, () => Brickline.forTest.styleOf("060373020002").fillOpacity > 0));
   await clickAt(34.165, -118.23);   // east of B: no block group there
   step("a click outside every area clears the selection", await waitFor(page, () => Brickline.forTest.state.sel === null) && await page.isHidden("#map-preview"));
 
@@ -354,6 +368,13 @@ async function main() {
   await shot(page, "8-selected");
   step("first click (mid-questions) selects that block group", s.sel === GEO.A && s.view === "find", JSON.stringify(s));
   step("...the questions stay on screen", (await page.locator("#qpane, .results").count()) >= 1);
+  const share = await page.evaluate(() => {
+    const m = Brickline.forTest.map, sz = m.getSize();
+    const b = L.latLngBounds([34.16, -118.28], [34.17, -118.26]);
+    const a = m.latLngToContainerPoint(b.getNorthWest()), c = m.latLngToContainerPoint(b.getSouthEast());
+    return ((c.x - a.x) * (c.y - a.y)) / (sz.x * sz.y);
+  });
+  step("selecting it zooms so it fills 20-30% of the map, centred", share >= 0.2 && share <= 0.3, `${Math.round(share * 100)}%`);
   step("...and a preview names the area", await page.isVisible("#map-preview") && /Tract 3020, block group 1/.test(await page.innerText("#map-preview")));
   await clickAt(34.168, -118.25);
   s = await st();
@@ -361,7 +382,7 @@ async function main() {
   await clickAt(34.165, -118.23);
   step("a click outside every area deselects", await waitFor(page, () => Brickline.forTest.state.sel === null));
   await clickAt(34.168, -118.25);
-  await clickAt(34.163, -118.245);
+  await clickAt(34.163, -118.245, false);   // the map is now zoomed on B
   step("a second click inside the selected area checks the house there", await waitFor(page, () => { const x = Brickline.forTest.state; return x.view === "house" && x.house && x.house.src && x.house.src.latlng; }));
   step("...and its back link returns to the questions", await waitFor(page, () => /Back to the questions/.test(document.querySelector("#panel .crumb").textContent), null, 20000));
   await waitFor(page, () => { const h = Brickline.forTest.state.house; return h && !h.loading && h.build; }, null, 20000);
@@ -377,8 +398,11 @@ async function main() {
   await waitFor(page, () => { const h = Brickline.forTest.state.house; return h && !h.loading && h.build; }, null, 20000);
   await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14));
   await page.waitForTimeout(500);
-  await clickAt(34.165, -118.23);
+  await clickAt(34.165, -118.295);   // west of A, clear of the layer panel
   step("from a house, a click outside every area deselects and goes back to the questions", await waitFor(page, () => { const x = Brickline.forTest.state; return x.view === "find" && x.sel === null; }), JSON.stringify(await st()));
+
+  await page.click("#mShow");
+  step("'Show only my matches' hides the others again", await waitFor(page, () => Brickline.forTest.styleOf("060373020002").fillOpacity === 0));
 
   // ----------------------------------------------------------- Layer toggles
   const layerRows = await page.locator("#map-layers .layer").count();
@@ -422,7 +446,12 @@ async function main() {
   await shot(page, "5-house-lot");
   step("the assessor record matched the house (1,400 sq ft)", /1,400 sq ft/.test(lot));
   step("rules carry verified / not-yet-verified tags", /verified/.test(lot));
-  step("the ADU space is drawn on the map", await page.evaluate(() => { let n = 0; document.querySelectorAll(".leaflet-tooltip").forEach((t) => { if (/ADU space/.test(t.textContent)) n++; }); return n === 1; }));
+  step("no ADU label sits on the map itself", await page.evaluate(() => ![...document.querySelectorAll(".leaflet-tooltip")].some((t) => /ADU/.test(t.textContent))));
+  const key = await page.innerText("#map-layers .key");
+  step("the map key explains the dashed line and the green box", /main house may go/.test(key) && /open spot for a backyard ADU/.test(key) && /Existing buildings/.test(key) && /This lot/.test(key), key.replace(/\s+/g, " ").slice(0, 160));
+  step("the ADU row is plain text, not a coloured pill", await page.evaluate(() => { const r = [...document.querySelectorAll("#hPane .rowv")].find((x) => /Largest open spot/.test(x.textContent)); return r && !r.querySelector(".pillv"); }));
+  step("...and says the open spot already leaves out the buildings", /leaves out every existing building/.test(lot));
+  step("the card gives the footprint you could likely build", /ADU footprint you could likely build/.test(lot) && /guarantees an ADU up to 800 sq ft/.test(lot));
 
   await page.click("#hTabs button:has-text('Summary')");
   await page.click("#askCommute");
@@ -444,7 +473,7 @@ async function main() {
   await page.click(".suggest li:has-text('Silver Lake')");
   step("picking it highlights its block groups", await waitFor(page, () => { const p = Brickline.forTest.place; return p && p.n === 2; }), JSON.stringify(await page.evaluate(() => Brickline.forTest.place)));
   step("...opens its card with the list", await waitFor(page, () => /Silver Lake/.test(document.querySelector("#panel h2").textContent) && document.querySelectorAll("#panel .res").length === 2));
-  step("...gives its block groups a blue edge", (await page.evaluate(() => Brickline.forTest.styleOf("060373020001").color)) === "#2f5f9e");
+  step("...shades only the block groups inside it", await page.evaluate(() => Brickline.forTest.styleOf("060373020001").fillOpacity > 0 && Brickline.forTest.styleOf("060379100001").fillOpacity === 0));
   step("...and shows it as a chip on the map", await page.isVisible(".placechip"));
   await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14));
   await page.waitForTimeout(800);
@@ -465,13 +494,17 @@ async function main() {
   await waitFor(page, () => { const h = Brickline.forTest.state.house; return h && !h.loading && h.build; }, null, 20000);
 
   // ---------------------------------------- Your matches stay on the map
-  step("your matches stay on the map on a house card", await page.isVisible("#mShow") && (await page.evaluate(() => Brickline.forTest.styleOf("060373020001").fillColor)) === "#f97316");
+  await page.click("#plClear");   // the zip from the search above is still on
+  const shown = (g) => `Brickline.forTest.styleOf("${g}").fillOpacity > 0`;
+  step("on a house card, only your matches are shaded", await page.isVisible("#mShow") && await page.evaluate(`${shown(GEO.A)} && !(${shown(GEO.C)})`));
+  step("...in street-busyness greens, not a highlight colour", (await page.evaluate(() => Brickline.forTest.styleOf("060373020001").fillColor)) !== "#f97316");
   await page.click("#mShow");
-  step("'Hide matches' gives a clean map, answers kept", await waitFor(page, () => Brickline.forTest.styleOf("060373020001").fillColor !== "#f97316") && (await page.evaluate(() => Brickline.forTest.state.S.edu)) === 40);
+  step("'Show all areas' gives a full map, answers kept", await waitFor(page, () => Brickline.forTest.styleOf("060379100001").fillOpacity > 0) && (await page.evaluate(() => Brickline.forTest.state.S.edu)) === 40);
   await page.click("#mShow");
-  step("'Show matches' brings them back", await waitFor(page, () => Brickline.forTest.styleOf("060373020001").fillColor === "#f97316"));
+  step("'Show only my matches' narrows it again", await waitFor(page, () => Brickline.forTest.styleOf("060379100001").fillOpacity === 0));
+  step("on the map card, Reset sits next to Edit answers", /Edit answers\s*Reset/.test(await page.innerText(".mctl")));
   await page.click("#mReset");
-  step("'Reset' clears the answers and the highlights", await waitFor(page, () => Brickline.forTest.state.S.edu === 0 && Brickline.forTest.styleOf("060373020001").fillColor !== "#f97316"));
+  step("'Reset' clears the answers and shows every area", await waitFor(page, () => Brickline.forTest.state.S.edu === 0 && Brickline.forTest.styleOf("060379100001").fillOpacity > 0));
   step("a house found by address selects its block group", (await page.evaluate(() => Brickline.forTest.state.sel)) === GEO.A);
   step("no page errors in the whole run", captured.errors.length === 0, captured.errors.slice(0, 3).join(" | "));
 
