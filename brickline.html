@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css" />
 <!-- ?v= is bumped with every release, for the same reason as blockgroups.html:
      a cached old script under a new page shows controls that do nothing. -->
-<link rel="stylesheet" href="css/brickline.css?v=2026-11-07" />
+<link rel="stylesheet" href="css/brickline.css?v=2026-11-08" />
 </head>
 <body>
   <header class="top">
@@ -40,7 +40,7 @@
         <div class="choice">
           <b>Help me find my neighbourhood</b>
           <span>Eight quick questions narrow LA County's block groups to a shortlist.</span>
-          <div class="bar"><span class="hint">About 2 minutes</span><a class="btn" href="#find">Start the questions</a></div>
+          <div class="bar"><span class="hint">About 2 minutes</span><a class="btn" href="#questions">Start the questions</a></div>
         </div>
       </div>
       <div class="trust"><span>Census, county and city sources</span><span>Built for LA County</span><span>Free during the pilot</span></div>
@@ -53,6 +53,8 @@
     <aside class="panel" id="panel" aria-live="polite"></aside>
     <main class="mapbox">
       <div id="map"></div>
+      <div class="filterbar" id="filterbar" hidden aria-label="Filters"></div>
+      <div class="filter-pop" id="filter-pop" hidden role="dialog" aria-label="Filter"></div>
       <div class="map-overlay" id="map-overlay"></div>
       <div class="map-layers" id="map-layers" hidden></div>
       <div class="map-preview" id="map-preview" hidden></div>
@@ -69,13 +71,13 @@
 <script src="vendor/maplibre/maplibre-gl.js"></script>
 <script src="vendor/maplibre/leaflet-maplibre-gl.js"></script>
 <script src="vendor/turf/turf.min.js"></script>
-<script src="js/utils.js?v=2026-11-07"></script>
-<script src="js/core/layers.js?v=2026-11-07"></script>
-<script src="js/core/envelope.js?v=2026-11-07"></script>
+<script src="js/utils.js?v=2026-11-08"></script>
+<script src="js/core/layers.js?v=2026-11-08"></script>
+<script src="js/core/envelope.js?v=2026-11-08"></script>
 <!-- The explorer's script supplies BG_CONFIG and its lookup engine; this flag
      stops it building its own map and panels into this page. -->
-<script src="js/brickline/headless.js?v=2026-11-07"></script>
-<script src="js/blockgroups.js?v=2026-11-07"></script>
-<script src="js/brickline/app.js?v=2026-11-07"></script>
+<script src="js/brickline/headless.js?v=2026-11-08"></script>
+<script src="js/blockgroups.js?v=2026-11-08"></script>
+<script src="js/brickline/app.js?v=2026-11-08"></script>
 </body>
 </html>

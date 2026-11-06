@@ -285,3 +285,50 @@ table.comps { width: 100%; border-collapse: collapse; font-size: 13px; }
 .doc .muted { color: var(--muted); }
 .suggest li.credit { cursor: default; justify-content: flex-end; font-size: 11px; color: var(--muted); padding: 4px 10px; }
 .suggest li.credit:hover { background: none; }
+
+/* Filter pills across the top of the map, AllTrails-style */
+.filterbar { position: absolute; top: 12px; left: 56px; right: 12px; z-index: 600; display: flex; gap: 8px; align-items: center; overflow-x: auto; padding: 2px 2px 6px; scrollbar-width: none; pointer-events: none; }
+.filterbar::-webkit-scrollbar { display: none; }
+.filterbar > * { pointer-events: auto; }
+.pill { flex: none; display: inline-flex; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.12); height: 38px; }
+.pill button { border: 0; background: transparent; height: 100%; padding: 0 12px; font-size: 14.5px; font-weight: 500; color: var(--ink); display: inline-flex; align-items: center; gap: 7px; cursor: pointer; white-space: nowrap; }
+.pill .chev { width: 7px; height: 7px; border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor; transform: rotate(45deg) translateY(-2px); margin-left: 2px; }
+.pill.on { border-color: var(--ink); border-width: 1.5px; }
+.pill.on button:first-child { padding-right: 4px; }
+.pill .px { padding: 0 10px 0 4px; font-size: 18px; line-height: 1; color: var(--muted); }
+.pill.open, .pill:hover { border-color: var(--ink); }
+.pill.all button { padding: 0 13px; }
+.freset { flex: none; border: 0; background: rgba(255,255,255,.9); border-radius: 10px; height: 38px; padding: 0 12px; font-size: 14px; color: var(--accent); font-weight: 600; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.filter-pop { position: absolute; top: 58px; z-index: 1100; width: min(360px, calc(100% - 16px)); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 14px; display: grid; gap: 10px; }
+.filter-pop .fhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.filter-pop .fhead b { font-size: 16px; line-height: 1.3; }
+.filter-pop .x { border: 0; background: transparent; font-size: 22px; line-height: 1; color: var(--muted); cursor: pointer; }
+.filter-pop .note { margin: -4px 0 0; }
+.filter-pop .ffoot { display: flex; justify-content: space-between; gap: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+/* With the pills on top, the map cards start below them */
+.map-layers { top: 62px; max-height: calc(100% - 74px); }
+.map-overlay { top: 62px; }
+
+/* The finder's list, like AllTrails' "Explore trails" */
+.explore { display: flex; flex-direction: column; }
+.ehead { padding: 18px 22px 12px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; position: sticky; top: 0; background: var(--surface); z-index: 2; }
+.ehead h2 { margin: 0; font-family: var(--f-display); font-size: 24px; }
+.erow, .erow2 { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ecount { font-size: 15px; color: var(--muted); }
+.ecount b { color: var(--ink); font-size: 17px; }
+.esort { display: inline-flex; gap: 6px; align-items: center; }
+.esort select, .esort button { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 8px; font-size: 13.5px; }
+.btn.sm { padding: 6px 12px; font-size: 13.5px; }
+.note.sent { color: var(--good); margin: 0; }
+.eintro { padding: 14px 22px; color: var(--muted); font-size: 14.5px; border-bottom: 1px solid var(--line); }
+.explore .results { padding: 14px 22px; }
+.explore .more { margin: 0 22px 22px; }
+@media (max-width: 860px) {
+  .filterbar { left: 50px; top: 8px; }
+  .pill { height: 34px; }
+  .pill button { font-size: 13.5px; padding: 0 10px; }
+  .filter-pop { top: 50px; left: 8px !important; right: 8px; width: auto; max-height: calc(100% - 60px); overflow: auto; }
+  .map-layers, .map-overlay { top: 52px; }
+}
+.wcount { padding: 8px 22px 0; font-size: 13.5px; color: var(--muted); }
+.wcount b { color: var(--accent); font-size: 15px; }

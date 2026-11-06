@@ -14,6 +14,15 @@ Use the listing server, not plain `http.server`. It is what saves sign-ups to
 `raw-data/leads.jsonl`. Without it, sign-ups are kept only in that browser, and
 Data status says so.
 
+## Finding a neighbourhood: filters like AllTrails
+
+- Filter pills run along the top of the map: **All** · Commute · Street · Homes · Education · Income · Household · Age mix · (Schools, personal mode).
+- A pill opens its own small panel with that question's controls. "Show N areas" closes it; a click elsewhere closes it too.
+- An active pill shows its value ("35 min to work", "Bachelor's 40%+") with an ×, which clears only that filter. "Reset" clears them all.
+- **All** opens the guided eight questions in the left panel ("Start the questions" on the landing page does the same). Only one of the two shows at a time.
+- The left panel is the live list: "Explore areas · N areas fit", sort and direction, "Email me this list", and "Show all areas on the map".
+- The commute box suggests places and workplaces as you type, not only street addresses.
+
 ## The map, and what a click does
 
 - Neighbourhoods are block group outlines, shaded by street busyness, drawn only from zoom 12 in (`BG_CONFIG.MIN_ZOOM.blockGroup`). Zoomed out, nothing; a click there zooms in.

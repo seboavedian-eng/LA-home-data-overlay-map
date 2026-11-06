@@ -103,7 +103,14 @@ async function stub(page, captured) {
   // CalEnviroScreen tract (air quality), one polygon over the test area.
   await page.route("**://services1.arcgis.com/**", (r) => r.fulfill(json(esriFC([esriPolygon({ Tract: 6037302000, CIscoreP: 64.2 }, box(-118.30, 34.10, -118.20, 34.20))]))));
   // DOT noise: an empty folder listing, and one tile-cached aviation service.
-  await page.route("**://tiles.arcgis.com/**", (r) => r.fulfill(json({ services: [] })));
+  // BTS's folder lists one road noise service (cached tiles); aviation is on geo.dot.gov.
+  const LODS = Array.from({ length: 13 }, (_, level) => ({ level, resolution: 156543.03 / 2 ** level, scale: 591657527.59 / 2 ** level }));
+  await page.route("**://tiles.arcgis.com/**", (r) => {
+    const u = r.request().url();
+    if (/\/tile\//.test(u)) return r.fulfill({ contentType: "image/png", body: BLANK });
+    if (/NTAD_Noise_2020_CONUS_road\/MapServer/.test(u)) return r.fulfill(json({ singleFusedMapCache: true, tileInfo: { lods: LODS } }));
+    return r.fulfill(json({ services: [{ name: "NTAD_Noise_2020_CONUS_road", type: "MapServer" }] }));
+  });
   await page.route("**://geo.dot.gov/**", (r) => {
     captured.noise++;
     if (/\/tile\//.test(r.request().url())) return r.fulfill({ contentType: "image/png", body: BLANK });
@@ -244,16 +251,16 @@ async function main() {
   // ----------------------------------------------------------- Journey two
   await page.click("text=Start the questions");
   step("the questions open with the map", await waitFor(page, () => !document.querySelector("#workspace").hidden && document.querySelector("#map").offsetHeight > 200));
-  step("all three block groups load", await waitFor(page, () => Brickline.forTest.state.ready && Brickline.forTest.state.S && /of 3 areas/.test(document.querySelector("#map-overlay").innerText)));
+  step("all three block groups load", await waitFor(page, () => Brickline.forTest.state.ready && Brickline.forTest.state.S && /of 3 areas/.test(((document.querySelector("#wcount") || document.querySelector(".ecount") || {}).innerText || ""))));
   step("block group centres come from TIGERweb", captured.index >= 1, `${captured.index} index request(s)`);
-  step("the counter starts at 3 of 3", await waitFor(page, () => /3\s*of 3 areas/.test(document.querySelector("#map-overlay").innerText)));
+  step("the counter starts at 3 of 3", await waitFor(page, () => /3\s*of 3 areas/.test(((document.querySelector("#wcount") || document.querySelector(".ecount") || {}).innerText || ""))));
 
   await page.fill("#c-addr-0", "100 N Brand Blvd, Glendale");
   await page.click("form[data-geo='0'] button[type=submit]");
   step("the work address geocodes", await waitFor(page, () => /Brand/.test(document.querySelector("#c-found-0").textContent)));
   step("an isochrone is asked of OpenRouteService", await waitFor(page, () => true) && captured.ors.some((u) => /isochrones/.test(u)));
-  step("the commute area drops the far block group", await waitFor(page, () => /2\s*of 3 areas/.test(document.querySelector("#map-overlay").innerText)));
-  step("the applied chip names the commute", /min to work/.test(await page.innerText("#map-overlay")));
+  step("the commute area drops the far block group", await waitFor(page, () => /2\s*of 3 areas/.test(((document.querySelector("#wcount") || document.querySelector(".ecount") || {}).innerText || ""))));
+  step("the commute shows as an active filter pill", /min to work/.test(await page.innerText("#filterbar")));
 
   await page.click("#addC");
   step("a second commute can be added", (await page.locator(".commute").count()) === 2);
@@ -263,22 +270,22 @@ async function main() {
   await page.type("#c-addr-0", "100 N Brand Blvd", { delay: 15 });
   step("the commute box suggests addresses as you type", await waitFor(page, () => [...document.querySelectorAll(".commute .suggest li")].some((li) => /Brand/.test(li.textContent) && /Address/.test(li.textContent))));
   await page.click(".commute .suggest li:has-text('Brand')");
-  step("...and picking one sets the commute", await waitFor(page, () => /Brand/.test(document.querySelector("#c-found-0").textContent) && /2\s*of 3 areas/.test(document.querySelector("#map-overlay").innerText)));
+  step("...and picking one sets the commute", await waitFor(page, () => /Brand/.test(document.querySelector("#c-found-0").textContent) && /2\s*of 3 areas/.test(((document.querySelector("#wcount") || document.querySelector(".ecount") || {}).innerText || ""))));
 
   await page.click("#next");
   step("question 2 is street busyness, in plain words", /busy/i.test(await page.innerText(".qhead h2")) && (await page.locator(".opt").count()) === 5);
   step("shops and cafés are marked coming soon", /coming soon/i.test(await page.innerText("#qpane")));
   await page.click(".opt[data-d='4']");
-  step("picking 'City buzz' alone empties the map", await waitFor(page, () => /\b0\s*of 3 areas/.test(document.querySelector("#map-overlay").innerText)));
+  step("picking 'City buzz' alone empties the map", await waitFor(page, () => /\b0\s*of 3 areas/.test(((document.querySelector("#wcount") || document.querySelector(".ecount") || {}).innerText || ""))));
   await page.click(".opt[data-d='4']");
-  step("un-picking it brings the areas back", await waitFor(page, () => /2\s*of 3 areas/.test(document.querySelector("#map-overlay").innerText)));
+  step("un-picking it brings the areas back", await waitFor(page, () => /2\s*of 3 areas/.test(((document.querySelector("#wcount") || document.querySelector(".ecount") || {}).innerText || ""))));
 
   await shot(page, "2-question");
   await page.click("#next"); // houses
   await page.click("#next"); // education
   step("education shows the LA County marker", /LA County ≈ \d+%/.test(await page.innerText("#qpane")));
   await page.$eval("#edu", (el) => { el.value = "40"; el.dispatchEvent(new Event("input")); });
-  step("bachelor's 40%+ leaves one area", await waitFor(page, () => /1\s*of 3 areas/.test(document.querySelector("#map-overlay").innerText)));
+  step("bachelor's 40%+ leaves one area", await waitFor(page, () => /1\s*of 3 areas/.test(((document.querySelector("#wcount") || document.querySelector(".ecount") || {}).innerText || ""))));
 
   await page.click("#next"); // income
   await page.click("#next"); // household
@@ -314,7 +321,8 @@ async function main() {
   await page.selectOption("#sortK", "inc");
   await page.click("#sortDir");
   step("sorting by income and flipping direction works", /Low to high/.test(await page.innerText("#sortDir")));
-  step("Reset sits next to Edit answers on the results screen", await page.isVisible("#resetQ") && /Edit answers/.test(await page.innerText("#qfoot")) && (await page.locator("#map-overlay #mReset").count()) === 0);
+  step("after the questions, the list shows like AllTrails: count and sort on top", /Explore areas/.test(await page.innerText("#panel")) && await page.isVisible(".ecount") && await page.isVisible("#sortK"));
+  step("Reset sits with the filters, next to the active pills", await page.isVisible("#filterbar #fReset"));
 
   // --------------------------------------------------------------- Area card
   await page.click(".res");
@@ -359,7 +367,7 @@ async function main() {
   step("with answers set, areas that don't fit are left off the map", (await page.evaluate(() => Brickline.forTest.styleOf("060373020002").fillOpacity)) === 0);
   await page.click("#mShow");
   step("'Show all areas' puts them back", await waitFor(page, () => Brickline.forTest.styleOf("060373020002").fillOpacity > 0));
-  await clickAt(34.165, -118.23);   // east of B: no block group there
+  await clickAt(34.165, -118.295);   // east of B: no block group there
   step("a click outside every area clears the selection", await waitFor(page, () => Brickline.forTest.state.sel === null) && await page.isHidden("#map-preview"));
 
   await clickAt(34.168, -118.275);
@@ -379,12 +387,12 @@ async function main() {
   await clickAt(34.168, -118.25);
   s = await st();
   step("a click in another area selects that one instead", s.sel === GEO.B && s.view === "find", JSON.stringify(s));
-  await clickAt(34.165, -118.23);
+  await clickAt(34.165, -118.295);
   step("a click outside every area deselects", await waitFor(page, () => Brickline.forTest.state.sel === null));
   await clickAt(34.168, -118.25);
   await clickAt(34.163, -118.245, false);   // the map is now zoomed on B
   step("a second click inside the selected area checks the house there", await waitFor(page, () => { const x = Brickline.forTest.state; return x.view === "house" && x.house && x.house.src && x.house.src.latlng; }));
-  step("...and its back link returns to the questions", await waitFor(page, () => /Back to the questions/.test(document.querySelector("#panel .crumb").textContent), null, 20000));
+  step("...and its back link returns to the list", await waitFor(page, () => /Back to the list/.test(document.querySelector("#panel .crumb").textContent), null, 20000));
   await waitFor(page, () => { const h = Brickline.forTest.state.house; return h && !h.loading && h.build; }, null, 20000);
   step("...the house's block group stays selected", await waitFor(page, () => Brickline.forTest.state.sel === "060373020002", null, 20000));
   await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14));
@@ -419,11 +427,39 @@ async function main() {
   step("...and turns off", await waitFor(page, () => Brickline.forTest.state.rasters === 0));
   await page.click('#map-layers [data-l="noise"]');
   step("Noise draws the DOT noise tiles", await waitFor(page, () => Brickline.forTest.state.rasters === 1) && captured.noise > 0, `${captured.noise} noise requests`);
+  const noiseOrder = await page.evaluate(() => Brickline.forTest.noiseOrder);
+  const air = noiseOrder.filter((o) => o.air), road = noiseOrder.filter((o) => !o.air);
+  step("aircraft noise sits on top of road and rail noise", air.length && road.length && Math.min(...air.map((o) => o.z)) > Math.max(...road.map((o) => o.z)), JSON.stringify(noiseOrder));
   await page.click('#map-layers [data-l="noise"]');
   await page.click('#map-layers [data-l="fire"]');
   step("Fire draws when switched on", await waitFor(page, () => Brickline.forTest.state.hazards >= 1));
   await page.click('#map-layers [data-l="fire"]');
   step("layers only change when you click them", await waitFor(page, () => Brickline.forTest.state.shown.length === 0));
+
+  // ----------------------------------------------- Filter pills, AllTrails-style
+  const bar = await page.innerText("#filterbar");
+  step("filter pills run along the top of the map", await page.isVisible("#filterbar") && /All/.test(bar) && /Street/.test(bar) && /Homes/.test(bar) && /Income/.test(bar));
+  step("active filters show their value with an ×", /min to work/.test(bar) && /Bachelor's 40%\+/.test(bar) && (await page.locator("#filterbar .pill.on .px").count()) >= 2);
+  step("the list sits on the left with its count and sort", /Explore areas/.test(await page.innerText("#panel")) && /1\s*area fits/.test(await page.innerText(".ecount")));
+  await page.click("#filterbar [data-f='2']");
+  step("a pill opens its own panel under it", await page.isVisible("#filter-pop") && (await page.locator("#filter-pop #det").count()) === 1);
+  await page.$eval("#det", (el) => { el.value = "60"; el.dispatchEvent(new Event("input")); });
+  await page.waitForTimeout(300);
+  await shot(page, "9-pill");
+  step("changing it updates the pill, the button count and the list", await waitFor(page, () => /60%\+ houses/.test(document.querySelector("#filterbar").innerText) && /Show 1 area$/.test(document.querySelector("#fpDone").textContent) && /1\s*area fits/.test(document.querySelector(".ecount").innerText)));
+  await page.mouse.click(700, 600);   // somewhere on the map, away from the panel
+  step("a click elsewhere closes the panel", await waitFor(page, () => document.querySelector("#filter-pop").hidden));
+  await page.click("#filterbar [data-fx='2']");
+  step("the pill's × clears that filter only", await waitFor(page, () => Brickline.forTest.state.S.detMin === 0 && Brickline.forTest.state.S.edu === 40));
+  await page.click("#filterbar [data-f='0']");
+  await page.fill("#c-addr-0", "");
+  await page.type("#c-addr-0", "Warner Bros", { delay: 15 });
+  step("the commute box suggests places with no street number", await waitFor(page, () => document.querySelectorAll("#filter-pop .suggest li[data-i]").length > 0));
+  await page.click("#fpDone");
+  await page.click("#fAll");
+  step("'All' opens the guided questions in the panel", await waitFor(page, () => !!document.querySelector("#qpane") && Brickline.forTest.state.S.wizard === true) && await page.isHidden("#filter-pop"));
+  await page.click("#wizClose");
+  step("closing them goes back to the list", await waitFor(page, () => !!document.querySelector(".ecount")));
 
   // -------------------------------------------------------------- Journey one
   await page.click(".nav a[data-v='home']");
@@ -522,7 +558,7 @@ async function main() {
 
   // -------------------------------------------------------------- Public mode
   {
-    const { page: p, captured: c, ctx } = await open("/brickline.html?mode=public#find");
+    const { page: p, captured: c, ctx } = await open("/brickline.html?mode=public#questions");
     await waitFor(p, () => Brickline.forTest.state.ready);
     step("public mode is honoured", !(await p.evaluate(() => Brickline.forTest.state.PERSONAL)));
     for (let i = 0; i < 7; i++) await p.click("#skip");
@@ -537,7 +573,7 @@ async function main() {
 
   // ------------------------------------------------- Lead server unreachable
   {
-    const { page: p, captured: c, ctx } = await open("/brickline.html#find", { leadDown: true });
+    const { page: p, captured: c, ctx } = await open("/brickline.html#questions", { leadDown: true });
     await waitFor(p, () => Brickline.forTest.state.ready);
     for (let i = 0; i < 8; i++) await p.click("#skip");
     await p.fill("#gEmail", "later@example.com");
@@ -545,7 +581,7 @@ async function main() {
     await waitFor(p, () => document.querySelectorAll(".res").length > 0);
     const local = await p.evaluate(() => JSON.parse(localStorage.getItem("brickline.leads.v1") || "[]"));
     step("with no lead server the sign-up is kept in the browser", local.some((l) => l.email === "later@example.com"));
-    step("...and the page says so", /saved on this device/.test(await p.innerText(".qhead")));
+    step("...and the page says so", /saved on this device/i.test(await p.innerText(".ehead")));
     await ctx.close();
   }
 

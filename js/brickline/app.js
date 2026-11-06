@@ -302,7 +302,7 @@ const Brickline = (() => {
   }
   async function geocodeDestination(i) {
     const c = S.commutes[i];
-    if (!c.text.trim()) { c.lat = c.lon = null; c.area = null; c.found = ""; renderQ(); refreshCommutes(); return; }
+    if (!c.text.trim()) { c.lat = c.lon = null; c.area = null; c.found = ""; redrawQuestion(0); refreshCommutes(); return; }
     c.found = "Finding…"; renderFound(i);
     try {
       const hits = await geocodeText(c.text.trim());
@@ -481,7 +481,8 @@ const Brickline = (() => {
     Object.assign(S, { commutes: [{ text: "", min: 35 }], rush: true, dens: new Set(), detMin: 0, edu: 0, inc: 0, hhMin: 1, hhMax: 6, useMix: false, mix: [40, 42, 18], sE: 0, sM: 0, sH: 0, showMatches: true, searchLogged: false });
     step = 0;
     drawIsos();
-    if (view === "find") renderQ();
+    if (openPill != null) openFilter(openPill);
+    if (view === "find") renderFind();
     updateMatches();
   }
   function styleOutlines() { bgPolys.forEach((p, geoid) => p.layer.setStyle(outlineStyle(geoid))); }
@@ -578,7 +579,11 @@ const Brickline = (() => {
     matchFrame = requestAnimationFrame(() => {
       styleOutlines();
       renderOverlay();
-      if (view === "find") renderPreview();
+      renderFilterBar();
+      updateFilterCount();
+      const wc = $("#wcount");
+      if (wc) { const n = allMetrics().filter((m) => passes(m, 7)).length; wc.innerHTML = `<b>${n.toLocaleString()}</b> of ${totalAreas.toLocaleString()} areas fit so far`; }
+      if (view === "find") { renderPreview(); if (!S.wizard) scheduleExplore(); }
     });
   }
   function drawIsos() {
@@ -598,7 +603,8 @@ const Brickline = (() => {
     const box = $("#map-overlay");
     if (view === "home") return;
     const answered = anyAnswer();
-    const showCount = ready && (answered || view === "find");
+    // In the finder the count lives at the top of the list, as on AllTrails.
+    const showCount = ready && answered && view !== "find";
     box.hidden = !showCount && !place;
     if (box.hidden) return;
     const n = showCount ? allMetrics().filter((m) => passes(m, 7)).length : 0;
@@ -675,18 +681,37 @@ const Brickline = (() => {
     const bar = document.querySelector(".mixbar");
     if (bar) bar.innerHTML = S.mix.map((x, k) => `<i style="width:${x}%;background:${AGE_COL[k]}"></i>`).join("");
   }
+  // --- The neighbourhood finder -----------------------------------------
+  // Like AllTrails: filter pills across the top of the map, each opening its
+  // own small panel; the left panel is the live list. "All" opens the guided
+  // eight questions instead. Both use the same controls (questionBody /
+  // bindQuestion), and only one of them is on the page at a time, so the
+  // controls' ids never clash.
   function renderFind() {
     const P = $("#panel");
     if (!D.census || !ready) {
       P.innerHTML = `<div class="pad"><div class="qhead"><h2>Loading LA County…</h2><p>Block group data and centres. If this stays, open Data status (top right).</p></div></div>`;
       return;
     }
-    P.innerHTML = `<div class="steps" id="steps"></div><div class="pad" id="qpane"></div><div class="qfoot" id="qfoot"><button class="btn ghost" id="back" type="button">Back</button><span class="spacer"></span><button class="btn ghost" id="resetQ" type="button" hidden>Reset</button><button class="btn" id="next" type="button">Next</button><button class="btn ghost" id="skip" type="button">Skip</button></div>`;
-    $("#resetQ").onclick = () => resetAnswers();
+    if (!S.wizard) { renderExplore(); return; }
+    closeFilter();
+    P.innerHTML = `<div class="steps" id="steps"></div><div class="wcount" id="wcount"></div><div class="pad" id="qpane"></div><div class="qfoot" id="qfoot"><button class="btn ghost" id="back" type="button">Back</button><span class="spacer"></span><button class="btn ghost" id="wizClose" type="button">Close</button><button class="btn" id="next" type="button">Next</button><button class="btn ghost" id="skip" type="button">Skip</button></div>`;
+    $("#wizClose").onclick = () => finishWizard();
     $("#back").onclick = () => { if (step > 0) { step--; renderQ(); } };
-    $("#next").onclick = () => { step = step === NQ ? 0 : step + 1; renderQ(); };
+    $("#next").onclick = () => { step = Math.min(NQ, step + 1); renderQ(); };
     $("#skip").onclick = () => { step = Math.min(NQ, step + 1); renderQ(); };
     renderQ();
+  }
+  // Re-draw question i wherever it is showing: a pill panel or the guided questions.
+  function redrawQuestion(i) {
+    if (openPill === i) openFilter(i);
+    else if (S.wizard && step === i && view === "find") renderQ();
+  }
+  function finishWizard() {
+    S.wizard = false;
+    if (!S.searchLogged && anyAnswer()) { S.searchLogged = true; postLead("search", { email: S.email, journey: "neighbourhood", answers: answersSummary() }); }
+    renderFind();
+    updateMatches();
   }
   function renderQ() {
     const pane = $("#qpane");
@@ -695,38 +720,41 @@ const Brickline = (() => {
     $("#steps").querySelectorAll("button").forEach((b) => (b.onclick = () => { step = +b.dataset.s; renderQ(); }));
     const foot = $("#qfoot");
     if (step === NQ) {
-      if (!S.gateSeen) { renderGate(pane); foot.hidden = true; } else { renderResults(pane); foot.hidden = false; $("#next").textContent = "Edit answers"; $("#skip").hidden = true; $("#resetQ").hidden = false; $("#back").disabled = false; }
+      if (!S.gateSeen) { renderGate(pane, () => finishWizard()); foot.hidden = true; } else finishWizard();
       updateMatches();
       return;
     }
-    foot.hidden = false; $("#next").textContent = step === NQ - 1 ? "See results" : "Next"; $("#skip").hidden = false; $("#resetQ").hidden = true; $("#back").disabled = step === 0;
+    foot.hidden = false; $("#next").textContent = step === NQ - 1 ? "See results" : "Next"; $("#skip").hidden = false; $("#back").disabled = step === 0;
+    pane.innerHTML = `<div class="qhead"><span class="qnum">Question ${step + 1} of ${NQ}</span><h2>${esc(QUESTIONS[step][0])}</h2><p>${esc(QUESTIONS[step][1])}</p></div>${questionBody(step)}`;
+    bindQuestion(step, pane, renderQ);
+    updateMatches();
+  }
+  function questionBody(i) {
     const cty = D.county || {};
-    let body = "";
-    if (step === 0) {
-      body = S.commutes.map((c, k) => `<div class="commute"><form class="row" data-geo="${k}"><input type="text" id="c-addr-${k}" placeholder="${k ? "Partner's work address" : "Work address"}" value="${esc(c.text)}" aria-label="Commute destination ${k + 1}"><button class="btn ghost" type="submit">Set</button>${k ? `<button class="x" type="button" data-rm="${k}" aria-label="Remove this commute">×</button>` : ""}</form><span class="found" id="c-found-${k}"></span>${rangeField("c-min-" + k, "Up to", 10, 90, 5, c.min, (v) => v + " min")}</div>`).join("") +
+    if (i === 0) {
+      return S.commutes.map((c, k) => `<div class="commute"><form class="row" data-geo="${k}"><input type="text" id="c-addr-${k}" placeholder="${k ? "Partner's work address" : "Work address or place"}" value="${esc(c.text)}" aria-label="Commute destination ${k + 1}"><button class="btn ghost" type="submit">Set</button>${k ? `<button class="x" type="button" data-rm="${k}" aria-label="Remove this commute">×</button>` : ""}</form><span class="found" id="c-found-${k}"></span>${rangeField("c-min-" + k, "Up to", 10, 90, 5, c.min, (v) => v + " min")}</div>`).join("") +
         (S.commutes.length < 3 ? `<button class="add" id="addC" type="button">+ Add another commute</button>` : "") +
         `<label class="toggle"><input type="checkbox" id="rush" ${S.rush ? "checked" : ""}> Rush-hour traffic (about ${RUSH_FACTOR}× free-flow time)</label><p class="note">${routing() ? "Areas follow the road network (OpenRouteService, no live traffic; rush hour is an estimate)." : `No routing key, so areas are straight-line estimates at ${FALLBACK_MPH} mph.`}</p>`;
     }
-    if (step === 1) {
-      body = `<div class="sub">People around you</div><div class="opts">${DENS.map((b, i) => `<button type="button" class="opt" data-d="${i}" aria-pressed="${S.dens.has(i)}"><i style="background:${b.color}"></i><div><b>${b.label}</b><span>${b.sub}</span></div><span class="n">${b.num}</span></button>`).join("")}</div>` +
+    if (i === 1) {
+      return `<div class="sub">People around you</div><div class="opts">${DENS.map((b, k) => `<button type="button" class="opt" data-d="${k}" aria-pressed="${S.dens.has(k)}"><i style="background:${b.color}"></i><div><b>${b.label}</b><span>${b.sub}</span></div><span class="n">${b.num}</span></button>`).join("")}</div>` +
         `<div class="sub">Shops and cafés nearby <span class="soon">coming soon</span></div><p class="note">Needs OpenStreetMap places data, not loaded yet.</p>`;
     }
-    if (step === 2) body = rangeField("det", "Detached houses on the block, at least", 0, 90, 5, S.detMin, (v) => (v ? `${v}%+ houses` : "Any mix")) + `<div class="ends"><span>More apartments</span><span>More houses</span></div>`;
-    if (step === 3) body = rangeField("edu", "At least", 0, 80, 5, S.edu, (v) => (v ? v + "%" : "Any"), cty.edu, `LA County ≈ ${cty.edu}%`);
-    if (step === 4) body = rangeField("inc", "At least", 0, 200000, 10000, S.inc, (v) => (v ? fmtK(v) : "Any"), cty.inc, `LA County ≈ ${fmtK(cty.inc)}`);
-    if (step === 5) { const hf = (v) => (+v).toFixed(1) + " people"; body = rangeField("hhMin", "From", 1, 6, 0.1, S.hhMin, hf, cty.hh, `LA County ≈ ${cty.hh}`) + rangeField("hhMax", "To", 1, 6, 0.1, S.hhMax, hf); }
-    if (step === 6) {
-      body = `<label class="toggle"><input type="checkbox" id="useMix" ${S.useMix ? "checked" : ""}> Use age mix in my search</label>` +
-        (S.useMix ? `<div class="mix"><div class="mixbar" aria-hidden="true">${S.mix.map((v, i) => `<i style="width:${v}%;background:${AGE_COL[i]}"></i>`).join("")}</div>${S.mix.map((v, i) => rangeField("mix" + i, `<span style="color:${AGE_COL[i]}">●</span> ${AGE_L[i]}`, 0, 100, 1, v, (x) => x + "%", cty.mix && cty.mix[i], cty.mix ? `County ≈ ${cty.mix[i]}%` : "")).join("")}<p class="note">The three always add up to 100%. Areas within about 12 points of your mix stay on the map.</p></div>` : `<p class="note">Off by default. Turn it on only if the age mix matters to you.</p>`);
+    if (i === 2) return rangeField("det", "Detached houses on the block, at least", 0, 90, 5, S.detMin, (v) => (v ? `${v}%+ houses` : "Any mix")) + `<div class="ends"><span>More apartments</span><span>More houses</span></div>`;
+    if (i === 3) return rangeField("edu", "At least", 0, 80, 5, S.edu, (v) => (v ? v + "%" : "Any"), cty.edu, `LA County ≈ ${cty.edu}%`);
+    if (i === 4) return rangeField("inc", "At least", 0, 200000, 10000, S.inc, (v) => (v ? fmtK(v) : "Any"), cty.inc, `LA County ≈ ${fmtK(cty.inc)}`);
+    if (i === 5) { const hf = (v) => (+v).toFixed(1) + " people"; return rangeField("hhMin", "From", 1, 6, 0.1, S.hhMin, hf, cty.hh, `LA County ≈ ${cty.hh}`) + rangeField("hhMax", "To", 1, 6, 0.1, S.hhMax, hf); }
+    if (i === 6) {
+      return `<label class="toggle"><input type="checkbox" id="useMix" ${S.useMix ? "checked" : ""}> Use age mix in my search</label>` +
+        (S.useMix ? `<div class="mix"><div class="mixbar" aria-hidden="true">${S.mix.map((v, k) => `<i style="width:${v}%;background:${AGE_COL[k]}"></i>`).join("")}</div>${S.mix.map((v, k) => rangeField("mix" + k, `<span style="color:${AGE_COL[k]}">●</span> ${AGE_L[k]}`, 0, 100, 1, v, (x) => x + "%", cty.mix && cty.mix[k], cty.mix ? `County ≈ ${cty.mix[k]}%` : "")).join("")}<p class="note">The three always add up to 100%. Areas within about 12 points of your mix stay on the map.</p></div>` : `<p class="note">Off by default. Turn it on only if the age mix matters to you.</p>`);
     }
-    if (step === 7) {
-      body = ratingsAvailable()
-        ? rangeField("sE", "Elementary", 0, 10, 1, S.sE, (v) => (v ? v + "/10" : "Any")) + rangeField("sM", "Middle", 0, 10, 1, S.sM, (v) => (v ? v + "/10" : "Any")) + rangeField("sH", "High", 0, 10, 1, S.sH, (v) => (v ? v + "/10" : "Any"))
-        : `<div class="empty">School ratings aren't available in this version${PERSONAL ? " (no ratings file loaded)" : ""}. Skip this question; the house card still lists the nearest schools.</div>`;
-    }
-    pane.innerHTML = `<div class="qhead"><span class="qnum">Question ${step + 1} of ${NQ}</span><h2>${esc(QUESTIONS[step][0])}</h2><p>${esc(QUESTIONS[step][1])}</p></div>${body}`;
-
-    if (step === 0) {
+    return ratingsAvailable()
+      ? rangeField("sE", "Elementary", 0, 10, 1, S.sE, (v) => (v ? v + "/10" : "Any")) + rangeField("sM", "Middle", 0, 10, 1, S.sM, (v) => (v ? v + "/10" : "Any")) + rangeField("sH", "High", 0, 10, 1, S.sH, (v) => (v ? v + "/10" : "Any"))
+      : `<div class="empty">School ratings aren't available in this version${PERSONAL ? " (no ratings file loaded)" : ""}. Skip this question; the house card still lists the nearest schools.</div>`;
+  }
+  // `again` re-draws whichever holder the controls are in (wizard or pill panel).
+  function bindQuestion(i, root, again) {
+    if (i === 0) {
       S.commutes.forEach((c, k) => {
         renderFound(k);
         bindRange("c-min-" + k, (v) => v + " min", (v) => { c.min = v; }, () => debounceCommutes());
@@ -739,28 +767,100 @@ const Brickline = (() => {
             renderFound(k);
             refreshCommutes();
           } else geocodeDestination(k);
-        }, { places: false });
+        }, { places: false, anyText: true });
       });
-      pane.querySelectorAll("form[data-geo]").forEach((f) => (f.onsubmit = (e) => { e.preventDefault(); geocodeDestination(+f.dataset.geo); }));
-      pane.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => { S.commutes.splice(+b.dataset.rm, 1); renderQ(); refreshCommutes(); }));
-      const add = $("#addC"); if (add) add.onclick = () => { S.commutes.push({ text: "", min: 35 }); renderQ(); };
+      root.querySelectorAll("form[data-geo]").forEach((f) => (f.onsubmit = (e) => { e.preventDefault(); geocodeDestination(+f.dataset.geo); }));
+      root.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => { S.commutes.splice(+b.dataset.rm, 1); again(); refreshCommutes(); }));
+      const add = $("#addC"); if (add) add.onclick = () => { S.commutes.push({ text: "", min: 35 }); again(); };
       $("#rush").onchange = (e) => { S.rush = e.target.checked; refreshCommutes(); };
     }
-    if (step === 1) pane.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => { const i = +b.dataset.d; S.dens.has(i) ? S.dens.delete(i) : S.dens.add(i); b.setAttribute("aria-pressed", S.dens.has(i)); updateMatches(); }));
-    if (step === 2) bindRange("det", (v) => (v ? `${v}%+ houses` : "Any mix"), (v) => (S.detMin = v));
-    if (step === 3) bindRange("edu", (v) => (v ? v + "%" : "Any"), (v) => (S.edu = v));
-    if (step === 4) bindRange("inc", (v) => (v ? fmtK(v) : "Any"), (v) => (S.inc = v));
-    if (step === 5) {
+    if (i === 1) root.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => { const k = +b.dataset.d; S.dens.has(k) ? S.dens.delete(k) : S.dens.add(k); b.setAttribute("aria-pressed", S.dens.has(k)); updateMatches(); }));
+    if (i === 2) bindRange("det", (v) => (v ? `${v}%+ houses` : "Any mix"), (v) => (S.detMin = v));
+    if (i === 3) bindRange("edu", (v) => (v ? v + "%" : "Any"), (v) => (S.edu = v));
+    if (i === 4) bindRange("inc", (v) => (v ? fmtK(v) : "Any"), (v) => (S.inc = v));
+    if (i === 5) {
       const hf = (v) => (+v).toFixed(1) + " people";
       bindRange("hhMin", hf, (v) => { S.hhMin = v; if (S.hhMax < v) { S.hhMax = v; $("#hhMax").value = v; $("#hhMax-o").textContent = hf(v); } });
       bindRange("hhMax", hf, (v) => { S.hhMax = v; if (S.hhMin > v) { S.hhMin = v; $("#hhMin").value = v; $("#hhMin-o").textContent = hf(v); } });
     }
-    if (step === 6) {
-      $("#useMix").onchange = (e) => { S.useMix = e.target.checked; renderQ(); };
-      if (S.useMix) [0, 1, 2].forEach((i) => { const el = document.getElementById("mix" + i); el.oninput = () => { setMix(i, +el.value); updateMatches(); }; });
+    if (i === 6) {
+      $("#useMix").onchange = (e) => { S.useMix = e.target.checked; again(); updateMatches(); };
+      if (S.useMix) [0, 1, 2].forEach((k) => { const el = document.getElementById("mix" + k); el.oninput = () => { setMix(k, +el.value); updateMatches(); }; });
     }
-    if (step === 7 && ratingsAvailable()) { bindRange("sE", (v) => (v ? v + "/10" : "Any"), (v) => (S.sE = v)); bindRange("sM", (v) => (v ? v + "/10" : "Any"), (v) => (S.sM = v)); bindRange("sH", (v) => (v ? v + "/10" : "Any"), (v) => (S.sH = v)); }
+    if (i === 7 && ratingsAvailable()) { bindRange("sE", (v) => (v ? v + "/10" : "Any"), (v) => (S.sE = v)); bindRange("sM", (v) => (v ? v + "/10" : "Any"), (v) => (S.sM = v)); bindRange("sH", (v) => (v ? v + "/10" : "Any"), (v) => (S.sH = v)); }
+  }
+
+  // --- Filter pills on the map ------------------------------------------
+  const FILTERS = ["Commute", "Street", "Homes", "Education", "Income", "Household", "Age mix", "Schools"];
+  let openPill = null;
+  function filterValue(i) {
+    if (i === 0) { const set = S.commutes.filter((c) => c.area); return set.length ? set.map((c, k) => `${c.min} min to ${k ? "commute " + (k + 1) : "work"}`).join(" + ") : null; }
+    if (i === 1) { const l = [...S.dens].sort().map((k) => DENS[k].label); return l.length ? l[0] + (l.length > 1 ? ` +${l.length - 1}` : "") : null; }
+    if (i === 2) return S.detMin ? `${S.detMin}%+ houses` : null;
+    if (i === 3) return S.edu ? `Bachelor's ${S.edu}%+` : null;
+    if (i === 4) return S.inc ? `${fmtK(S.inc)}+ income` : null;
+    if (i === 5) return S.hhMin > 1 || S.hhMax < 6 ? `${S.hhMin.toFixed(1)}–${S.hhMax.toFixed(1)} people` : null;
+    if (i === 6) return S.useMix ? `Ages ${S.mix.join("/")}` : null;
+    return S.sE || S.sM || S.sH ? "Schools " + [S.sE && "E" + S.sE, S.sM && "M" + S.sM, S.sH && "H" + S.sH].filter(Boolean).join(" ") : null;
+  }
+  function clearFilter(i) {
+    if (i === 0) { S.commutes = [{ text: "", min: 35 }]; drawIsos(); }
+    if (i === 1) S.dens = new Set();
+    if (i === 2) S.detMin = 0;
+    if (i === 3) S.edu = 0;
+    if (i === 4) S.inc = 0;
+    if (i === 5) { S.hhMin = 1; S.hhMax = 6; }
+    if (i === 6) S.useMix = false;
+    if (i === 7) { S.sE = 0; S.sM = 0; S.sH = 0; }
+    if (openPill === i) openFilter(i);
+    if (S.wizard && step === i) renderQ();
     updateMatches();
+  }
+  const pillIcon = `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M2 4h12M4 8h8M6 12h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+  function renderFilterBar() {
+    const bar = $("#filterbar");
+    if (view === "home" || !ready) { bar.hidden = true; return; }
+    bar.hidden = false;
+    const pills = FILTERS.map((label, i) => {
+      if (i === 7 && !ratingsAvailable()) return "";
+      const v = filterValue(i);
+      return v
+        ? `<span class="pill on${openPill === i ? " open" : ""}"><button type="button" data-f="${i}">${esc(v)}</button><button type="button" class="px" data-fx="${i}" aria-label="Clear ${esc(label)}">×</button></span>`
+        : `<span class="pill${openPill === i ? " open" : ""}"><button type="button" data-f="${i}">${esc(label)}<i class="chev" aria-hidden="true"></i></button></span>`;
+    }).join("");
+    bar.innerHTML = `<span class="pill all${S.wizard ? " open" : ""}"><button type="button" id="fAll">${pillIcon}All</button></span>${pills}${anyAnswer() ? `<button type="button" class="freset" id="fReset">Reset</button>` : ""}`;
+    $("#fAll").onclick = () => { closeFilter(); S.wizard = true; step = 0; if (view !== "find") location.hash = "find"; else renderFind(); renderFilterBar(); };
+    bar.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => (openPill === +b.dataset.f ? closeFilter() : openFilter(+b.dataset.f))));
+    bar.querySelectorAll("[data-fx]").forEach((b) => (b.onclick = () => clearFilter(+b.dataset.fx)));
+    const r = $("#fReset"); if (r) r.onclick = () => resetAnswers();
+  }
+  function openFilter(i) {
+    // The guided questions and a pill panel never show the same controls at once.
+    if (S.wizard) { S.wizard = false; if (view === "find") renderFind(); }
+    openPill = i;
+    const pop = $("#filter-pop");
+    pop.innerHTML = `<div class="fhead"><b>${esc(QUESTIONS[i][0])}</b><button type="button" class="x" id="fpClose" aria-label="Close">×</button></div><p class="note">${esc(QUESTIONS[i][1])}</p>${questionBody(i)}<div class="ffoot"><button type="button" class="btn ghost" id="fpClear">Clear</button><button type="button" class="btn" id="fpDone">${showLabel()}</button></div>`;
+    pop.hidden = false;
+    const pill = $(`#filterbar [data-f="${i}"]`);
+    const box = $(".mapbox").getBoundingClientRect();
+    const left = pill ? pill.getBoundingClientRect().left - box.left : 12;
+    pop.style.left = Math.max(8, Math.min(left, box.width - pop.offsetWidth - 8)) + "px";
+    bindQuestion(i, pop, () => openFilter(i));
+    $("#fpClose").onclick = () => closeFilter();
+    $("#fpDone").onclick = () => closeFilter();
+    $("#fpClear").onclick = () => clearFilter(i);
+    renderFilterBar();
+  }
+  function closeFilter() {
+    openPill = null;
+    const pop = $("#filter-pop");
+    if (pop) { pop.hidden = true; pop.innerHTML = ""; }
+    renderFilterBar();
+  }
+  function showLabel() { const n = allMetrics().filter((m) => passes(m, 7)).length; return `Show ${n.toLocaleString()} area${n === 1 ? "" : "s"}`; }
+  function updateFilterCount() {
+    const b = $("#fpDone");
+    if (b) b.textContent = showLabel();
   }
   let commuteTimer = null;
   function debounceCommutes() { clearTimeout(commuteTimer); commuteTimer = setTimeout(refreshCommutes, 700); }
@@ -803,21 +903,24 @@ const Brickline = (() => {
   function emailResults(list) {
     return list.slice(0, 10).map((m) => ({ geoid: m.geoid, name: areaName(m.geoid), busy: densBand(m.density) >= 0 ? DENS[densBand(m.density)].label : "", houses: m.det, income: m.inc, price: D.prices && D.prices[m.geoid] ? D.prices[m.geoid].medianSalePrice : null }));
   }
-  function renderGate(pane) {
+  // The email step. In the guided questions it comes before the list (with
+  // "Skip"); in the list it opens from "Email me this list".
+  function renderGate(pane, onDone, inline) {
     const n = allMetrics().filter((m) => passes(m, 7)).length;
     const shownAt = Date.now();
-    pane.innerHTML = `<div class="qhead"><span class="qnum">Almost there</span><h2>${n.toLocaleString()} ${n === 1 ? "area fits" : "areas fit"} what you asked for</h2><p>Where should we send your shortlist? We may also ask what you thought of the tool.</p></div>
-      <form class="gate" id="gateForm" novalidate><label class="lbl" for="gEmail">Email</label><div class="row"><input id="gEmail" type="email" placeholder="you@example.com" autocomplete="email"><button class="btn" type="submit">Show my results</button></div><input type="text" id="gWeb" name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true"><span class="err" id="gErr" hidden></span><p class="note">Used only to send your shortlist and ask for feedback. No spam. <a href="privacy.html">Privacy</a></p></form>
-      <button type="button" class="linkbtn" id="gSkip" style="color:var(--muted)">Skip for now and show results</button>`;
+    pane.innerHTML = (inline ? "" : `<div class="qhead"><span class="qnum">Almost there</span><h2>${n.toLocaleString()} ${n === 1 ? "area fits" : "areas fit"} what you asked for</h2><p>Where should we send your shortlist? We may also ask what you thought of the tool.</p></div>`) +
+      `<form class="gate" id="gateForm" novalidate><label class="lbl" for="gEmail">Email</label><div class="row"><input id="gEmail" type="email" placeholder="you@example.com" autocomplete="email"><button class="btn" type="submit">${inline ? "Email me this list" : "Show my results"}</button></div><input type="text" id="gWeb" name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true"><span class="err" id="gErr" hidden></span><p class="note">Used only to send your shortlist and ask for feedback. No spam. <a href="privacy.html">Privacy</a></p></form>` +
+      (inline ? "" : `<button type="button" class="linkbtn" id="gSkip" style="color:var(--muted)">Skip for now and show results</button>`);
     $("#gateForm").onsubmit = async (e) => {
       e.preventDefault();
       const v = $("#gEmail").value.trim();
       if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(v)) { $("#gErr").textContent = "That doesn't look like an email address."; $("#gErr").hidden = false; return; }
       const list = shortlist();
       const r = await postLead("lead", { email: v, journey: "neighbourhood", answers: answersSummary(), answerLines: appliedChips(), count: list.length, results: emailResults(list), r: answersCode(), website: $("#gWeb").value, t: Date.now() - shownAt });
-      S.email = v; S.gateSeen = true; S.savedWhere = r.where; S.emailed = !!r.emailed; renderQ();
+      S.email = v; S.gateSeen = true; S.savedWhere = r.where; S.emailed = !!r.emailed; S.showGate = false;
+      onDone();
     };
-    $("#gSkip").onclick = () => { S.gateSeen = true; renderQ(); };
+    const sk = $("#gSkip"); if (sk) sk.onclick = () => { S.gateSeen = true; onDone(); };
   }
 
   const SORTS = {
@@ -835,22 +938,42 @@ const Brickline = (() => {
   const SORT = { k: "edu", dir: "desc" };
   function avgRating(m) { const r = ["elementary", "middle", "high"].map((l) => m.schools && m.schools[l] && m.schools[l].rating).filter((x) => x != null); return r.length ? r.reduce((a, b) => a + b, 0) / r.length : null; }
   function commuteMiles(m) { const c = S.commutes.find((x) => x.lat != null); return c ? miles(m.lat, m.lon, c.lat, c.lon) : null; }
-  function renderResults(pane) {
-    if (!S.searchLogged) { S.searchLogged = true; postLead("search", { email: S.email, journey: "neighbourhood", answers: answersSummary() }); }
+  // The left panel of the finder: the live list, like AllTrails' "32 trails".
+  let exploreFrame = null, exploreMore = 25;
+  function scheduleExplore() {
+    if (exploreFrame) cancelAnimationFrame(exploreFrame);
+    exploreFrame = requestAnimationFrame(() => { if (view === "find" && !S.wizard && ready) renderExplore(); });
+  }
+  function renderExplore() {
+    const P = $("#panel");
     const keys = Object.keys(SORTS).filter((k) => (k !== "age" || S.useMix) && (k !== "school" || ratingsAvailable()) && (k !== "commute" || S.commutes.some((c) => c.lat != null)) && (k !== "sale" || PERSONAL));
     if (!keys.includes(SORT.k)) { SORT.k = keys[0]; SORT.dir = SORTS[SORT.k].d; }
     const M = SORTS[SORT.k];
-    const hits = allMetrics().filter((m) => passes(m, 7)).map((m) => ({ m, v: M.v(m) })).sort((a, b) => {
-      if (a.v == null) return 1; if (b.v == null) return -1;
-      return SORT.dir === "asc" ? a.v - b.v : b.v - a.v;
-    });
-    const shown = hits.slice(0, 25);
-    pane.innerHTML = `<div class="qhead"><span class="qnum">Results${S.email ? ` · ${S.savedWhere === "device" ? "saved on this device" : S.emailed ? "sent to " + esc(S.email) + ", check your inbox" : "saved for " + esc(S.email)}` : ""}</span><h2>${hits.length.toLocaleString()} ${hits.length === 1 ? "area fits" : "areas fit"} what you asked for</h2><p>Each is a Census block group (a few city blocks). Open one to see what it's like${PERSONAL ? " and the homes for sale in it" : ""}.</p></div>` +
-      (hits.length ? `<div class="sortbar"><span class="note">Showing ${shown.length} of ${hits.length.toLocaleString()}</span><div class="ctl"><label for="sortK" class="note">Sort by</label><select id="sortK">${keys.map((k) => `<option value="${k}" ${k === SORT.k ? "selected" : ""}>${SORTS[k].l}</option>`).join("")}</select><button type="button" id="sortDir">${SORT.dir === "asc" ? "↑ Low to high" : "↓ High to low"}</button></div></div>
-        <div class="results">${shown.map(({ m, v }) => resultCard(m, M.f(v))).join("")}</div>` : `<div class="empty">Nothing matches every answer. Try a longer commute, or loosen income or the other filters.</div>`);
-    const sk = $("#sortK"); if (sk) sk.onchange = () => { SORT.k = sk.value; SORT.dir = SORTS[SORT.k].d; renderResults(pane); };
-    const sd = $("#sortDir"); if (sd) sd.onclick = () => { SORT.dir = SORT.dir === "asc" ? "desc" : "asc"; renderResults(pane); };
-    pane.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => openArea(b.dataset.open)));
+    const hits = shortlist();
+    const shown = hits.slice(0, exploreMore);
+    const answered = anyAnswer();
+    const sent = S.email ? (S.savedWhere === "device" ? "Saved on this device" : S.emailed ? `Sent to ${esc(S.email)}, check your inbox` : `Saved for ${esc(S.email)}`) : "";
+    // Keep the email form open across re-draws while you type in it.
+    const typing = S.showGate && document.activeElement && document.activeElement.id === "gEmail" ? document.activeElement.value : null;
+    P.innerHTML = `<div class="explore"><div class="ehead"><h2>Explore areas</h2>
+      <div class="erow"><span class="ecount"><b>${hits.length.toLocaleString()}</b> ${answered ? (hits.length === 1 ? "area fits" : "areas fit") : "areas in LA County"}</span>
+      <span class="esort"><select id="sortK" aria-label="Sort by">${keys.map((k) => `<option value="${k}" ${k === SORT.k ? "selected" : ""}>${SORTS[k].l}</option>`).join("")}</select><button type="button" id="sortDir" aria-label="Sort direction">${SORT.dir === "asc" ? "↑ Low to high" : "↓ High to low"}</button></span></div>
+      ${answered ? `<div class="erow2"><button type="button" class="linkbtn" id="mShow">${S.showMatches ? "Show all areas on the map" : "Show only my matches on the map"}</button>${S.showGate ? "" : `<button type="button" class="btn ghost sm" id="emailList">${sent ? "Email it again" : "Email me this list"}</button>`}</div>` : ""}
+      ${sent ? `<p class="note sent">${sent}</p>` : ""}<div id="gateSlot"></div></div>
+      ${answered ? "" : `<div class="eintro">Use the filters along the top of the map, or <button type="button" class="linkbtn" id="wizStart">answer 8 quick questions</button>. Each area is a Census block group, a few city blocks.</div>`}
+      ${hits.length ? `<div class="results">${shown.map((m) => resultCard(m, M.f(M.v(m)))).join("")}</div>${hits.length > shown.length ? `<button type="button" class="btn ghost more" id="more">Show ${Math.min(25, hits.length - shown.length)} more of ${hits.length.toLocaleString()}</button>` : ""}`
+        : `<div class="empty">Nothing matches every filter. Try a longer commute, or loosen income or the other filters.</div>`}</div>`;
+    const sk = $("#sortK"); if (sk) sk.onchange = () => { SORT.k = sk.value; SORT.dir = SORTS[SORT.k].d; renderExplore(); };
+    const sd = $("#sortDir"); if (sd) sd.onclick = () => { SORT.dir = SORT.dir === "asc" ? "desc" : "asc"; renderExplore(); };
+    const sh = $("#mShow"); if (sh) sh.onclick = () => { S.showMatches = !S.showMatches; updateMatches(); };
+    const em = $("#emailList"); if (em) em.onclick = () => { S.showGate = true; renderExplore(); };
+    const ws = $("#wizStart"); if (ws) ws.onclick = () => { S.wizard = true; step = 0; renderFind(); renderFilterBar(); };
+    const mo = $("#more"); if (mo) mo.onclick = () => { exploreMore += 25; renderExplore(); };
+    if (S.showGate) {
+      renderGate($("#gateSlot"), () => renderExplore(), true);
+      if (typing != null) { const g = $("#gEmail"); g.value = typing; g.focus(); }
+    }
+    P.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => openArea(b.dataset.open)));
   }
   function resultCard(m, val) {
     const n = PERSONAL ? listingsIn(m.geoid).length : 0;
@@ -1097,8 +1220,7 @@ const Brickline = (() => {
       : L.length ? `<div class="sec"><h3>Homes for sale here</h3><div class="listings">${L.slice(0, 20).map((l, i) => `<button type="button" class="lst" data-l="${i}"><i aria-hidden="true"></i><b>${esc(l.address || "")}</b><span class="p">${fmtM(l.price)}</span><small>${l.beds ?? "–"} bd · ${l.baths ?? "–"} ba · ${num(l.sqft)} sq ft${l.yearBuilt ? " · built " + l.yearBuilt : ""}</small></button>`).join("")}</div><p class="note">From your Redfin exports. Or click any lot on the map to check it.</p></div>`
       : `<div class="empty"><b>No homes for sale here ${det.outline ? "right now" : "found yet"}.</b> Click any lot on the map to check it, or <button type="button" class="linkbtn" id="alertMe">get an email when one lists</button>.<div id="alertSlot"></div></div>`;
     const band = densBand(m.density);
-    P.innerHTML = `<div class="card-head"><div class="crumb">${area.from === "place" && place ? `<a href="#place">← Back to ${esc(place.name)}</a>` : `<a href="#find" id="toResults">← Back to ${S.gateSeen ? "results" : "the questions"}</a>`}</div><h2>${esc(areaName(geoid))}</h2><p>${band >= 0 ? DENS[band].label + " · " : ""}${pct(m.det)} houses${PERSONAL ? ` · ${L.length} for sale` : ""}</p></div><div class="tabs" id="aTabs">${tabsHTML(ATABS, atab)}</div><div class="tabpane" id="aPane"></div>`;
-    const tr = $("#toResults"); if (tr) tr.onclick = () => { if (S.gateSeen) step = NQ; };
+    P.innerHTML = `<div class="card-head"><div class="crumb">${area.from === "place" && place ? `<a href="#place">← Back to ${esc(place.name)}</a>` : `<a href="#find" id="toResults">← Back to the list</a>`}</div><h2>${esc(areaName(geoid))}</h2><p>${band >= 0 ? DENS[band].label + " · " : ""}${pct(m.det)} houses${PERSONAL ? ` · ${L.length} for sale` : ""}</p></div><div class="tabs" id="aTabs">${tabsHTML(ATABS, atab)}</div><div class="tabpane" id="aPane"></div>`;
     $("#aTabs").querySelectorAll("button").forEach((b) => (b.onclick = () => { atab = +b.dataset.t; renderArea(); }));
     const panes = [
       () => `<div class="signals">${commute}${hazardTile(h)}${airTile(h)}${streetTile()}${schoolTile(m)}${peopleTile(m)}${moneyTile(m)}${salesTile(geoid)}</div>${autoSummary(m, h)}${fits.length ? `<div class="fit"><h3>Why it matched</h3><ul>${fits.map((f) => `<li>${esc(f)}</li>`).join("")}</ul></div>` : ""}${forSale}`,
@@ -1215,14 +1337,16 @@ const Brickline = (() => {
     try {
       let lay;
       if (k === "noise") {
-        const got = await Promise.allSettled([E().noiseLayer("aviation"), E().noiseLayer("surface")]);
+        // Road and rail first, aircraft on top: road noise covers far more
+        // ground and would otherwise hide the airport contours.
+        const got = await Promise.allSettled([E().noiseLayer("surface"), E().noiseLayer("aviation")]);
         const ok = got.filter((g) => g.status === "fulfilled").map((g) => g.value);
         got.filter((g) => g.status === "rejected").forEach((g) => log("noise", "warn", `A noise service failed: ${g.reason && g.reason.message}`));
         if (!ok.length) throw new Error("no noise service answered");
         lay = L.layerGroup(ok);
         // Fainter than the explorer's, so vector layers on top stay readable.
-        const fade = (l) => (l.setOpacity ? l.setOpacity(0.4) : l.eachLayer && l.eachLayer(fade));
-        fade(lay);
+        const fade = (l, z) => (l.setOpacity ? (l.setOpacity(0.4), l.setZIndex && l.setZIndex(z)) : l.eachLayer && l.eachLayer((x) => fade(x, z)));
+        ok.forEach((l, i) => fade(l, got[0].status === "fulfilled" && i === 0 ? 2 : 3));
       } else {
         lay = await E().windOverlay();
         if (!lay) throw new Error("no wind file");
@@ -1487,7 +1611,8 @@ const Brickline = (() => {
       items = local(q); cur = -1; draw();
       clearTimeout(timer);
       // Street addresses (a number and a word) also ask the address service.
-      if (q.length >= 4 && /\d/.test(q) && /[a-z]/i.test(q) && !/^https?:/i.test(q)) {
+      const wantAddresses = opts.anyText ? q.length >= 3 : (/\d/.test(q) && /[a-z]/i.test(q)) || (q.length >= 5 && !local(q).length);
+      if (q.length >= 3 && wantAddresses && !/^https?:/i.test(q)) {
         timer = setTimeout(async () => {
           try {
             const hits = await suggestAddr(q);
@@ -1583,7 +1708,7 @@ const Brickline = (() => {
   function renderHouse() {
     const P = $("#panel");
     if (!house) { renderLookup(); return; }
-    const back = house.from === "place" && place ? `<a href="#place">← Back to ${esc(place.name)}</a>` : house.from === "find" ? `<a href="#find">← Back to the questions</a>` : house.from === "area" && house.areaGeoid ? `<a href="#area-${house.areaGeoid}">← Back to the area</a>` : `<a href="#home">← New search</a>`;
+    const back = house.from === "place" && place ? `<a href="#place">← Back to ${esc(place.name)}</a>` : house.from === "find" ? `<a href="#find">← Back to the list</a>` : house.from === "area" && house.areaGeoid ? `<a href="#area-${house.areaGeoid}">← Back to the area</a>` : `<a href="#home">← New search</a>`;
     if (house.error) { P.innerHTML = `<div class="card-head"><div class="crumb">${back}</div></div><div class="pad"><div class="empty">${esc(house.error)}</div></div>`; return; }
     if (house.loading) { P.innerHTML = `<div class="card-head"><div class="crumb">${back}</div><h2>Looking it up…</h2><p>Lot, zoning, hazards and the neighbourhood.</p></div>`; return; }
     const ctx = house.ctx, parcel = ctx.parcel && ctx.parcel.value, zoning = ctx.zoning && ctx.zoning.value, jur = ctx.jurisdiction && ctx.jurisdiction.value;
@@ -1733,7 +1858,8 @@ const Brickline = (() => {
   function route() {
     const h = (location.hash || "#home").slice(1);
     const m = h.match(/^area-(\d{12})$/);
-    view = m ? "area" : ["home", "find", "house", "place", "lookup"].includes(h) ? h : "home";
+    if (h === "questions") { S.wizard = true; step = 0; history.replaceState(null, "", "#find"); }
+    view = m ? "area" : h === "questions" ? "find" : ["home", "find", "house", "place", "lookup"].includes(h) ? h : "home";
     if (m && (!area || area.geoid !== m[1])) { area = { geoid: m[1] }; atab = 0; areaDetails(m[1]).promise.then(() => { if (view === "area" && area.geoid === m[1]) { renderArea(); drawAreaMap(); } }); }
     $("#view-home").hidden = view !== "home";
     $("#workspace").hidden = view === "home";
@@ -1748,6 +1874,7 @@ const Brickline = (() => {
     renderPreview();
     renderLayerPanel();
     updateHint();
+    if (view === "home") closeFilter(); else renderFilterBar();
     if (view === "area") { if (D.census) { renderArea(); drawAreaMap(); } else $("#panel").innerHTML = `<div class="pad"><p class="loading">Loading…</p></div>`; }
     if (view === "house") { renderHouse(); drawHouseMap(); }
     if (view === "lookup") { clearFocus(); renderLookup(); }
@@ -1773,6 +1900,11 @@ const Brickline = (() => {
     initStatus();
     initMap();
     attachSuggest($("#home-q"), lookUp);
+    document.addEventListener("mousedown", (e) => {
+      if (openPill == null) return;
+      if (e.target.closest("#filter-pop") || e.target.closest("#filterbar")) return;
+      closeFilter();
+    });
     $("#home-search").onsubmit = (e) => { e.preventDefault(); const v = $("#home-q").value.trim(); if (v) lookUp(v); else $("#home-q").focus(); };
     window.addEventListener("hashchange", route);
     route();
@@ -1792,7 +1924,7 @@ const Brickline = (() => {
   return {
     init,
     // For tests: the pieces a browser test checks without clicking through.
-    forTest: { styleOf: (g) => outlineStyle(g), get place() { return place && { name: place.name, n: place.geoids ? place.geoids.size : null, error: place.error || null }; }, get places() { return places.length; }, get state() { return { S, D, view, area, house, step, ready, sel, PERSONAL, outlines: bgPolys.size, drawn: map.hasLayer(bgLayer) ? bgPolys.size : 0, shown: [...shownLayers], hazards: hazardLayer.getLayers().length, rasters: rasterLayer.getLayers().length }; }, get map() { return map; }, metrics, passes, postLead, openArea, openHouse, densBand },
+    forTest: { styleOf: (g) => outlineStyle(g), get place() { return place && { name: place.name, n: place.geoids ? place.geoids.size : null, error: place.error || null }; }, get places() { return places.length; }, get state() { return { S, D, view, area, house, step, ready, sel, PERSONAL, outlines: bgPolys.size, drawn: map.hasLayer(bgLayer) ? bgPolys.size : 0, shown: [...shownLayers], hazards: hazardLayer.getLayers().length, rasters: rasterLayer.getLayers().length }; }, get map() { return map; }, get noiseOrder() { const out = []; const walk = (l) => (l.getTileUrl ? out.push({ air: /aviation/i.test(l._url), z: l.options.zIndex }) : l.eachLayer && l.eachLayer(walk)); rasterLayer.eachLayer(walk); return out; }, metrics, passes, postLead, openArea, openHouse, densBand },
   };
 })();
 
