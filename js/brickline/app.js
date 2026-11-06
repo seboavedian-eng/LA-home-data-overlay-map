@@ -397,7 +397,14 @@ const Brickline = (() => {
     focusLayer = L.layerGroup().addTo(map);
     selLayer = L.layerGroup().addTo(map);
     pinLayer = L.layerGroup().addTo(map);
-    map.on("click", (e) => onMapClick(e.latlng));
+    // A double-click zooms in and selects nothing: a click waits a moment,
+    // and a second click within that moment cancels it.
+    let clickTimer = null;
+    map.on("click", (e) => {
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; return; }
+      clickTimer = setTimeout(() => { clickTimer = null; onMapClick(e.latlng); }, 300);
+    });
+    map.on("dblclick", () => { if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; } });
     let moveTimer = null;
     map.on("moveend", () => { clearTimeout(moveTimer); moveTimer = setTimeout(onMove, 250); });
   }
@@ -1107,7 +1114,8 @@ const Brickline = (() => {
     const unknown = list.filter(([, v]) => v.cls === "na");
     if (!flagged.length) return `<div class="sig ${unknown.length ? "neutral" : "good"}"><small>Natural hazards</small><b>${unknown.length ? "None found so far" : "None mapped here"}</b><em>${unknown.length ? `${unknown.length} check(s) didn't answer` : "Fire, flood, landslide, liquefaction"}</em></div>`;
     const worst = flagged.some(([, v]) => v.cls === "bad") ? "bad" : "watch";
-    return `<div class="sig ${worst}"><small>Natural hazards</small><b>Watch: ${flagged.map(([k, v]) => `${k} (${esc(v.text)})`).join(", ")}</b><em>${list.length - flagged.length - unknown.length} of ${list.length} checks clear</em></div>`;
+    const clear = list.filter(([, v]) => v.cls === "good").map(([k]) => k.toLowerCase());
+    return `<div class="sig ${worst}"><small>Natural hazards</small><b>${flagged.map(([k, v]) => `${k}: ${esc(v.text.toLowerCase())}`).join(" · ")}</b><em>${clear.length ? `No ${clear.join(", ")} zone mapped` : ""}${unknown.length ? `${clear.length ? " · " : ""}${unknown.map(([k]) => k.toLowerCase()).join(", ")} couldn't be checked` : ""}</em></div>`;
   }
   function airTile(h) {
     if (!h) return `<div class="sig na"><small>Noise & air</small><b>Checking…</b></div>`;
@@ -1318,7 +1326,14 @@ const Brickline = (() => {
     if (k === "fire") return sw(Object.entries(C.FIRE_CLASS_COLORS).map(([t, c]) => [c, t]));
     if (k === "pollution") return sw((C.POLLUTION_BUCKETS || []).map((b) => [b.color, b.label.replace(/ \(.*\)/, "")])) + `<small>CalEnviroScreen percentile, by census tract</small>`;
     if (k === "wind") return sw((C.WIND_BUCKETS || []).map((b) => [b.color, b.label.replace(/ \(.*\)/, "")]));
-    if (k === "noise") return `<small>US DOT noise map, aircraft plus road and rail</small>`;
+    if (k === "noise") {
+      const lay = rasters.get("noise");
+      const rows = [];
+      const seen = new Set();
+      (lay && lay.getLayers ? lay.getLayers() : []).forEach((l) => (l.legendRows || []).forEach((r) => { if (!seen.has(r.label)) { seen.add(r.label); rows.push(r); } }));
+      if (rows.length) return `<div class="lgd">${rows.slice(0, 8).map((r) => `<span>${r.image ? `<img src="${esc(r.image)}" alt="" width="12" height="12">` : ""}${esc(r.label)}</span>`).join("")}</div><small>US DOT noise map, its own legend</small>`;
+      return sw((C.NOISE && C.NOISE.FALLBACK_BANDS || []).map((b) => [b.color, b.label])) + `<small>US DOT noise map; approximate bands (the service sent no legend)</small>`;
+    }
     return "";
   }
   // What each drawn line means, listed under the layers whenever it is on the map.
@@ -1384,6 +1399,7 @@ const Brickline = (() => {
       if (!shownLayers.has(k)) return;      // switched off while loading
       rasters.set(k, lay);
       rasterLayer.addLayer(lay);
+      renderLayerPanel();   // the noise legend arrives with the layer
     } catch (err) {
       shownLayers.delete(k);
       layerNote.set(k, k === "wind" ? "No wind file on this machine" : "Couldn't load");

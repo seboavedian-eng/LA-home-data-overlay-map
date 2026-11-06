@@ -5,7 +5,7 @@
   --good: #1f8a4c; --good-soft: #e2f3e8; --watch: #b26b00; --watch-soft: #fbefd9; --bad: #c23a2b; --bad-soft: #f9e3df;
   --shadow: 0 1px 2px rgba(20, 32, 29, .06), 0 8px 28px rgba(20, 32, 29, .08);
   --f-body: "Public Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --f-display: "Archivo Narrow", "Arial Narrow", "Roboto Condensed", system-ui, sans-serif;
+  --f-display: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --f-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 * { box-sizing: border-box; }
@@ -333,13 +333,15 @@ table.comps { width: 100%; border-collapse: collapse; font-size: 13px; }
 .wcount { padding: 8px 22px 0; font-size: 13.5px; color: var(--muted); }
 .wcount b { color: var(--accent); font-size: 15px; }
 
-/* Headlines in a serif, like Claude's. System fonts only: no download, and
-   no fallback to a squeezed "narrow" font on computers that lack one. */
-:root { --f-display: ui-serif, "Iowan Old Style", "Charter", "Palatino Linotype", Palatino, Georgia, Cambria, "Times New Roman", serif; }
-.hero h1 { font-weight: 500; letter-spacing: -.015em; line-height: 1.05; }
-.brand { font-weight: 600; letter-spacing: -.01em; }
-.choice b, .qhead h2, .card-head h2, .ehead h2, .res .t b, .summary h3, .cta b, .doc h1, .filter-pop .fhead b { font-weight: 500; }
-.count b, .ecount b { font-weight: 600; }
+/* Headlines: the system's own sans at normal width. The old first choice,
+   "Archivo Narrow", is missing on most machines and fell back to a squeezed
+   Arial Narrow; nothing narrow is in this list. */
+:root { --f-display: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+.hero h1 { font-weight: 750; letter-spacing: -.025em; line-height: 1.04; font-size: clamp(34px, 5.4vw, 58px); text-wrap: balance; }
+.brand { font-weight: 750; letter-spacing: -.02em; }
+.choice b, .qhead h2, .card-head h2, .ehead h2, .doc h1 { font-weight: 700; letter-spacing: -.015em; }
+.res .t b, .summary h3, .cta b, .filter-pop .fhead b { font-weight: 650; }
+.count b, .ecount b { font-weight: 700; }
 
 /* One bar, several knobs: stacked range inputs over a shared rail. The rail
    is inset by half a knob so its ends line up with the knob centres. */

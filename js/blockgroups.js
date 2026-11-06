@@ -8609,10 +8609,12 @@ const BlockGroupApp = (() => {
         const mode = BG_CONFIG.NOISE.modes[modeKey];
         const urls = mode.servers.concat(await discoverNoiseServices(modeKey));
         const built = [];
+        const builtFrom = [];
         const problems = [];
         for (const url of urls) {
           try {
             built.push((await buildNoiseTileLayer(modeKey, url, null)).layer);
+            builtFrom.push(url);
             Utils.logStatus(modeKey, "ok", `${mode.label} from ${url.split("/services/")[1] || url}.`);
             if (!mode.mergeAll) break;
           } catch (err) {
@@ -8620,7 +8622,11 @@ const BlockGroupApp = (() => {
           }
         }
         if (!built.length) throw new Error(problems.join(" | ") || "no matching noise service was found");
-        return built.length === 1 ? built[0] : L.layerGroup(built);
+        const layer = built.length === 1 ? built[0] : L.layerGroup(built);
+        // The service's own legend (decibel bands and their colours), so a
+        // legend drawn elsewhere can't disagree with the tiles.
+        layer.legendRows = builtFrom.length ? await fetchNoiseLegend(builtFrom[0]) : null;
+        return layer;
       },
       // The wind grid as one image overlay, or null when there is no grid file.
       async windOverlay() {

@@ -114,6 +114,7 @@ async function stub(page, captured) {
   await page.route("**://geo.dot.gov/**", (r) => {
     captured.noise++;
     if (/\/tile\//.test(r.request().url())) return r.fulfill({ contentType: "image/png", body: BLANK });
+    if (/\/legend\?/.test(r.request().url())) return r.fulfill(json({ layers: [{ legend: [{ label: "45 - 50 dB", imageData: BLANK.toString("base64"), contentType: "image/png" }, { label: "50 - 55 dB", imageData: BLANK.toString("base64"), contentType: "image/png" }] }] }));
     return r.fulfill(json({ singleFusedMapCache: true, tileInfo: { lods: Array.from({ length: 13 }, (_, level) => ({ level, resolution: 156543.03 / 2 ** level, scale: 591657527.59 / 2 ** level })) } }));
   });
   await page.route("**/raw-data/redfin-listings/**", (r) => r.fulfill({ status: 404, body: "" }));
@@ -376,6 +377,17 @@ async function main() {
   await clickAt(34.165, -118.295);   // east of B: no block group there
   step("a click outside every area clears the selection", await waitFor(page, () => Brickline.forTest.state.sel === null) && await page.isHidden("#map-preview"));
 
+  {
+    await page.evaluate(() => Brickline.forTest.map.setView([34.165, -118.26], 14, { animate: false }));
+    await page.waitForTimeout(400);
+    const z0 = await page.evaluate(() => Brickline.forTest.map.getZoom());
+    const pt = await page.evaluate(() => { const p = Brickline.forTest.map.latLngToContainerPoint([34.168, -118.275]); return [p.x, p.y]; });
+    const mb = await page.locator("#map").boundingBox();
+    await page.mouse.dblclick(mb.x + pt[0], mb.y + pt[1]);
+    await page.waitForTimeout(900);
+    const after = await page.evaluate(() => ({ z: Brickline.forTest.map.getZoom(), sel: Brickline.forTest.state.sel, view: Brickline.forTest.state.view }));
+    step("a double-click zooms in and selects nothing", after.z > z0 && after.sel === null && after.view === "find", JSON.stringify({ z0, ...after }));
+  }
   await clickAt(34.168, -118.275);
   let s = await st();
   await page.waitForTimeout(300);
@@ -435,6 +447,7 @@ async function main() {
   step("Noise draws the DOT noise tiles", await waitFor(page, () => Brickline.forTest.state.rasters === 1) && captured.noise > 0, `${captured.noise} noise requests`);
   const noiseOrder = await page.evaluate(() => Brickline.forTest.noiseOrder);
   const air = noiseOrder.filter((o) => o.air), road = noiseOrder.filter((o) => !o.air);
+  step("the noise legend is the service's own decibel bands", await waitFor(page, () => /45 - 50 dB/.test(document.querySelector("#map-layers").innerText)));
   step("aircraft noise sits on top of road and rail noise", air.length && road.length && Math.min(...air.map((o) => o.z)) > Math.max(...road.map((o) => o.z)), JSON.stringify(noiseOrder));
   await page.click('#map-layers [data-l="noise"]');
   await page.click('#map-layers [data-l="fire"]');
