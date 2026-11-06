@@ -335,6 +335,7 @@ async function main() {
   await page.click(".res");
   step("a result opens the area card", await waitFor(page, () => location.hash.startsWith("#area-") && !!document.querySelector("#aTabs")));
   step("summary tiles render", await waitFor(page, () => document.querySelectorAll("#aPane .sig").length >= 8));
+  step("the homes tile shows owners vs renters and single-family share, not a head count", await page.evaluate(() => { const t = [...document.querySelectorAll("#aPane .sig")].find((x) => /Block group: homes/.test(x.textContent)); return t && /owners/.test(t.textContent) && /renters/.test(t.textContent) && /single-family/.test(t.textContent) && !/residents/.test(t.textContent); }));
   step("the summary says why it matched", /Why it matched/.test(await page.textContent("#aPane")));
   step("the automatic summary describes the place", /What it's like here/.test(await page.innerText("#aPane")));
   step("hazards answer (not stuck on Checking)", await waitFor(page, () => !/Checking/.test(document.querySelector("#aPane").innerText)));

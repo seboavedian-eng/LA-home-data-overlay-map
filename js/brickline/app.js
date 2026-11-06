@@ -1129,7 +1129,12 @@ const Brickline = (() => {
     const e = sc.elementary;
     return `<div class="sig neutral"><small>Schools (nearest)</small><b>${e ? esc(e.name) : "–"}</b><em>${e ? e.miles.toFixed(1) + " mi · ratings not shown" : "No school data loaded"}</em></div>`;
   }
-  const peopleTile = (m) => `<div class="sig neutral"><small>People</small><b>${num(m.pop)} residents</b><em>${m.hh != null ? m.hh.toFixed(1) + " per home" : ""}${densBand(m.density) >= 0 ? " · " + DENS[densBand(m.density)].label.toLowerCase() : ""}</em></div>`;
+  // The block group's homes: who owns, and how much of it is houses. (Who
+  // lives there stays in the People tab, by choice.)
+  const peopleTile = (m) => {
+    const own = share(m.rec.ownerOccupied, m.rec.tenureTotal);
+    return `<div class="sig neutral"><small>Block group: homes</small><b>${own != null ? `${Math.round(own)}% owners · ${Math.round(100 - own)}% renters` : "Owners vs renters: –"}</b><em>${m.det != null ? `${Math.round(m.det)}% single-family houses` : "Single-family share: –"} · Census B25003, B25024</em></div>`;
+  };
   const moneyTile = (m) => `<div class="sig neutral"><small>Money & work</small><b>${fmtK(m.inc)} median income</b><em>${D.county && D.county.inc && m.inc ? (m.inc >= D.county.inc ? "Above" : "Below") + ` LA County (${fmtK(D.county.inc)})` : "Census B19013"}</em></div>`;
   function salesTile(geoid) {
     const p = D.prices && D.prices[geoid];
