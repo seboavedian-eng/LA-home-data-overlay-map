@@ -1776,7 +1776,7 @@ const Brickline = (() => {
     ];
     $("#hPane").innerHTML = panes[htab]();
     const r = $("#reserve");
-    if (r) r.onclick = async () => { const key = house.address; reserved.add(key); await postLead("report_request", { email: S.email, address: house.address, geoid: house.geoid, price: 129 }); renderHouse(); };
+    if (r) r.onclick = async () => { const key = house.address; reserved.add(key); await postLead("report_request", { email: S.email, address: house.address, geoid: house.geoid }); renderHouse(); };
     const ask = $("#askCommute");
     if (ask) ask.onclick = () => {
       $("#askSlot").innerHTML = `<form class="gate" id="askForm"><span class="lbl">Where do you work?</span><div class="row"><input id="askQ" type="text" aria-label="Work address" placeholder="Work address"><button class="btn" type="submit">Add</button></div><span class="err" id="askErr" hidden></span></form>`;
@@ -1814,7 +1814,7 @@ const Brickline = (() => {
     const done = reserved.has(house.address);
     return `<div class="signals">${lotTile}${commute}${hazardTile(house.hazards)}${airTile(house.hazards)}${streetTile()}${m ? schoolTile(m) + peopleTile(m) + moneyTile(m) : ""}${house.geoid ? salesTile(house.geoid) : ""}</div><div id="askSlot"></div>${m ? autoSummary(m, house.hazards) : ""}
       <div class="fit"><h3>Is it right for you?</h3><p class="note">Answer 8 quick questions to see which areas fit you. <a href="#find">Start the questions</a></p></div>
-      <div class="cta"><b>Full house report</b><p>Comparable sales, a fair price range with condition costs, red flags and questions to ask before you offer.</p>${done ? `<span class="done">You're on the list. We'll be in touch when reports open.</span>` : `<button class="btn" id="reserve" type="button">Get the report · $129 · free during the pilot</button>`}</div>`;
+      <div class="cta"><b>Full house report <span class="soon">coming soon</span></b><p>Comparable sales, a fair price range with condition costs, red flags and questions to ask before you offer.</p>${done ? `<span class="done">You're on the list. We'll tell you when the full report is ready.</span>` : `<button class="btn" id="reserve" type="button">Tell me when it's ready</button>`}</div>`;
   }
   function lotTab() {
     const ctx = house.ctx, parcel = ctx.parcel && ctx.parcel.value, l = house.listing, s = house.sale, b = house.build;

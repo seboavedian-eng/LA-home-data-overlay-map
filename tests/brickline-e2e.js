@@ -517,7 +517,7 @@ async function main() {
   await page.click("#askForm button[type=submit]");
   step("adding a work address gives a drive time", await waitFor(page, () => /~23 min/.test(document.querySelector("#hPane").innerText)));
   await page.click("#reserve");
-  step("the report button logs a request and thanks the user", await waitFor(page, () => /on the list/.test(document.querySelector("#hPane").innerText)) && captured.leads.some((l) => l.kind === "report_request" && /GRANDVIEW/i.test(l.address)));
+  step("the full report is 'coming soon' with no price, and the button logs interest", !/\$\d/.test(await page.innerText(".cta")) && /coming soon/i.test(await page.innerText(".cta")) && await waitFor(page, () => /on the list/.test(document.querySelector("#hPane").innerText)) && captured.leads.some((l) => l.kind === "report_request" && /GRANDVIEW/i.test(l.address)));
 
   // ------------------------------------------- One search box: place or house
   const typeHome = async (text) => {
